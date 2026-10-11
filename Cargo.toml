@@ -1,0 +1,16 @@
+[package]
+name = "browsecraft"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde_json = "1.0.152"
+tao = "0.37"
+wry = "0.57"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg: #f3f3f5; --fg: #1f1f23; --field: #ffffff; --border: #d4d4da;
+    --hover: #e2e2e8; --accent: #3b6ef5; --muted: #8a8a94;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #202124; --fg: #e8e8ea; --field: #2c2d31; --border: #3a3b40;
+      --hover: #34353a; --accent: #7aa2ff; --muted: #9a9aa3;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; user-select: none;
+    background: var(--bg); color: var(--fg);
+    font: 13px "Segoe UI", system-ui, sans-serif;
+  }
+  body {
+    display: flex; align-items: center; gap: 4px; padding: 0 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  button {
+    width: 32px; height: 32px; flex: none; border: 0; border-radius: 6px;
+    background: transparent; color: var(--fg); font-size: 16px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--hover); }
+  button:disabled { color: var(--muted); opacity: .5; cursor: default; }
+  form { flex: 1; display: flex; position: relative; }
+  input {
+    flex: 1; height: 30px; padding: 0 12px; border-radius: 15px;
+    border: 1px solid var(--border); background: var(--field); color: var(--fg);
+    font: inherit; outline: none;
+  }
+  input:focus { border-color: var(--accent); }
+  #bar {
+    position: absolute; left: 14px; right: 14px; bottom: 0; height: 2px;
+    background: var(--accent); transform: scaleX(0); transform-origin: left;
+    transition: transform .4s ease, opacity .3s;
+  }
+  body.loading #bar { transform: scaleX(.8); transition: transform 4s ease-out; }
+</style>
+</head>
+<body>
+  <button id="back" title="Back (Alt+Left)">&#x2190;</button>
+  <button id="forward" title="Forward (Alt+Right)">&#x2192;</button>
+  <button id="reload" title="Reload (F5)">&#x21bb;</button>
+  <button id="home" title="Home (Alt+Home)">&#x2302;</button>
+  <form id="form">
+    <input id="url" spellcheck="false" autocomplete="off" placeholder="Search or enter address">
+    <div id="bar"></div>
+  </form>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const send = (msg) => window.ipc.postMessage(msg);
+  const url = $("url");
+
+  $("back").onclick = () => send("back");
+  $("forward").onclick = () => send("forward");
+  $("reload").onclick = () => send(document.body.classList.contains("loading") ? "stop" : "reload");
+  $("home").onclick = () => send("home");
+  $("form").onsubmit = (e) => {
+    e.preventDefault();
+    if (url.value.trim()) send("nav:" + url.value.trim());
+    url.blur();
+  };
+  url.onfocus = () => url.select();
+  url.onkeydown = (e) => { if (e.key === "Escape") { url.value = url.dataset.current || ""; url.blur(); } };
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "F5" || (e.ctrlKey && e.key === "r")) { e.preventDefault(); send("reload"); }
+    else if (e.altKey && e.key === "ArrowLeft") { e.preventDefault(); send("back"); }
+    else if (e.altKey && e.key === "ArrowRight") { e.preventDefault(); send("forward"); }
+  });
+
+  // Called from Rust.
+  window.browsecraft = {
+    setUrl(u) {
+      url.dataset.current = u;
+      if (document.activeElement !== url) url.value = u;
+    },
+    setLoading(on) {
+      document.body.classList.toggle("loading", on);
+      $("reload").innerHTML = on ? "&#x2715;" : "&#x21bb;";
+      $("reload").title = on ? "Stop" : "Reload (F5)";
+    },
+    focusUrl() { url.focus(); url.select(); },
+  };
+</script>
+</body>
+</html>
