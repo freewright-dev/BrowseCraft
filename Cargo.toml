@@ -3,14 +3,18 @@ name = "browsecraft"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-serde_json = "1.0.152"
-tao = "0.37"
-wry = "0.57"
-
 [profile.release]
 opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[dependencies]
+arboard = { version = "3", default-features = false }
+fontdue = "0.9"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+softbuffer = "0.4"
+ureq = "3"
+url = "2"
+winit = "0.30"

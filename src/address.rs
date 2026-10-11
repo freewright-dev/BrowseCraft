@@ -1,6 +1,7 @@
 //! Turns whatever the user typed into the address bar into a URL.
 
-const SEARCH_URL: &str = "https://duckduckgo.com/?q=";
+/// DuckDuckGo's HTML-only endpoint, which works without JavaScript.
+const SEARCH_URL: &str = "https://html.duckduckgo.com/html/?q=";
 
 /// Resolves address-bar input to a URL: full URLs pass through, bare hosts
 /// get a scheme, and anything else becomes a web search.
@@ -100,10 +101,10 @@ mod tests {
 
     #[test]
     fn searches_everything_else() {
-        assert_eq!(resolve("rust webview"), "https://duckduckgo.com/?q=rust+webview");
-        assert_eq!(resolve("c++"), "https://duckduckgo.com/?q=c%2B%2B");
-        assert_eq!(resolve("hello"), "https://duckduckgo.com/?q=hello");
-        assert_eq!(resolve("1.5"), "https://duckduckgo.com/?q=1.5");
-        assert_eq!(resolve("what is example.com"), "https://duckduckgo.com/?q=what+is+example.com");
+        assert_eq!(resolve("rust webview"), "https://html.duckduckgo.com/html/?q=rust+webview");
+        assert_eq!(resolve("c++"), "https://html.duckduckgo.com/html/?q=c%2B%2B");
+        assert_eq!(resolve("hello"), "https://html.duckduckgo.com/html/?q=hello");
+        assert_eq!(resolve("1.5"), "https://html.duckduckgo.com/html/?q=1.5");
+        assert_eq!(resolve("what is example.com"), "https://html.duckduckgo.com/html/?q=what+is+example.com");
     }
 }

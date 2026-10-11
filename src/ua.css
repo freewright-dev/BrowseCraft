@@ -1,0 +1,62 @@
+/* Browsecraft's default stylesheet, loosely following the HTML spec's
+   rendering section. */
+
+html, address, blockquote, body, center, dialog, div, figure, figcaption, footer, form,
+header, hr, legend, listing, main, p, plaintext, pre, xmp, search, article, aside, h1, h2,
+h3, h4, h5, h6, hgroup, nav, section, dir, dd, dl, dt, menu, ol, ul, fieldset, details,
+summary, optgroup, caption, noscript { display: block }
+
+head, script, style, link, meta, title, template, noembed, noframes, param, datalist, area,
+base, iframe, col, colgroup, rp, source, track, svg, canvas, video, audio, object, embed,
+map, dialog:not([open]), [hidden], input[type=hidden] { display: none }
+
+li { display: list-item }
+table { display: table; border-spacing: 2px; box-sizing: border-box; text-indent: 0 }
+thead, tbody, tfoot { display: table-row-group }
+tr { display: table-row }
+td, th { display: table-cell; padding: 1px; vertical-align: middle }
+th { font-weight: bold; text-align: center }
+caption { text-align: center }
+
+body { margin: 8px }
+p, dl, multicol { margin: 1em 0 }
+blockquote, figure { margin: 1em 40px }
+dd { margin-left: 40px }
+address, i, em, cite, var, dfn { font-style: italic }
+h1 { font-size: 2em; margin: 0.67em 0; font-weight: bold }
+h2 { font-size: 1.5em; margin: 0.83em 0; font-weight: bold }
+h3 { font-size: 1.17em; margin: 1em 0; font-weight: bold }
+h4 { font-size: 1em; margin: 1.33em 0; font-weight: bold }
+h5 { font-size: 0.83em; margin: 1.67em 0; font-weight: bold }
+h6 { font-size: 0.67em; margin: 2.33em 0; font-weight: bold }
+b, strong, dt { font-weight: bold }
+ul, ol, menu, dir { margin: 1em 0; padding-left: 40px }
+ul, menu, dir { list-style-type: disc }
+ol { list-style-type: decimal }
+ul ul, ol ul, menu ul { list-style-type: circle }
+ul ul ul, ol ul ul, ol ol ul, ul ol ul { list-style-type: square }
+ul ul, ul ol, ol ul, ol ol { margin-top: 0; margin-bottom: 0 }
+pre, code, kbd, samp, tt, xmp, listing, plaintext { font-family: monospace }
+pre, xmp, listing, plaintext { white-space: pre; margin: 1em 0 }
+textarea { white-space: pre-wrap }
+small, sub, sup { font-size: smaller }
+big { font-size: larger }
+u, ins, abbr[title] { text-decoration: underline }
+s, strike, del { text-decoration: line-through }
+center { text-align: -webkit-center }
+mark { background-color: yellow; color: black }
+hr { border: 1px inset #c0c0c0; margin: 0.5em auto; height: 0 }
+a:link { color: #0000ee; text-decoration: underline }
+fieldset { margin: 0 2px; padding: 0.35em 0.75em 0.625em; border: 2px groove #c0c0c0 }
+legend { padding: 0 2px }
+nobr { white-space: nowrap }
+details:not([open]) > :not(summary) { display: none }
+summary { display: list-item; list-style-type: disc }
+
+img, input, button, select, textarea, meter, progress { display: inline-block }
+input, select, textarea, button { font-size: 13.333px; font-family: sans-serif; line-height: normal; text-indent: 0; text-align: left; color: black; white-space: nowrap }
+input, select, textarea { border: 1px solid #767676; padding: 1px 2px; background-color: white; border-radius: 2px }
+button, input[type=submit], input[type=button], input[type=reset], select { padding: 1px 6px; border: 1px solid #767676; background-color: #efefef; border-radius: 3px; text-align: center }
+input[type=checkbox], input[type=radio] { margin: 3px 3px 3px 4px; padding: 0; border: 1px solid #767676 }
+input[type=image] { border: 0; padding: 0; background-color: transparent }
+textarea { white-space: pre-wrap }

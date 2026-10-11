@@ -3,13 +3,10 @@
 ## Requirements
 
 - Rust 1.85 or newer (the crate uses the 2024 edition)
-- Windows: the WebView2 runtime, which ships with Windows 10 and 11
-- macOS: nothing extra
-- Linux: WebKitGTK and GTK development packages, for example on Debian/Ubuntu:
+- System fonts: Segoe UI or Arial on Windows, Arial on macOS, DejaVu or Liberation fonts on Linux
+- Linux: the usual X11/Wayland development libraries that winit needs
 
-  ```sh
-  sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev
-  ```
+There is no web engine dependency.
 
 ## Build and run
 
@@ -19,7 +16,18 @@ cargo run -- example.com        # open a URL
 cargo build --release           # optimized binary in target/release/
 ```
 
-Release builds on Windows use the GUI subsystem, so no console window opens. Debug builds keep the console, so errors from `run_command()` are visible.
+Release builds on Windows use the GUI subsystem, so no console window opens.
+Layout is much faster in release builds; use them to judge performance.
+
+## Headless screenshots
+
+```sh
+cargo run --release -- --screenshot out.png https://news.ycombinator.com/ 1200
+```
+
+This loads the page and all its images, then renders the full page (up to
+6000 px tall) at the given width to a PNG. It runs the same style, layout and
+paint code as the window, so it's the quickest way to check a rendering change.
 
 ## Tests
 
@@ -27,13 +35,17 @@ Release builds on Windows use the GUI subsystem, so no console window opens. Deb
 cargo test
 ```
 
-The tests in `src/address.rs` cover address bar input. Add a case there when you change the rules in [usage.md](usage.md#address-bar).
+Unit tests live next to the code: HTML parsing (`html.rs`), selectors, values
+and media queries (`css.rs`), the cascade (`style.rs`), data URLs and charsets
+(`net.rs`), text editing (`textfield.rs`) and address-bar rules (`address.rs`).
 
 ## Common changes
 
-- **Home page or search engine:** `HOME_URL` in `src/main.rs`, `SEARCH_URL` in `src/address.rs`.
-- **New toolbar button:** add the button and a `send("...")` call in `src/toolbar.html`, then a match arm in `run_command()`.
-- **New shortcut:** add it to `CONTENT_INIT_SCRIPT` so it works when the page has focus, and to the `keydown` handler in `toolbar.html` so it works in the toolbar.
-- **Toolbar height:** `TOOLBAR_HEIGHT` in `src/main.rs`, in logical pixels.
+- **Default styles:** `src/ua.css`.
+- **A new CSS property:** add it to `Style` and `apply()` in `style.rs` (and to `expand_shorthand()` if it is a shorthand), then use it in `layout.rs`.
+- **Home page:** `src/home.html`. **Search engine:** `SEARCH_URL` in `src/address.rs`.
+- **Fonts:** the file lists in `src/font.rs`.
+- **Toolbar:** `draw_toolbar()`, `button_rect()` and `click()` in `src/browser.rs`.
+- **Shortcuts:** `Browser::key()` in `src/browser.rs`.
 
-See [architecture.md](architecture.md) for how the pieces fit together.
+See [architecture.md](architecture.md) for how the stages fit together.
