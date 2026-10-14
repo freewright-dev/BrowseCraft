@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Replaced the system WebView (wry/tao) with Browsecraft's own Rust rendering engine: HTML parser, CSS parser and cascade, layout (block, inline, floats, flexbox, tables, positioning), and a software rasterizer, shown through winit and softbuffer.
+- Renamed the project from Prowl to Prowl. The binary is now `prowl` and the repository moved to `pierruno-labs/prowl`.
+- Replaced the system WebView (wry/tao) with its own Rust rendering engine: HTML parser, CSS parser and cascade, layout (block, inline, floats, flexbox, tables, positioning), and a software rasterizer, shown through winit and softbuffer.
 - The toolbar is now drawn by the engine instead of an HTML toolbar webview.
 - Searches use DuckDuckGo's HTML version, which works without JavaScript.
 - The start page is the built-in `about:home`.

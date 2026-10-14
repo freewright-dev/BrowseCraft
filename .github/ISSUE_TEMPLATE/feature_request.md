@@ -4,6 +4,6 @@ about: Suggest a new feature or CSS/HTML support
 labels: enhancement
 ---
 
-**What would you like Browsecraft to do?**
+**What would you like Prowl to do?**
 
 **Why is it useful?** (an example page that needs it is great)

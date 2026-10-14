@@ -3,17 +3,17 @@
 ## Starting the browser
 
 ```sh
-browsecraft                 # opens the start page
-browsecraft example.com     # opens a URL
-browsecraft "rust browser"  # runs a search
-browsecraft --screenshot out.png example.com 1200   # renders to a PNG
+prowl                 # opens the start page
+prowl example.com     # opens a URL
+prowl "rust browser"  # runs a search
+prowl --screenshot out.png example.com 1200   # renders to a PNG
 ```
 
 The command-line argument is read the same way as text typed into the address bar.
 
 ## Address bar
 
-Press `Enter` to go. Browsecraft decides what the text means using these rules, in order:
+Press `Enter` to go. Prowl decides what the text means using these rules, in order:
 
 | Input                                                  | Result                  |
 | ------------------------------------------------------ | ----------------------- |
@@ -61,4 +61,4 @@ Click a text field to type in it. `Enter` submits the form and `Tab` moves to th
 
 ## Links and new windows
 
-Links with `target="_blank"` open in the current view. `javascript:` and `mailto:` links are ignored. Browsecraft has a single window and no tabs.
+Links with `target="_blank"` open in the current view. `javascript:` and `mailto:` links are ignored. Prowl has a single window and no tabs.

@@ -110,7 +110,7 @@ fn load_page(request: &Request) -> Page {
     };
     let resp = match net::fetch(&url, form, ACCEPT_HTML) {
         Ok(resp) => resp,
-        Err(e) => return error_page(raw, &format!("Browsecraft could not load this page: {e}.")),
+        Err(e) => return error_page(raw, &format!("Prowl could not load this page: {e}.")),
     };
 
     let mime = resp.content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();

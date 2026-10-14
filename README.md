@@ -1,7 +1,11 @@
-<p align="center"><img src="assets/logo-wordmark.png" alt="Browsecraft" width="480"></p>
+<p align="center"><img src="assets/logo.png" alt="" width="160"></p>
+
+<h1 align="center">Prowl</h1>
+
+<p align="center">Part of <a href="https://github.com/pierruno-labs">Pierruno Labs</a></p>
 
 A small web browser written in Rust with **its own rendering engine**. It
-doesn't use a WebView or any system web engine: Browsecraft parses HTML and CSS,
+doesn't use a WebView or any system web engine: Prowl parses HTML and CSS,
 runs the cascade, lays out the page and rasterizes it in software.
 
 ```
