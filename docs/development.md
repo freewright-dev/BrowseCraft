@@ -2,11 +2,17 @@
 
 ## Requirements
 
-- Rust 1.85 or newer (the crate uses the 2024 edition)
+- Rust 1.95 or newer with the MSVC toolchain (the crate uses the 2024 edition,
+  and the egui 0.36 dependency needs Rust 1.95)
+- Visual Studio Build Tools with the "Desktop development with C++" workload
+  (for the MSVC linker)
+- The WebView2 runtime at run time (already part of Windows 11 and current
+  Windows 10)
 - System fonts: Segoe UI or Arial on Windows, Arial on macOS, DejaVu or Liberation fonts on Linux
-- Linux: the usual X11/Wayland development libraries that winit needs
 
-There is no web engine dependency.
+Prowl is developed and tested on Windows; CI runs only on `windows-latest`.
+`about:`, `view-source:` and `prowl:` pages render in Prowl's own engine;
+everything else renders in an embedded WebView2 pane via the `wry` crate.
 
 ## Build and run
 
@@ -16,8 +22,43 @@ cargo run -- example.com        # open a URL
 cargo build --release           # optimized binary in target/release/
 ```
 
-Release builds on Windows use the GUI subsystem, so no console window opens.
+Release builds on Windows use the GUI subsystem, so no console window opens
+(debug builds keep one, so `eprintln!` output is visible).
 Layout is much faster in release builds; use them to judge performance.
+The release profile optimises for size (`opt-level = "z"`) with LTO, one
+codegen unit, `panic = "abort"` and stripped symbols, so the first release
+build takes a few minutes.
+
+### build.bat
+
+On Windows, `build.bat` wraps the same steps:
+
+```bat
+build.bat              :: optimised release build -> dist\prowl.exe
+build.bat debug        :: faster build with a console window for eprintln!
+build.bat test         :: run the unit tests instead of building
+build.bat clean        :: remove target\ and dist\
+build.bat run          :: start the browser after a successful build
+```
+
+It checks that `rustc` is 1.95 or newer (and runs `rustup update stable` if
+not), builds, then copies the executable to `dist\prowl.exe` and the
+`filters\` folder to `dist\filters\`. Set `NOPAUSE=1` to skip the closing
+`pause`.
+
+## Ad-block filter lists
+
+A small starter list is built into `src/adblock.rs`. On top of that, every
+`*.txt` file in a `filters/` folder in the working directory or next to the
+executable is merged in at startup (EasyList/uBlock Origin syntax; regex,
+`$redirect`, `$csp`, `$replace`, scriptlet and procedural rules are dropped).
+To add a list, drop it into `filters/` (the repo ships `filters/basic.txt`)
+and restart; `build.bat` copies the folder into `dist\`.
+
+## Flags
+
+Settings from `prowl://flags` are saved as `key=value` lines in `flags.txt` in
+the working directory (ignored by git).
 
 ## Headless screenshots
 
@@ -25,7 +66,9 @@ Layout is much faster in release builds; use them to judge performance.
 cargo run --release -- --screenshot out.png https://news.ycombinator.com/ 1200
 ```
 
-This loads the page and all its images, then renders the full page (up to
+This runs without a window (see `src/headless.rs`); the width is optional and
+defaults to 1200. It always uses Prowl's own engine, never WebView2. It loads
+the page and all its images, then renders the full page (up to
 6000 px tall) at the given width to a PNG. It runs the same style, layout and
 paint code as the window, so it's the quickest way to check a rendering change.
 
@@ -35,12 +78,17 @@ paint code as the window, so it's the quickest way to check a rendering change.
 cargo test
 ```
 
+CI (`.github/workflows/ci.yml`) runs `cargo build --locked` and
+`cargo test --locked` on `windows-latest` for every pull request and every
+push to `main`.
+
 Unit tests live next to the code: HTML parsing (`html.rs`), selectors, values
 and media queries (`css.rs`), the cascade (`style.rs`), data URLs and charsets
 (`net.rs`), text editing (`textfield.rs`), address-bar rules (`address.rs`),
-ad blocking (`adblock.rs`), flags and the `flags.txt` store (`flags.rs`) and
-glyph coverage (`font.rs`). The `flags.rs` tests share a global store and file,
-so they serialise on a mutex.
+ad blocking (`adblock.rs`), flags and the `flags.txt` store (`flags.rs`),
+glyph coverage (`font.rs`), the history store (`history.rs`), and WebView2
+routing, zoom steps, shortcuts and form submission (`browser.rs`). The
+`flags.rs` tests share a global store and file, so they serialise on a mutex.
 
 ## Common changes
 
@@ -48,9 +96,11 @@ so they serialise on a mutex.
 - **A new CSS property:** add it to `Style` and `apply()` in `style.rs` (and to `expand_shorthand()` if it is a shorthand), then use it in `layout.rs`.
 - **Home page:** `src/home.html`. **Search engine:** `SEARCH_URL` in `src/address.rs`.
 - **Fonts:** the file lists in `src/font.rs`.
-- **Toolbar / sidebar:** `draw_toolbar()`, `draw_sidebar()`, `button_rect()` and `click()` in `src/browser.rs`.
+- **Toolbar / sidebar:** engine chrome in `draw_toolbar()`, `draw_sidebar()`, `button_rect()`, `click_toolbar()` and `click_sidebar()` in `src/browser.rs`; egui chrome in `build_egui_chrome()` in `src/browser.rs` and the widgets in `src/egui_chrome.rs`. Change both.
+- **Which pages use WebView2:** `request_in_webview()` in `src/browser.rs`.
+- **Ad blocking:** `src/adblock.rs` (`load_default()`, built-in `START_LIST`); extra lists in `filters/`.
 - **Tabs:** `TabState`, `park_active_tab`/`activate_pantry`/`switch_tab`/`new_tab`/`close_tab` in `src/browser.rs`.
-- **Flags / settings page:** `src/flags.rs` (`prowl://flags` HTML in `page_html()`); routing in `src/loader.rs`.
+- **Flags / settings page:** `src/flags.rs` (`prowl://flags` HTML in `page_html()`); routing in `src/loader.rs`. **History page:** `src/history.rs`.
 - **Icons:** Phosphor codepoints in `src/icons.rs` (font embedded via the `egui-phosphor` crate), loaded as `Family::Icon` in `src/font.rs`.
 - **Shortcuts:** `Browser::key()` in `src/browser.rs`.
 
