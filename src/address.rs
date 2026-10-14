@@ -1,7 +1,7 @@
 //! Turns whatever the user typed into the address bar into a URL.
 
-/// DuckDuckGo's HTML-only endpoint, which works without JavaScript.
-const SEARCH_URL: &str = "https://html.duckduckgo.com/html/?q=";
+/// Startpage's search endpoint (the browser's default search engine).
+const SEARCH_URL: &str = "https://www.startpage.com/sp/search?query=";
 
 /// Resolves address-bar input to a URL: full URLs pass through, bare hosts
 /// get a scheme, and anything else becomes a web search.
@@ -12,12 +12,13 @@ pub fn resolve(input: &str) -> String {
         return input.to_string();
     }
     if !input.contains(char::is_whitespace) {
-        let host = input
-            .split(['/', '?', '#'])
-            .next()
-            .unwrap_or_default();
+        let host = input.split(['/', '?', '#']).next().unwrap_or_default();
         let hostname = host.rsplit_once(':').map_or(host, |(name, port)| {
-            if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) { name } else { host }
+            if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) {
+                name
+            } else {
+                host
+            }
         });
 
         if hostname == "localhost" || is_ipv4(hostname) {
@@ -33,10 +34,11 @@ pub fn resolve(input: &str) -> String {
 
 fn has_scheme(input: &str) -> bool {
     if input.contains("://") {
-        return input
-            .split("://")
-            .next()
-            .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"+-.".contains(&b)));
+        return input.split("://").next().is_some_and(|s| {
+            !s.is_empty()
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"+-.".contains(&b))
+        });
     }
     ["about:", "data:", "file:", "view-source:"]
         .iter()
@@ -80,7 +82,10 @@ mod tests {
 
     #[test]
     fn keeps_full_urls() {
-        assert_eq!(resolve("https://example.com/a?b=c"), "https://example.com/a?b=c");
+        assert_eq!(
+            resolve("https://example.com/a?b=c"),
+            "https://example.com/a?b=c"
+        );
         assert_eq!(resolve("  http://example.com  "), "http://example.com");
         assert_eq!(resolve("about:blank"), "about:blank");
         assert_eq!(resolve("file:///C:/index.html"), "file:///C:/index.html");
@@ -101,10 +106,25 @@ mod tests {
 
     #[test]
     fn searches_everything_else() {
-        assert_eq!(resolve("rust webview"), "https://html.duckduckgo.com/html/?q=rust+webview");
-        assert_eq!(resolve("c++"), "https://html.duckduckgo.com/html/?q=c%2B%2B");
-        assert_eq!(resolve("hello"), "https://html.duckduckgo.com/html/?q=hello");
-        assert_eq!(resolve("1.5"), "https://html.duckduckgo.com/html/?q=1.5");
-        assert_eq!(resolve("what is example.com"), "https://html.duckduckgo.com/html/?q=what+is+example.com");
+        assert_eq!(
+            resolve("rust webview"),
+            "https://www.startpage.com/sp/search?query=rust+webview"
+        );
+        assert_eq!(
+            resolve("c++"),
+            "https://www.startpage.com/sp/search?query=c%2B%2B"
+        );
+        assert_eq!(
+            resolve("hello"),
+            "https://www.startpage.com/sp/search?query=hello"
+        );
+        assert_eq!(
+            resolve("1.5"),
+            "https://www.startpage.com/sp/search?query=1.5"
+        );
+        assert_eq!(
+            resolve("what is example.com"),
+            "https://www.startpage.com/sp/search?query=what+is+example.com"
+        );
     }
 }

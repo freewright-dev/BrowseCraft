@@ -2,12 +2,14 @@
 
 pub type NodeId = usize;
 
+#[derive(Clone, Debug)]
 pub enum NodeKind {
     Document,
     Element(Element),
     Text(String),
 }
 
+#[derive(Clone, Debug)]
 pub struct Element {
     pub tag: String,
     pub attrs: Vec<(String, String)>,
@@ -15,7 +17,10 @@ pub struct Element {
 
 impl Element {
     pub fn attr(&self, name: &str) -> Option<&str> {
-        self.attrs.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
+        self.attrs
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
     }
 
     pub fn id(&self) -> Option<&str> {
@@ -55,12 +60,14 @@ impl Element {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Node {
     pub kind: NodeKind,
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
 }
 
+#[derive(Clone, Debug)]
 pub struct Document {
     pub nodes: Vec<Node>,
     /// No `<!doctype html>`: legacy rendering rules apply.
@@ -72,14 +79,22 @@ impl Document {
 
     pub fn new() -> Self {
         Document {
-            nodes: vec![Node { kind: NodeKind::Document, parent: None, children: Vec::new() }],
+            nodes: vec![Node {
+                kind: NodeKind::Document,
+                parent: None,
+                children: Vec::new(),
+            }],
             quirks: true,
         }
     }
 
     pub fn append(&mut self, parent: NodeId, kind: NodeKind) -> NodeId {
         let id = self.nodes.len();
-        self.nodes.push(Node { kind, parent: Some(parent), children: Vec::new() });
+        self.nodes.push(Node {
+            kind,
+            parent: Some(parent),
+            children: Vec::new(),
+        });
         self.nodes[parent].children.push(id);
         id
     }
@@ -112,15 +127,25 @@ impl Document {
             .parent
             .map_or(&[][..], |p| self.nodes[p].children.as_slice());
         let pos = siblings.iter().position(|&s| s == id).unwrap_or(0);
-        siblings[..pos].iter().rev().copied().filter(|&s| self.element(s).is_some())
+        siblings[..pos]
+            .iter()
+            .rev()
+            .copied()
+            .filter(|&s| self.element(s).is_some())
     }
 
     pub fn next_elements(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
         let siblings = self.nodes[id]
             .parent
             .map_or(&[][..], |p| self.nodes[p].children.as_slice());
-        let pos = siblings.iter().position(|&s| s == id).map_or(siblings.len(), |p| p + 1);
-        siblings[pos..].iter().copied().filter(|&s| self.element(s).is_some())
+        let pos = siblings
+            .iter()
+            .position(|&s| s == id)
+            .map_or(siblings.len(), |p| p + 1);
+        siblings[pos..]
+            .iter()
+            .copied()
+            .filter(|&s| self.element(s).is_some())
     }
 
     pub fn ancestors(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
@@ -139,7 +164,9 @@ impl Document {
     }
 
     pub fn find_tag(&self, tag: &str) -> Option<NodeId> {
-        self.descendants(Self::ROOT).into_iter().find(|&n| self.tag(n) == tag)
+        self.descendants(Self::ROOT)
+            .into_iter()
+            .find(|&n| self.tag(n) == tag)
     }
 
     /// Concatenated text of every text node below `id`.
@@ -154,7 +181,10 @@ impl Document {
     }
 
     pub fn title(&self) -> String {
-        let title = self.find_tag("title").map(|t| self.text_content(t)).unwrap_or_default();
+        let title = self
+            .find_tag("title")
+            .map(|t| self.text_content(t))
+            .unwrap_or_default();
         title.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
@@ -166,7 +196,8 @@ impl Document {
             .find(|&n| self.element(n).and_then(Element::id) == Some(name))
             .or_else(|| {
                 all.iter().copied().find(|&n| {
-                    self.element(n).is_some_and(|e| e.tag == "a" && e.attr("name") == Some(name))
+                    self.element(n)
+                        .is_some_and(|e| e.tag == "a" && e.attr("name") == Some(name))
                 })
             })
     }

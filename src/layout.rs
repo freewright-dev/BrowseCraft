@@ -32,10 +32,29 @@ impl Rect {
 }
 
 pub enum Item {
-    Fill { rect: Rect, color: Color, radius: f32 },
-    Border { rect: Rect, widths: [f32; 4], colors: [Color; 4], radius: f32 },
-    Text { x: f32, y: f32, text: String, font: FontKey, size: f32, color: Color },
-    Image { rect: Rect, src: Rc<str> },
+    Fill {
+        rect: Rect,
+        color: Color,
+        radius: f32,
+    },
+    Border {
+        rect: Rect,
+        widths: [f32; 4],
+        colors: [Color; 4],
+        radius: f32,
+    },
+    Text {
+        x: f32,
+        y: f32,
+        text: String,
+        font: FontKey,
+        size: f32,
+        color: Color,
+    },
+    Image {
+        rect: Rect,
+        src: Rc<str>,
+    },
     PushClip(Rect),
     PopClip,
 }
@@ -60,7 +79,9 @@ impl Item {
 
     fn rect_mut(&mut self) -> Option<&mut Rect> {
         match self {
-            Item::Fill { rect, .. } | Item::Border { rect, .. } | Item::PushClip(rect) => Some(rect),
+            Item::Fill { rect, .. } | Item::Border { rect, .. } | Item::PushClip(rect) => {
+                Some(rect)
+            }
             _ => None,
         }
     }
@@ -100,7 +121,9 @@ impl FormState {
         if let Some(v) = self.values.get(&node) {
             return v;
         }
-        let Some(el) = doc.element(node) else { return "" };
+        let Some(el) = doc.element(node) else {
+            return "";
+        };
         match el.tag.as_str() {
             "textarea" => doc.nodes[node]
                 .children
@@ -115,10 +138,10 @@ impl FormState {
     }
 
     pub fn is_checked(&self, doc: &Document, node: NodeId) -> bool {
-        self.checked
-            .get(&node)
-            .copied()
-            .unwrap_or_else(|| doc.element(node).is_some_and(|e| e.attr("checked").is_some()))
+        self.checked.get(&node).copied().unwrap_or_else(|| {
+            doc.element(node)
+                .is_some_and(|e| e.attr("checked").is_some())
+        })
     }
 }
 
@@ -158,12 +181,19 @@ pub fn layout(input: &LayoutInput) -> Layout {
     engine.out.background = if html_bg.a > 0 {
         html_bg
     } else {
-        body.map(|b| input.styles[b].background).filter(|c| c.a > 0).unwrap_or(Color::WHITE)
+        body.map(|b| input.styles[b].background)
+            .filter(|c| c.a > 0)
+            .unwrap_or(Color::WHITE)
     };
 
     let size = engine.block(html, 0.0, 0.0, input.viewport_width, Sizing::Fill, None);
     let pending = engine.abs_stack.pop().unwrap_or_default();
-    let viewport = Rect { x: 0.0, y: 0.0, w: input.viewport_width, h: input.viewport_height };
+    let viewport = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: input.viewport_width,
+        h: input.viewport_height,
+    };
     engine.place_absolutes(pending, viewport);
     engine.out.height = engine.out.height.max(size.margin_h());
     engine.out.width = engine.out.width.max(size.w);
@@ -221,8 +251,16 @@ struct InlineBg {
 }
 
 enum InlineItem {
-    Text { node: NodeId, text: String, link: Option<Rc<str>>, bg: Option<InlineBg> },
-    Atomic { node: NodeId, link: Option<Rc<str>> },
+    Text {
+        node: NodeId,
+        text: String,
+        link: Option<Rc<str>>,
+        bg: Option<InlineBg>,
+    },
+    Atomic {
+        node: NodeId,
+        link: Option<Rc<str>>,
+    },
     Break,
     Spacer(f32),
 }
@@ -274,7 +312,11 @@ fn resolve0(l: Length, base: f32) -> f32 {
 }
 
 fn font_key(style: &Style) -> FontKey {
-    FontKey { family: style.family, bold: style.bold, italic: style.italic }
+    FontKey {
+        family: style.family,
+        bold: style.bold,
+        italic: style.italic,
+    }
 }
 
 fn is_replaced(tag: &str) -> bool {
@@ -334,7 +376,11 @@ impl<'a> Engine<'a> {
     /// the item becomes an invisible placeholder, so indices stay valid.
     fn emit(&mut self, item: Item) -> usize {
         let item = if self.hidden > 0 {
-            Item::Fill { rect: Rect::default(), color: Color::TRANSPARENT, radius: 0.0 }
+            Item::Fill {
+                rect: Rect::default(),
+                color: Color::TRANSPARENT,
+                radius: 0.0,
+            }
         } else {
             item
         };
@@ -364,7 +410,15 @@ impl<'a> Engine<'a> {
 
     /// Lays out a block-level box with its margin box's top-left corner at
     /// (x, y) inside a containing block `cb_w` wide.
-    fn block(&mut self, node: NodeId, x: f32, y: f32, cb_w: f32, sizing: Sizing, forced_h: Option<f32>) -> BoxSize {
+    fn block(
+        &mut self,
+        node: NodeId,
+        x: f32,
+        y: f32,
+        cb_w: f32,
+        sizing: Sizing,
+        forced_h: Option<f32>,
+    ) -> BoxSize {
         let st = self.st(node);
         let doc = self.doc();
         let tag = doc.tag(node);
@@ -373,7 +427,11 @@ impl<'a> Engine<'a> {
         let b = st.border_width;
         let extra_w = p[1] + p[3] + b[1] + b[3];
         let extra_h = p[0] + p[2] + b[0] + b[2];
-        let natural = if is_replaced(tag) { self.natural_size(node) } else { None };
+        let natural = if is_replaced(tag) {
+            self.natural_size(node)
+        } else {
+            None
+        };
 
         let to_content = |w: f32| if st.border_box { w - extra_w } else { w };
         let mut content_w = match sizing {
@@ -386,7 +444,9 @@ impl<'a> Engine<'a> {
                         || st.display == Display::Table
                         || matches!(st.display, Display::InlineBlock | Display::InlineFlex);
                     if let Some((nw, nh)) = natural {
-                        match resolve(st.height, 0.0).filter(|_| !matches!(st.height, Length::Percent(_))) {
+                        match resolve(st.height, 0.0)
+                            .filter(|_| !matches!(st.height, Length::Percent(_)))
+                        {
                             Some(h) if nh > 0.0 => to_content_h(st, h, extra_h) * nw / nh,
                             _ => nw,
                         }
@@ -413,7 +473,9 @@ impl<'a> Engine<'a> {
         if matches!(sizing, Sizing::Fill) && st.float == Float::None {
             let free = cb_w - content_w - extra_w - m[1] - m[3];
             let (auto_l, auto_r) = (st.margin[3] == Length::Auto, st.margin[1] == Length::Auto);
-            let legacy_center = doc.parent_element(node).is_some_and(|p| self.st(p).center_blocks);
+            let legacy_center = doc
+                .parent_element(node)
+                .is_some_and(|p| self.st(p).center_blocks);
             if free > 0.0 {
                 if (auto_l && auto_r) || (legacy_center && !auto_l && !auto_r) {
                     m[3] += free / 2.0;
@@ -436,11 +498,20 @@ impl<'a> Engine<'a> {
         }
         let mut decorations = Vec::new();
         if st.background.a > 0 {
-            decorations.push(self.emit(Item::Fill { rect: Rect::default(), color: st.background, radius: st.border_radius }));
+            decorations.push(self.emit(Item::Fill {
+                rect: Rect::default(),
+                color: st.background,
+                radius: st.border_radius,
+            }));
         }
         if b.iter().any(|&w| w > 0.0) {
             let colors = std::array::from_fn(|i| st.border_color(i));
-            decorations.push(self.emit(Item::Border { rect: Rect::default(), widths: b, colors, radius: st.border_radius }));
+            decorations.push(self.emit(Item::Border {
+                rect: Rect::default(),
+                widths: b,
+                colors,
+                radius: st.border_radius,
+            }));
         }
         let clips = st.overflow_hidden && !matches!(tag, "html" | "body");
         let clip_index = clips.then(|| self.emit(Item::PushClip(Rect::default())));
@@ -451,24 +522,48 @@ impl<'a> Engine<'a> {
         }
         let saved_link = self.link.clone();
         if tag == "a"
-            && let Some(href) = doc.element(node).and_then(|e| e.attr("href")) {
-                self.link = Some(href.into());
-            }
+            && let Some(href) = doc.element(node).and_then(|e| e.attr("href"))
+        {
+            self.link = Some(href.into());
+        }
         let saved_baseline = self.first_baseline.take();
         let saved_bgs = std::mem::take(&mut self.inline_bgs);
 
         let content_h = if let Some((nw, nh)) = natural {
             // Images keep their aspect ratio; form controls keep their height.
-            let is_image = tag == "img" || doc.element(node).and_then(|e| e.attr("type")).is_some_and(|t| t.eq_ignore_ascii_case("image"));
-            let h = if is_image && nw > 0.0 { content_w * nh / nw } else { nh };
-            self.replaced_content(node, cx, cy, content_w, h, resolve(st.height, 0.0).map(|h| to_content_h(st, h, extra_h)).unwrap_or(h))
+            let is_image = tag == "img"
+                || doc
+                    .element(node)
+                    .and_then(|e| e.attr("type"))
+                    .is_some_and(|t| t.eq_ignore_ascii_case("image"));
+            let h = if is_image && nw > 0.0 {
+                content_w * nh / nw
+            } else {
+                nh
+            };
+            self.replaced_content(
+                node,
+                cx,
+                cy,
+                content_w,
+                h,
+                resolve(st.height, 0.0)
+                    .map(|h| to_content_h(st, h, extra_h))
+                    .unwrap_or(h),
+            )
         } else {
             match st.display {
                 Display::Flex | Display::InlineFlex => {
                     let definite_h = resolve(st.height, 0.0)
                         .filter(|_| !matches!(st.height, Length::Percent(_)))
                         .map(|h| to_content_h(st, h, extra_h));
-                    self.flex(node, cx, cy, content_w, definite_h.or(forced_h.map(|h| h - extra_h)))
+                    self.flex(
+                        node,
+                        cx,
+                        cy,
+                        content_w,
+                        definite_h.or(forced_h.map(|h| h - extra_h)),
+                    )
                 }
                 Display::Table => self.table(node, cx, cy, content_w),
                 _ => self.flow(node, cx, cy, content_w),
@@ -483,14 +578,23 @@ impl<'a> Engine<'a> {
             }
             _ => content_h,
         };
-        if let Some(max) = resolve(st.max_height, 0.0).filter(|_| !matches!(st.max_height, Length::Percent(_))) {
+        if let Some(max) =
+            resolve(st.max_height, 0.0).filter(|_| !matches!(st.max_height, Length::Percent(_)))
+        {
             h = h.min(to_content_h(st, max, extra_h));
         }
-        if let Some(min) = resolve(st.min_height, 0.0).filter(|_| !matches!(st.min_height, Length::Percent(_))) {
+        if let Some(min) =
+            resolve(st.min_height, 0.0).filter(|_| !matches!(st.min_height, Length::Percent(_)))
+        {
             h = h.max(to_content_h(st, min, extra_h));
         }
         h = h.max(0.0);
-        let border_box = Rect { x: bx, y: by, w: content_w + extra_w, h: h + extra_h };
+        let border_box = Rect {
+            x: bx,
+            y: by,
+            w: content_w + extra_w,
+            h: h + extra_h,
+        };
 
         for &i in &decorations {
             if let Some(r) = self.out.items[i].rect_mut() {
@@ -509,13 +613,19 @@ impl<'a> Engine<'a> {
         }
         if positioned {
             let pending = self.abs_stack.pop().unwrap_or_default();
-            let padding_box = Rect { x: bx + b[3], y: by + b[0], w: content_w + p[1] + p[3], h: h + p[0] + p[2] };
+            let padding_box = Rect {
+                x: bx + b[3],
+                y: by + b[0],
+                w: content_w + p[1] + p[3],
+                h: h + p[0] + p[2],
+            };
             self.place_absolutes(pending, padding_box);
         }
         if let (Some(link), Some(_)) = (&self.link, doc.element(node))
-            && (tag == "a" || saved_link.is_some()) {
-                self.out.links.push((border_box, link.clone()));
-            }
+            && (tag == "a" || saved_link.is_some())
+        {
+            self.out.links.push((border_box, link.clone()));
+        }
         if matches!(tag, "button" | "summary") {
             self.out.controls.push(Control {
                 rect: border_box,
@@ -527,9 +637,10 @@ impl<'a> Engine<'a> {
             });
         }
         if let Some(el) = doc.element(node)
-            && (el.id().is_some() || (tag == "a" && el.attr("name").is_some())) {
-                self.out.anchors.push((node, by));
-            }
+            && (el.id().is_some() || (tag == "a" && el.attr("name").is_some()))
+        {
+            self.out.anchors.push((node, by));
+        }
 
         self.link = saved_link;
         let baseline = self.first_baseline;
@@ -540,8 +651,12 @@ impl<'a> Engine<'a> {
         }
 
         if st.position == Position::Relative || st.position == Position::Sticky {
-            let dx = resolve(st.inset[3], cb_w).or(resolve(st.inset[1], cb_w).map(|r| -r)).unwrap_or(0.0);
-            let dy = resolve(st.inset[0], 0.0).or(resolve(st.inset[2], 0.0).map(|b| -b)).unwrap_or(0.0);
+            let dx = resolve(st.inset[3], cb_w)
+                .or(resolve(st.inset[1], cb_w).map(|r| -r))
+                .unwrap_or(0.0);
+            let dy = resolve(st.inset[0], 0.0)
+                .or(resolve(st.inset[2], 0.0).map(|b| -b))
+                .unwrap_or(0.0);
             if st.position == Position::Relative {
                 self.translate_since(start, dx, dy);
             }
@@ -549,7 +664,13 @@ impl<'a> Engine<'a> {
 
         self.out.width = self.out.width.max(border_box.x + border_box.w);
         self.out.height = self.out.height.max(border_box.y + border_box.h);
-        BoxSize { w: content_w + extra_w + m[1] + m[3], h: h + extra_h, mt: m[0], mb: m[2], decorations }
+        BoxSize {
+            w: content_w + extra_w + m[1] + m[3],
+            h: h + extra_h,
+            mt: m[0],
+            mb: m[2],
+            decorations,
+        }
     }
 
     fn place_absolutes(&mut self, pending: Vec<Pending>, cb: Rect) {
@@ -593,12 +714,25 @@ impl<'a> Engine<'a> {
                 .and_then(|s| s.trim().parse().ok())
                 .unwrap_or(1);
             let mut n = start;
-            for sib in doc.previous_elements(node).collect::<Vec<_>>().into_iter().rev() {
+            for sib in doc
+                .previous_elements(node)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+            {
                 if doc.tag(sib) == "li" {
-                    n = doc.element(sib).and_then(|e| e.attr("value")).and_then(|v| v.parse().ok()).unwrap_or(n) + 1;
+                    n = doc
+                        .element(sib)
+                        .and_then(|e| e.attr("value"))
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(n)
+                        + 1;
                 }
             }
-            doc.element(node).and_then(|e| e.attr("value")).and_then(|v| v.parse().ok()).unwrap_or(n)
+            doc.element(node)
+                .and_then(|e| e.attr("value"))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(n)
         };
         let text = match st.list_style {
             ListStyle::None => return,
@@ -671,13 +805,18 @@ impl<'a> Engine<'a> {
     fn image_size(&self, node: NodeId) -> (f32, f32) {
         let zoom = self.input.zoom;
         let el = self.doc().element(node);
-        let image = el.and_then(|e| e.image_source()).and_then(|src| self.input.images.get(src));
+        let image = el
+            .and_then(|e| e.image_source())
+            .and_then(|src| self.input.images.get(src));
         let st = self.st(node);
         match image {
             Some(img) => {
                 let (w, h) = (img.width as f32 * zoom, img.height as f32 * zoom);
                 // Honour one specified dimension and keep the aspect ratio.
-                match (resolve(st.width, 0.0).filter(|_| !matches!(st.width, Length::Percent(_))), st.height) {
+                match (
+                    resolve(st.width, 0.0).filter(|_| !matches!(st.width, Length::Percent(_))),
+                    st.height,
+                ) {
                     (Some(sw), Length::Auto) if w > 0.0 => (sw, sw * h / w),
                     _ => (w, h),
                 }
@@ -687,9 +826,19 @@ impl<'a> Engine<'a> {
     }
 
     /// Draws a replaced element into its content box and returns its height.
-    fn replaced_content(&mut self, node: NodeId, cx: f32, cy: f32, w: f32, natural_h: f32, h: f32) -> f32 {
+    fn replaced_content(
+        &mut self,
+        node: NodeId,
+        cx: f32,
+        cy: f32,
+        w: f32,
+        natural_h: f32,
+        h: f32,
+    ) -> f32 {
         let doc = self.doc();
-        let Some(el) = doc.element(node) else { return natural_h };
+        let Some(el) = doc.element(node) else {
+            return natural_h;
+        };
         let st = self.st(node);
         let key = font_key(st);
         let input_type = el.attr("type").unwrap_or("text").to_ascii_lowercase();
@@ -697,9 +846,13 @@ impl<'a> Engine<'a> {
         let is_image = el.tag == "img" || (el.tag == "input" && input_type == "image");
         if is_image {
             if let Some(src) = el.image_source()
-                && self.input.images.contains_key(src) {
-                    self.emit(Item::Image { rect, src: src.into() });
-                }
+                && self.input.images.contains_key(src)
+            {
+                self.emit(Item::Image {
+                    rect,
+                    src: src.into(),
+                });
+            }
             if el.tag == "input" {
                 self.push_control(node, rect, cx, cy, key, st.font_size);
             }
@@ -713,19 +866,37 @@ impl<'a> Engine<'a> {
         let (text, color) = match (el.tag.as_str(), input_type.as_str()) {
             ("input", "checkbox") => {
                 let checked = form.is_checked(doc, node);
-                (if checked { "✓".to_string() } else { String::new() }, st.color)
+                (
+                    if checked {
+                        "✓".to_string()
+                    } else {
+                        String::new()
+                    },
+                    st.color,
+                )
             }
             ("input", "radio") => {
                 let checked = form.is_checked(doc, node);
-                (if checked { "●".to_string() } else { String::new() }, st.color)
+                (
+                    if checked {
+                        "●".to_string()
+                    } else {
+                        String::new()
+                    },
+                    st.color,
+                )
             }
-            ("input", "submit" | "button" | "reset") => {
-                (button_label(el.attr("value"), &input_type).to_string(), st.color)
-            }
+            ("input", "submit" | "button" | "reset") => (
+                button_label(el.attr("value"), &input_type).to_string(),
+                st.color,
+            ),
             ("input", "file") => ("Choose file".to_string(), st.color),
             ("select", _) => {
-                let options: Vec<NodeId> =
-                    doc.descendants(node).into_iter().filter(|&n| doc.tag(n) == "option").collect();
+                let options: Vec<NodeId> = doc
+                    .descendants(node)
+                    .into_iter()
+                    .filter(|&n| doc.tag(n) == "option")
+                    .collect();
                 let selected = form
                     .values
                     .get(&node)
@@ -733,7 +904,9 @@ impl<'a> Engine<'a> {
                     .or_else(|| {
                         options
                             .iter()
-                            .find(|&&o| doc.element(o).is_some_and(|e| e.attr("selected").is_some()))
+                            .find(|&&o| {
+                                doc.element(o).is_some_and(|e| e.attr("selected").is_some())
+                            })
                             .or(options.first())
                             .map(|&o| doc.text_content(o).trim().to_string())
                     })
@@ -751,25 +924,53 @@ impl<'a> Engine<'a> {
                 }
             }
         };
-        let centered = matches!(input_type.as_str(), "submit" | "button" | "reset" | "checkbox" | "radio")
-            && el.tag == "input";
+        let centered = matches!(
+            input_type.as_str(),
+            "submit" | "button" | "reset" | "checkbox" | "radio"
+        ) && el.tag == "input";
         let text_w = self.fonts().measure(key, &text, st.font_size);
-        let text_x = if centered { cx + (w - text_w) / 2.0 } else { cx };
+        let text_x = if centered {
+            cx + (w - text_w) / 2.0
+        } else {
+            cx
+        };
         self.emit(Item::PushClip(rect));
         if !text.is_empty() {
-            self.emit(Item::Text { x: text_x, y: baseline, text, font: key, size: st.font_size, color });
+            self.emit(Item::Text {
+                x: text_x,
+                y: baseline,
+                text,
+                font: key,
+                size: st.font_size,
+                color,
+            });
         }
         if el.tag == "select" {
             let arrow_size = st.font_size * 0.8;
             let aw = self.fonts().measure(key, "▾", arrow_size);
-            self.emit(Item::Text { x: cx + w - aw, y: baseline, text: "▾".into(), font: key, size: arrow_size, color: st.color });
+            self.emit(Item::Text {
+                x: cx + w - aw,
+                y: baseline,
+                text: "▾".into(),
+                font: key,
+                size: arrow_size,
+                color: st.color,
+            });
         }
         self.emit(Item::PopClip);
         self.push_control(node, rect, text_x, baseline, key, st.font_size);
         h
     }
 
-    fn push_control(&mut self, node: NodeId, rect: Rect, text_x: f32, baseline: f32, font: FontKey, size: f32) {
+    fn push_control(
+        &mut self,
+        node: NodeId,
+        rect: Rect,
+        text_x: f32,
+        baseline: f32,
+        font: FontKey,
+        size: f32,
+    ) {
         let st = self.st(node);
         let p = self.paddings(st, rect.w);
         let b = st.border_width;
@@ -779,13 +980,24 @@ impl<'a> Engine<'a> {
             w: rect.w + p[1] + p[3] + b[1] + b[3],
             h: rect.h + p[0] + p[2] + b[0] + b[2],
         };
-        self.out.controls.push(Control { rect: outer, node, text_x, baseline, font, size });
+        self.out.controls.push(Control {
+            rect: outer,
+            node,
+            text_x,
+            baseline,
+            font,
+            size,
+        });
     }
 
     /// Normal flow: block children stacked vertically, runs of inline
     /// content broken into lines. Returns the content height.
     fn flow(&mut self, node: NodeId, cx: f32, cy: f32, w: f32) -> f32 {
-        let mut state = FlowState { cursor: cy, prev_mb: 0.0, inline: Vec::new() };
+        let mut state = FlowState {
+            cursor: cy,
+            prev_mb: 0.0,
+            inline: Vec::new(),
+        };
         for &child in &self.doc().nodes[node].children {
             self.flow_child(node, child, &mut state, cx, w);
         }
@@ -793,7 +1005,14 @@ impl<'a> Engine<'a> {
         state.cursor + state.prev_mb - cy
     }
 
-    fn flow_child(&mut self, container: NodeId, child: NodeId, state: &mut FlowState, cx: f32, w: f32) {
+    fn flow_child(
+        &mut self,
+        container: NodeId,
+        child: NodeId,
+        state: &mut FlowState,
+        cx: f32,
+        w: f32,
+    ) {
         let doc = self.doc();
         match &doc.nodes[child].kind {
             NodeKind::Text(text) => {
@@ -822,16 +1041,31 @@ impl<'a> Engine<'a> {
         }
         if st.is_out_of_flow() {
             let y = state.cursor + state.prev_mb;
-            let frame = if st.position == Position::Fixed { 0 } else { self.abs_stack.len() - 1 };
-            self.abs_stack[frame].push(Pending { node: child, x: cx, y });
+            let frame = if st.position == Position::Fixed {
+                0
+            } else {
+                self.abs_stack.len() - 1
+            };
+            self.abs_stack[frame].push(Pending {
+                node: child,
+                x: cx,
+                y,
+            });
             return;
         }
         if tag == "br" {
             state.inline.push(InlineItem::Break);
             return;
         }
-        if st.float != Float::None || matches!(st.display, Display::InlineBlock | Display::InlineFlex) || is_replaced(tag) || tag == "button" {
-            state.inline.push(InlineItem::Atomic { node: child, link: self.link.clone() });
+        if st.float != Float::None
+            || matches!(st.display, Display::InlineBlock | Display::InlineFlex)
+            || is_replaced(tag)
+            || tag == "button"
+        {
+            state.inline.push(InlineItem::Atomic {
+                node: child,
+                link: self.link.clone(),
+            });
             return;
         }
         if st.display.is_block_level() {
@@ -860,9 +1094,10 @@ impl<'a> Engine<'a> {
         }
         let saved_link = self.link.clone();
         if tag == "a"
-            && let Some(href) = el.attr("href") {
-                self.link = Some(href.into());
-            }
+            && let Some(href) = el.attr("href")
+        {
+            self.link = Some(href.into());
+        }
         let pushed_bg = st.background.a > 0;
         if pushed_bg {
             self.inline_bgs.push(InlineBg {
@@ -901,7 +1136,8 @@ impl<'a> Engine<'a> {
         let items = std::mem::take(&mut state.inline);
         let has_content = items.iter().any(|i| match i {
             InlineItem::Text { text, node, .. } => {
-                !self.st(*node).white_space.collapses_spaces() || text.chars().any(|c| !c.is_ascii_whitespace())
+                !self.st(*node).white_space.collapses_spaces()
+                    || text.chars().any(|c| !c.is_ascii_whitespace())
             }
             InlineItem::Atomic { .. } | InlineItem::Break => true,
             InlineItem::Spacer(_) => false,
@@ -916,7 +1152,14 @@ impl<'a> Engine<'a> {
     }
 
     /// Breaks inline content into line boxes. Returns their total height.
-    fn lines(&mut self, container: NodeId, items: Vec<InlineItem>, cx: f32, cy: f32, w: f32) -> f32 {
+    fn lines(
+        &mut self,
+        container: NodeId,
+        items: Vec<InlineItem>,
+        cx: f32,
+        cy: f32,
+        w: f32,
+    ) -> f32 {
         let fonts = self.fonts();
         let cst = self.st(container);
 
@@ -929,7 +1172,15 @@ impl<'a> Engine<'a> {
                 let size = self.block(*node, 0.0, 0.0, w, Sizing::Shrink, None);
                 let end = self.mark();
                 self.link = saved;
-                atomics.insert(i, AtomicBox { size, start, end, float: self.st(*node).float });
+                atomics.insert(
+                    i,
+                    AtomicBox {
+                        size,
+                        start,
+                        end,
+                        float: self.st(*node).float,
+                    },
+                );
             }
         }
 
@@ -948,7 +1199,11 @@ impl<'a> Engine<'a> {
                         if !word.is_empty() {
                             let text = transform(std::mem::take(word), st.text_transform);
                             let width = fonts.measure(key, &text, st.font_size);
-                            pieces.push(Piece { kind: PieceKind::Word(text), width, item: i });
+                            pieces.push(Piece {
+                                kind: PieceKind::Word(text),
+                                width,
+                                item: i,
+                            });
                         }
                     };
                     for c in text.chars() {
@@ -960,31 +1215,55 @@ impl<'a> Engine<'a> {
                         }
                         flush_word(&mut word, &mut pieces);
                         if c == '\n' && ws.keeps_newlines() {
-                            pieces.push(Piece { kind: PieceKind::Break, width: 0.0, item: i });
+                            pieces.push(Piece {
+                                kind: PieceKind::Break,
+                                width: 0.0,
+                                item: i,
+                            });
                             after_space = true;
                         } else if ws.collapses_spaces() {
                             if !after_space {
-                                pieces.push(Piece { kind: PieceKind::Space, width: space_w, item: i });
+                                pieces.push(Piece {
+                                    kind: PieceKind::Space,
+                                    width: space_w,
+                                    item: i,
+                                });
                                 after_space = true;
                             }
                         } else if c != '\r' {
                             let width = if c == '\t' { space_w * 8.0 } else { space_w };
-                            pieces.push(Piece { kind: PieceKind::Space, width, item: i });
+                            pieces.push(Piece {
+                                kind: PieceKind::Space,
+                                width,
+                                item: i,
+                            });
                         }
                     }
                     flush_word(&mut word, &mut pieces);
                 }
                 InlineItem::Atomic { .. } => {
                     let width = atomics.get(&i).map_or(0.0, |a| a.size.w);
-                    pieces.push(Piece { kind: PieceKind::Atomic, width, item: i });
+                    pieces.push(Piece {
+                        kind: PieceKind::Atomic,
+                        width,
+                        item: i,
+                    });
                     after_space = false;
                 }
                 InlineItem::Break => {
-                    pieces.push(Piece { kind: PieceKind::Break, width: 0.0, item: i });
+                    pieces.push(Piece {
+                        kind: PieceKind::Break,
+                        width: 0.0,
+                        item: i,
+                    });
                     after_space = true;
                 }
                 InlineItem::Spacer(width) => {
-                    pieces.push(Piece { kind: PieceKind::Spacer, width: *width, item: i });
+                    pieces.push(Piece {
+                        kind: PieceKind::Spacer,
+                        width: *width,
+                        item: i,
+                    });
                 }
             }
         }
@@ -995,28 +1274,49 @@ impl<'a> Engine<'a> {
         let styles = self.input.styles;
         let item_wraps = |item: usize| match &items[item] {
             InlineItem::Text { node, .. } => styles[*node].white_space.wraps(),
-            InlineItem::Atomic { node, .. } => styles[*node].white_space.wraps() || cst.white_space.wraps(),
+            InlineItem::Atomic { node, .. } => {
+                styles[*node].white_space.wraps() || cst.white_space.wraps()
+            }
             _ => true,
         };
-        let mut ls = LineState { y: cy, floats: Vec::new(), line: Vec::new(), line_w: 0.0, avail: 0.0, first: true };
+        let mut ls = LineState {
+            y: cy,
+            floats: Vec::new(),
+            line: Vec::new(),
+            line_w: 0.0,
+            avail: 0.0,
+            first: true,
+        };
         ls.reset(w, indent);
         let mut pieces = pieces.into_iter();
         let mut pending: Option<Piece> = None;
         while let Some(piece) = pending.take().or_else(|| pieces.next()) {
             if let (PieceKind::Atomic, Some(a)) = (&piece.kind, atomics.get(&piece.item))
-                && a.float != Float::None {
-                    let (l, r) = ls.bounds();
-                    let right = a.float == Float::Right;
-                    let fx = if right { cx + w - r - a.size.w } else { cx + l };
-                    let (start, end, fw, fh) = (a.start, a.end, a.size.w, a.size.margin_h());
-                    self.translate(start, end, fx, ls.y);
-                    if let InlineItem::Atomic { link: Some(link), .. } = &items[piece.item] {
-                        self.out.links.push((Rect { x: fx, y: ls.y, w: fw, h: fh }, link.clone()));
-                    }
-                    ls.floats.push((right, fw, ls.y + fh));
-                    ls.avail -= fw;
-                    continue;
+                && a.float != Float::None
+            {
+                let (l, r) = ls.bounds();
+                let right = a.float == Float::Right;
+                let fx = if right { cx + w - r - a.size.w } else { cx + l };
+                let (start, end, fw, fh) = (a.start, a.end, a.size.w, a.size.margin_h());
+                self.translate(start, end, fx, ls.y);
+                if let InlineItem::Atomic {
+                    link: Some(link), ..
+                } = &items[piece.item]
+                {
+                    self.out.links.push((
+                        Rect {
+                            x: fx,
+                            y: ls.y,
+                            w: fw,
+                            h: fh,
+                        },
+                        link.clone(),
+                    ));
                 }
+                ls.floats.push((right, fw, ls.y + fh));
+                ls.avail -= fw;
+                continue;
+            }
             match piece.kind {
                 PieceKind::Break => {
                     self.finish_line(&mut ls, &items, &atomics, cst, cx, w, indent);
@@ -1024,7 +1324,9 @@ impl<'a> Engine<'a> {
                 }
                 PieceKind::Space => {
                     let collapses = match &items[piece.item] {
-                        InlineItem::Text { node, .. } => self.st(*node).white_space.collapses_spaces(),
+                        InlineItem::Text { node, .. } => {
+                            self.st(*node).white_space.collapses_spaces()
+                        }
                         _ => true,
                     };
                     if ls.line.is_empty() && collapses {
@@ -1036,7 +1338,10 @@ impl<'a> Engine<'a> {
                 }
                 _ => {}
             }
-            let has_content = ls.line.iter().any(|p| !matches!(p.kind, PieceKind::Space | PieceKind::Spacer));
+            let has_content = ls
+                .line
+                .iter()
+                .any(|p| !matches!(p.kind, PieceKind::Space | PieceKind::Spacer));
             let wraps = item_wraps(piece.item);
             if ls.line_w + piece.width > ls.avail + 0.01 && wraps {
                 if has_content {
@@ -1054,8 +1359,13 @@ impl<'a> Engine<'a> {
                 }
             }
             // Break words wider than a whole line.
-            if let (PieceKind::Word(text), true) = (&piece.kind, piece.width > ls.avail - ls.line_w + 0.01 && wraps) {
-                let InlineItem::Text { node, .. } = &items[piece.item] else { unreachable!() };
+            if let (PieceKind::Word(text), true) = (
+                &piece.kind,
+                piece.width > ls.avail - ls.line_w + 0.01 && wraps,
+            ) {
+                let InlineItem::Text { node, .. } = &items[piece.item] else {
+                    unreachable!()
+                };
                 let st = self.st(*node);
                 let key = font_key(st);
                 let room = ls.avail - ls.line_w;
@@ -1070,11 +1380,19 @@ impl<'a> Engine<'a> {
                     split = i + c.len_utf8();
                 }
                 let (head, rest) = text.split_at(split);
-                ls.line.push(Piece { kind: PieceKind::Word(head.to_string()), width: used, item: piece.item });
+                ls.line.push(Piece {
+                    kind: PieceKind::Word(head.to_string()),
+                    width: used,
+                    item: piece.item,
+                });
                 ls.line_w += used;
                 if !rest.is_empty() {
                     let rest_w = piece.width - used;
-                    pending = Some(Piece { kind: PieceKind::Word(rest.to_string()), width: rest_w, item: piece.item });
+                    pending = Some(Piece {
+                        kind: PieceKind::Word(rest.to_string()),
+                        width: rest_w,
+                        item: piece.item,
+                    });
                     self.finish_line(&mut ls, &items, &atomics, cst, cx, w, indent);
                 }
                 continue;
@@ -1104,7 +1422,15 @@ impl<'a> Engine<'a> {
         let line = std::mem::take(&mut ls.line);
         let (l, r) = ls.bounds();
         let ind = if ls.first { indent } else { 0.0 };
-        let h = self.place_line(items, atomics, &line, cst, cx + l + ind, w - l - r - ind, ls.y);
+        let h = self.place_line(
+            items,
+            atomics,
+            &line,
+            cst,
+            cx + l + ind,
+            w - l - r - ind,
+            ls.y,
+        );
         ls.y += h;
         ls.first = false;
         ls.reset(w, indent);
@@ -1169,10 +1495,9 @@ impl<'a> Engine<'a> {
         let mut run: Option<(usize, f32, String, f32)> = None;
         for piece in line {
             let continues = run.as_ref().is_some_and(|(item, ..)| *item == piece.item);
-            if !continues
-                && let Some(r) = run.take() {
-                    self.emit_run(items, r, baseline, y, line_h);
-                }
+            if !continues && let Some(r) = run.take() {
+                self.emit_run(items, r, baseline, y, line_h);
+            }
             match &piece.kind {
                 PieceKind::Word(text) => {
                     let r = run.get_or_insert_with(|| (piece.item, x, String::new(), 0.0));
@@ -1188,8 +1513,12 @@ impl<'a> Engine<'a> {
                 }
                 PieceKind::Spacer => x += piece.width,
                 PieceKind::Atomic => {
-                    let Some(a) = atomics.get(&piece.item) else { continue };
-                    let InlineItem::Atomic { node, link } = &items[piece.item] else { continue };
+                    let Some(a) = atomics.get(&piece.item) else {
+                        continue;
+                    };
+                    let InlineItem::Atomic { node, link } = &items[piece.item] else {
+                        continue;
+                    };
                     let h = a.size.margin_h();
                     let top = if self.st(*node).vertical_align == VAlign::Middle {
                         baseline - cst.font_size * 0.25 - h / 2.0
@@ -1198,7 +1527,15 @@ impl<'a> Engine<'a> {
                     };
                     self.translate(a.start, a.end, x, top);
                     if let Some(link) = link {
-                        self.out.links.push((Rect { x, y: top, w: a.size.w, h }, link.clone()));
+                        self.out.links.push((
+                            Rect {
+                                x,
+                                y: top,
+                                w: a.size.w,
+                                h,
+                            },
+                            link.clone(),
+                        ));
                     }
                     x += piece.width;
                 }
@@ -1211,9 +1548,18 @@ impl<'a> Engine<'a> {
         line_h
     }
 
-    fn emit_run(&mut self, items: &[InlineItem], run: (usize, f32, String, f32), baseline: f32, line_top: f32, line_h: f32) {
+    fn emit_run(
+        &mut self,
+        items: &[InlineItem],
+        run: (usize, f32, String, f32),
+        baseline: f32,
+        line_top: f32,
+        line_h: f32,
+    ) {
         let (item, x, text, width) = run;
-        let InlineItem::Text { node, link, bg, .. } = &items[item] else { return };
+        let InlineItem::Text { node, link, bg, .. } = &items[item] else {
+            return;
+        };
         let st = self.st(*node);
         let key = font_key(st);
         let (asc, desc) = self.fonts().vertical_metrics(key, st.font_size);
@@ -1224,22 +1570,59 @@ impl<'a> Engine<'a> {
                 w: width,
                 h: asc + desc + bg.pad_top + bg.pad_bottom,
             };
-            self.emit(Item::Fill { rect, color: bg.color, radius: bg.radius });
+            self.emit(Item::Fill {
+                rect,
+                color: bg.color,
+                radius: bg.radius,
+            });
         }
         let thickness = (st.font_size / 14.0).max(1.0).round();
         if st.underline {
-            let rect = Rect { x, y: (baseline + st.font_size * 0.1).round(), w: width, h: thickness };
-            self.emit(Item::Fill { rect, color: st.color, radius: 0.0 });
+            let rect = Rect {
+                x,
+                y: (baseline + st.font_size * 0.1).round(),
+                w: width,
+                h: thickness,
+            };
+            self.emit(Item::Fill {
+                rect,
+                color: st.color,
+                radius: 0.0,
+            });
         }
         if st.line_through {
-            let rect = Rect { x, y: (baseline - asc * 0.3).round(), w: width, h: thickness };
-            self.emit(Item::Fill { rect, color: st.color, radius: 0.0 });
+            let rect = Rect {
+                x,
+                y: (baseline - asc * 0.3).round(),
+                w: width,
+                h: thickness,
+            };
+            self.emit(Item::Fill {
+                rect,
+                color: st.color,
+                radius: 0.0,
+            });
         }
         if let Some(link) = link {
-            self.out.links.push((Rect { x, y: line_top, w: width, h: line_h }, link.clone()));
+            self.out.links.push((
+                Rect {
+                    x,
+                    y: line_top,
+                    w: width,
+                    h: line_h,
+                },
+                link.clone(),
+            ));
         }
         if !text.trim().is_empty() {
-            self.emit(Item::Text { x, y: baseline, text, font: key, size: st.font_size, color: st.color });
+            self.emit(Item::Text {
+                x,
+                y: baseline,
+                text,
+                font: key,
+                size: st.font_size,
+                color: st.color,
+            });
         }
     }
 
@@ -1260,8 +1643,16 @@ impl<'a> Engine<'a> {
                         contents.extend(doc.nodes[c].children.iter().rev());
                     } else if cs.display == Display::None {
                     } else if cs.is_out_of_flow() {
-                        let frame = if cs.position == Position::Fixed { 0 } else { self.abs_stack.len() - 1 };
-                        self.abs_stack[frame].push(Pending { node: c, x: cx, y: cy });
+                        let frame = if cs.position == Position::Fixed {
+                            0
+                        } else {
+                            self.abs_stack.len() - 1
+                        };
+                        self.abs_stack[frame].push(Pending {
+                            node: c,
+                            x: cx,
+                            y: cy,
+                        });
                     } else {
                         children.push(c);
                     }
@@ -1269,7 +1660,13 @@ impl<'a> Engine<'a> {
                 _ => {}
             }
         }
-        children.sort_by_key(|&c| if doc.element(c).is_some() { self.st(c).order } else { 0 });
+        children.sort_by_key(|&c| {
+            if doc.element(c).is_some() {
+                self.st(c).order
+            } else {
+                0
+            }
+        });
         if st.flex_reverse {
             children.reverse();
         }
@@ -1297,13 +1694,29 @@ impl<'a> Engine<'a> {
             .map(|&c| {
                 let (min, max) = self.intrinsic(c);
                 if doc.element(c).is_none() {
-                    return FlexItem { node: c, base: max, min, grow: 0.0, shrink: 1.0, margins: [0.0; 4], auto_left: false, auto_right: false, size: max };
+                    return FlexItem {
+                        node: c,
+                        base: max,
+                        min,
+                        grow: 0.0,
+                        shrink: 1.0,
+                        margins: [0.0; 4],
+                        auto_left: false,
+                        auto_right: false,
+                        size: max,
+                    };
                 }
                 let cs = self.st(c);
                 let m = self.margins(cs, w);
                 let p = self.paddings(cs, w);
                 let extra = p[1] + p[3] + cs.border_width[1] + cs.border_width[3] + m[1] + m[3];
-                let to_outer = |v: f32| if cs.border_box { v + m[1] + m[3] } else { v + extra };
+                let to_outer = |v: f32| {
+                    if cs.border_box {
+                        v + m[1] + m[3]
+                    } else {
+                        v + extra
+                    }
+                };
                 let base = resolve(cs.flex_basis, w)
                     .map(to_outer)
                     .or_else(|| resolve(cs.width, w).map(to_outer))
@@ -1422,11 +1835,27 @@ impl<'a> Engine<'a> {
                 let start = self.mark();
                 let size = if doc.element(item.node).is_some() {
                     let border_w = item.size - item.margins[1] - item.margins[3];
-                    let size = self.block(item.node, x, y, item.size, Sizing::Exact(border_w.max(0.0)), None);
-                    BoxSize { w: item.size, ..size }
+                    let size = self.block(
+                        item.node,
+                        x,
+                        y,
+                        item.size,
+                        Sizing::Exact(border_w.max(0.0)),
+                        None,
+                    );
+                    BoxSize {
+                        w: item.size,
+                        ..size
+                    }
                 } else {
                     let h = self.lines(node, vec![self.text_item(item.node)], x, y, item.size);
-                    BoxSize { w: item.size, h, mt: 0.0, mb: 0.0, decorations: Vec::new() }
+                    BoxSize {
+                        w: item.size,
+                        h,
+                        mt: 0.0,
+                        mb: 0.0,
+                        decorations: Vec::new(),
+                    }
                 };
                 let end = self.mark();
                 line_h = line_h.max(size.margin_h());
@@ -1437,9 +1866,10 @@ impl<'a> Engine<'a> {
                 placed.push((start, end, size, item.node));
             }
             if lines.len() == 1
-                && let Some(h) = definite_h {
-                    line_h = line_h.max(h);
-                }
+                && let Some(h) = definite_h
+            {
+                line_h = line_h.max(h);
+            }
             for (start, end, size, child) in placed {
                 let align = if doc.element(child).is_some() {
                     self.st(child).align_self.unwrap_or(st.align_items)
@@ -1450,7 +1880,11 @@ impl<'a> Engine<'a> {
                 match align {
                     Align::Center => self.translate(start, end, 0.0, room / 2.0),
                     Align::End => self.translate(start, end, 0.0, room),
-                    Align::Stretch if doc.element(child).is_some_and(|_| self.st(child).height == Length::Auto) => {
+                    Align::Stretch
+                        if doc
+                            .element(child)
+                            .is_some_and(|_| self.st(child).height == Length::Auto) =>
+                    {
                         self.stretch(&size, line_h - size.mt - size.mb);
                     }
                     _ => {}
@@ -1464,7 +1898,16 @@ impl<'a> Engine<'a> {
         y - cy
     }
 
-    fn flex_column(&mut self, node: NodeId, children: &[NodeId], cx: f32, cy: f32, w: f32, definite_h: Option<f32>, gap: f32) -> f32 {
+    fn flex_column(
+        &mut self,
+        node: NodeId,
+        children: &[NodeId],
+        cx: f32,
+        cy: f32,
+        w: f32,
+        definite_h: Option<f32>,
+        gap: f32,
+    ) -> f32 {
         let doc = self.doc();
         let st = self.st(node);
         let mut y = cy;
@@ -1477,7 +1920,11 @@ impl<'a> Engine<'a> {
             let (w_used, h) = if doc.element(child).is_some() {
                 let cs = self.st(child);
                 let align = cs.align_self.unwrap_or(st.align_items);
-                let sizing = if align == Align::Stretch && cs.width == Length::Auto { Sizing::Fill } else { Sizing::Shrink };
+                let sizing = if align == Align::Stretch && cs.width == Length::Auto {
+                    Sizing::Fill
+                } else {
+                    Sizing::Shrink
+                };
                 let size = self.block(child, cx, y, w, sizing, None);
                 (size.w, size.margin_h())
             } else {
@@ -1496,9 +1943,12 @@ impl<'a> Engine<'a> {
             _ => 0.0,
         };
         for (i, (start, end, item_w, _)) in placed.into_iter().enumerate() {
-            let align = children.get(i).filter(|&&c| doc.element(c).is_some()).map_or(st.align_items, |&c| {
-                self.st(c).align_self.unwrap_or(st.align_items)
-            });
+            let align = children
+                .get(i)
+                .filter(|&&c| doc.element(c).is_some())
+                .map_or(st.align_items, |&c| {
+                    self.st(c).align_self.unwrap_or(st.align_items)
+                });
             let dx = match align {
                 Align::Center => (w - item_w) / 2.0,
                 Align::End => w - item_w,
@@ -1514,7 +1964,12 @@ impl<'a> Engine<'a> {
             NodeKind::Text(t) => t.clone(),
             _ => String::new(),
         };
-        InlineItem::Text { node, text, link: self.link.clone(), bg: None }
+        InlineItem::Text {
+            node,
+            text,
+            link: self.link.clone(),
+            bg: None,
+        }
     }
 
     /// Rows of a table, each a list of cells, looking through row groups and
@@ -1541,7 +1996,9 @@ impl<'a> Engine<'a> {
                         .children
                         .iter()
                         .copied()
-                        .filter(|&c| doc.element(c).is_some() && self.st(c).display != Display::None)
+                        .filter(|&c| {
+                            doc.element(c).is_some() && self.st(c).display != Display::None
+                        })
                         .collect();
                     rows.push((Some(n), cells));
                 }
@@ -1566,7 +2023,11 @@ impl<'a> Engine<'a> {
 
     /// Minimum and maximum width of each column.
     fn table_columns(&mut self, rows: &[(Option<NodeId>, Vec<NodeId>)]) -> (Vec<f32>, Vec<f32>) {
-        let n = rows.iter().map(|(_, cells)| cells.iter().map(|&c| self.colspan(c)).sum::<usize>()).max().unwrap_or(0);
+        let n = rows
+            .iter()
+            .map(|(_, cells)| cells.iter().map(|&c| self.colspan(c)).sum::<usize>())
+            .max()
+            .unwrap_or(0);
         let mut mins = vec![0.0f32; n];
         let mut maxs = vec![0.0f32; n];
         let mut spans = Vec::new();
@@ -1634,12 +2095,21 @@ impl<'a> Engine<'a> {
         let widths: Vec<f32> = if sum_max <= avail {
             let extra = avail - sum_max;
             (0..n)
-                .map(|i| maxs[i] + if sum_max > 0.0 { extra * maxs[i] / sum_max } else { extra / n as f32 })
+                .map(|i| {
+                    maxs[i]
+                        + if sum_max > 0.0 {
+                            extra * maxs[i] / sum_max
+                        } else {
+                            extra / n as f32
+                        }
+                })
                 .collect()
         } else if sum_min < avail {
             let room = avail - sum_min;
             let flex = sum_max - sum_min;
-            (0..n).map(|i| mins[i] + room * (maxs[i] - mins[i]) / flex).collect()
+            (0..n)
+                .map(|i| mins[i] + room * (maxs[i] - mins[i]) / flex)
+                .collect()
         } else {
             mins.clone()
         };
@@ -1648,18 +2118,27 @@ impl<'a> Engine<'a> {
         for (row, cells) in rows {
             let row_bg = row.and_then(|r| {
                 let rs = self.st(r);
-                (rs.background.a > 0).then(|| self.emit(Item::Fill { rect: Rect::default(), color: rs.background, radius: 0.0 }))
+                (rs.background.a > 0).then(|| {
+                    self.emit(Item::Fill {
+                        rect: Rect::default(),
+                        color: rs.background,
+                        radius: 0.0,
+                    })
+                })
             });
             let mut x = cx + s;
             let mut col = 0;
             let mut placed = Vec::new();
-            let mut row_h = row.and_then(|r| resolve(self.st(r).height, 0.0)).unwrap_or(0.0);
+            let mut row_h = row
+                .and_then(|r| resolve(self.st(r).height, 0.0))
+                .unwrap_or(0.0);
             for cell in cells {
                 let span = self.colspan(cell).min(n - col.min(n));
                 if col >= n {
                     break;
                 }
-                let cell_w: f32 = widths[col..col + span].iter().sum::<f32>() + s * (span - 1) as f32;
+                let cell_w: f32 =
+                    widths[col..col + span].iter().sum::<f32>() + s * (span - 1) as f32;
                 let start = self.mark();
                 let size = self.block(cell, x, y, cell_w, Sizing::Exact(cell_w), None);
                 let end = self.mark();
@@ -1672,7 +2151,10 @@ impl<'a> Engine<'a> {
                 let room = row_h - size.margin_h();
                 if room > 0.0 {
                     let valign = self.st(cell).vertical_align;
-                    let content_start = Mark { items: start.items + size.decorations.len(), ..start };
+                    let content_start = Mark {
+                        items: start.items + size.decorations.len(),
+                        ..start
+                    };
                     let dy = match valign {
                         VAlign::Middle => room / 2.0,
                         VAlign::Bottom => room,
@@ -1683,9 +2165,15 @@ impl<'a> Engine<'a> {
                 }
             }
             if let Some(i) = row_bg
-                && let Some(r) = self.out.items[i].rect_mut() {
-                    *r = Rect { x: cx + s, y, w: x - cx - 2.0 * s, h: row_h };
-                }
+                && let Some(r) = self.out.items[i].rect_mut()
+            {
+                *r = Rect {
+                    x: cx + s,
+                    y,
+                    w: x - cx - 2.0 * s,
+                    h: row_h,
+                };
+            }
             y += row_h + s;
         }
         y - cy
@@ -1706,7 +2194,10 @@ impl<'a> Engine<'a> {
                 let (rows, _) = self.table_rows(node);
                 let (mins, maxs) = self.table_columns(&rows);
                 let spacing = st.border_spacing * (mins.len() + 1) as f32;
-                (mins.iter().sum::<f32>() + spacing, maxs.iter().sum::<f32>() + spacing)
+                (
+                    mins.iter().sum::<f32>() + spacing,
+                    maxs.iter().sum::<f32>() + spacing,
+                )
             }
             Display::Flex | Display::InlineFlex if !st.flex_column => {
                 let gap = resolve0(st.column_gap, 0.0);
@@ -1718,7 +2209,11 @@ impl<'a> Engine<'a> {
                         continue;
                     }
                     let (cmin, cmax) = self.intrinsic(c);
-                    min = if st.flex_wrap { min.max(cmin) } else { min + cmin };
+                    min = if st.flex_wrap {
+                        min.max(cmin)
+                    } else {
+                        min + cmin
+                    };
                     max += cmax;
                     count += 1;
                 }
@@ -1836,7 +2331,13 @@ impl<'a> Engine<'a> {
         let st = self.st(node);
         let key = font_key(st);
         let fonts = self.fonts();
-        let measure = |s: &str| fonts.measure(key, &transform(s.to_string(), st.text_transform), st.font_size);
+        let measure = |s: &str| {
+            fonts.measure(
+                key,
+                &transform(s.to_string(), st.text_transform),
+                st.font_size,
+            )
+        };
         if st.white_space.collapses_spaces() {
             let words: Vec<&str> = text.split_ascii_whitespace().collect();
             let space = fonts.advance(key, ' ', st.font_size);
@@ -1845,7 +2346,8 @@ impl<'a> Engine<'a> {
             // between neighbouring inline boxes.
             let edges = text.starts_with(|c: char| c.is_ascii_whitespace()) as usize
                 + text.ends_with(|c: char| c.is_ascii_whitespace()) as usize;
-            let gaps = (words.len().saturating_sub(1) + edges).max((!text.is_empty()) as usize * edges.min(1));
+            let gaps = (words.len().saturating_sub(1) + edges)
+                .max((!text.is_empty()) as usize * edges.min(1));
             let total = widths.iter().sum::<f32>() + space * gaps as f32;
             if !st.white_space.wraps() {
                 return (total, total);
@@ -1853,7 +2355,10 @@ impl<'a> Engine<'a> {
             let longest = widths.iter().copied().fold(0.0, f32::max);
             (longest, total)
         } else {
-            let widest = text.lines().map(|l| measure(&l.replace('\t', "        "))).fold(0.0, f32::max);
+            let widest = text
+                .lines()
+                .map(|l| measure(&l.replace('\t', "        ")))
+                .fold(0.0, f32::max);
             if st.white_space.wraps() {
                 let longest = text.split_whitespace().map(measure).fold(0.0, f32::max);
                 (longest, widest)
@@ -1888,7 +2393,11 @@ impl LineState {
     }
 
     fn next_float_bottom(&self) -> Option<f32> {
-        self.floats.iter().map(|f| f.2).filter(|&b| b > self.y + 0.01).reduce(f32::min)
+        self.floats
+            .iter()
+            .map(|f| f.2)
+            .filter(|&b| b > self.y + 0.01)
+            .reduce(f32::min)
     }
 
     fn reset(&mut self, w: f32, indent: f32) {
@@ -1908,7 +2417,11 @@ struct FlowState {
 }
 
 fn to_content_h(st: &Style, h: f32, extra_h: f32) -> f32 {
-    if st.border_box { (h - extra_h).max(0.0) } else { h }
+    if st.border_box {
+        (h - extra_h).max(0.0)
+    } else {
+        h
+    }
 }
 
 fn collapse(a: f32, b: f32) -> f32 {
@@ -1922,7 +2435,10 @@ fn collapse(a: f32, b: f32) -> f32 {
 }
 
 fn trim_trailing_spaces(line: &mut Vec<Piece>) {
-    while line.last().is_some_and(|p| matches!(p.kind, PieceKind::Space)) {
+    while line
+        .last()
+        .is_some_and(|p| matches!(p.kind, PieceKind::Space))
+    {
         line.pop();
     }
 }
@@ -1966,8 +2482,19 @@ fn alpha(n: i32, upper: bool) -> String {
 fn roman(n: i32) -> String {
     let mut n = n.clamp(1, 3999);
     let table = [
-        (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"),
-        (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"),
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
     ];
     let mut out = String::new();
     for (v, s) in table {

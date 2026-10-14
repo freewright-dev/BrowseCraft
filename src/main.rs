@@ -6,13 +6,19 @@
 //! parses stylesheets, `style` runs the cascade, `layout` builds a display
 //! list and `paint` rasterizes it. `browser` is the window and UI around it.
 
+mod adblock;
 mod address;
 mod browser;
+mod capture;
 mod css;
 mod dom;
+mod egui_chrome;
+mod flags;
 mod font;
 mod headless;
+mod history;
 mod html;
+mod icons;
 mod layout;
 mod loader;
 mod net;
@@ -23,6 +29,7 @@ mod textfield;
 use winit::event_loop::EventLoop;
 
 fn main() {
+    flags::load();
     let fonts = match font::Fonts::new() {
         Ok(fonts) => fonts,
         Err(e) => {

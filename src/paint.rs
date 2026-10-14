@@ -8,6 +8,7 @@ use crate::font::{FontKey, Fonts};
 use crate::layout::{Item, Rect};
 
 /// A decoded image, non-premultiplied 0xAARRGGBB.
+#[derive(Clone, Debug)]
 pub struct Image {
     pub width: u32,
     pub height: u32,
@@ -22,7 +23,11 @@ pub struct Canvas<'a> {
 
 impl<'a> Canvas<'a> {
     pub fn new(pixels: &'a mut [u32], width: usize, height: usize) -> Self {
-        Canvas { pixels, width, clip: vec![(0, 0, width as i32, height as i32)] }
+        Canvas {
+            pixels,
+            width,
+            clip: vec![(0, 0, width as i32, height as i32)],
+        }
     }
 
     /// The current clip as (x0, y0, x1, y1), exclusive.
@@ -58,7 +63,9 @@ impl<'a> Canvas<'a> {
         }
         let dst = self.pixels[i];
         let inv = 255 - alpha;
-        let mix = |src: u8, shift: u32| ((src as u32 * alpha + ((dst >> shift) & 0xff) * inv) / 255) << shift;
+        let mix = |src: u8, shift: u32| {
+            ((src as u32 * alpha + ((dst >> shift) & 0xff) * inv) / 255) << shift
+        };
         self.pixels[i] = mix(c.r, 16) | mix(c.g, 8) | mix(c.b, 0);
     }
 
@@ -118,7 +125,16 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    pub fn draw_text(&mut self, fonts: &Fonts, x: f32, baseline: f32, text: &str, key: FontKey, size: f32, c: Color) {
+    pub fn draw_text(
+        &mut self,
+        fonts: &Fonts,
+        x: f32,
+        baseline: f32,
+        text: &str,
+        key: FontKey,
+        size: f32,
+        c: Color,
+    ) {
         let (cx0, cy0, cx1, cy1) = self.bounds();
         let mut pen = x;
         let by = baseline.round() as i32;
@@ -170,7 +186,12 @@ impl<'a> Canvas<'a> {
             for x in x0..x1 {
                 let ix = (((x as f32 + 0.5 - r.x) * sx) as u32).min(img.width - 1);
                 let p = img.pixels[row + ix as usize];
-                let c = Color { r: (p >> 16) as u8, g: (p >> 8) as u8, b: p as u8, a: (p >> 24) as u8 };
+                let c = Color {
+                    r: (p >> 16) as u8,
+                    g: (p >> 8) as u8,
+                    b: p as u8,
+                    a: (p >> 24) as u8,
+                };
                 self.blend(x, y, c, 255);
             }
         }
@@ -185,15 +206,48 @@ impl<'a> Canvas<'a> {
                 w: r.w - widths[1] - widths[3],
                 h: r.h - widths[0] - widths[2],
             };
-            let inner_radius = (radius.min(r.w / 2.0).min(r.h / 2.0) - widths[0].max(widths[3])).max(0.0);
+            let inner_radius =
+                (radius.min(r.w / 2.0).min(r.h / 2.0) - widths[0].max(widths[3])).max(0.0);
             self.fill_rounded(r, radius, colors[0], Some((inner, inner_radius)));
             return;
         }
         let [t, rt, b, l] = widths;
-        self.fill_rect(Rect { x: r.x, y: r.y, w: r.w, h: t }, colors[0]);
-        self.fill_rect(Rect { x: r.x, y: r.y + r.h - b, w: r.w, h: b }, colors[2]);
-        self.fill_rect(Rect { x: r.x, y: r.y + t, w: l, h: r.h - t - b }, colors[3]);
-        self.fill_rect(Rect { x: r.x + r.w - rt, y: r.y + t, w: rt, h: r.h - t - b }, colors[1]);
+        self.fill_rect(
+            Rect {
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: t,
+            },
+            colors[0],
+        );
+        self.fill_rect(
+            Rect {
+                x: r.x,
+                y: r.y + r.h - b,
+                w: r.w,
+                h: b,
+            },
+            colors[2],
+        );
+        self.fill_rect(
+            Rect {
+                x: r.x,
+                y: r.y + t,
+                w: l,
+                h: r.h - t - b,
+            },
+            colors[3],
+        );
+        self.fill_rect(
+            Rect {
+                x: r.x + r.w - rt,
+                y: r.y + t,
+                w: rt,
+                h: r.h - t - b,
+            },
+            colors[1],
+        );
     }
 }
 
@@ -228,10 +282,18 @@ pub fn paint_items(
     let view_top = clip_top as f32 - dy;
     let view_bottom = clip_bottom as f32 - dy;
     let visible = |top: f32, bottom: f32| bottom >= view_top && top <= view_bottom;
-    let shift = |r: &Rect| Rect { x: r.x + dx, y: r.y + dy, ..*r };
+    let shift = |r: &Rect| Rect {
+        x: r.x + dx,
+        y: r.y + dy,
+        ..*r
+    };
     for item in items {
         match item {
-            Item::Fill { rect, color, radius } => {
+            Item::Fill {
+                rect,
+                color,
+                radius,
+            } => {
                 if visible(rect.y, rect.y + rect.h) {
                     if *radius >= 0.5 {
                         canvas.fill_rounded(shift(rect), *radius, *color, None);
@@ -240,21 +302,34 @@ pub fn paint_items(
                     }
                 }
             }
-            Item::Border { rect, widths, colors, radius } => {
+            Item::Border {
+                rect,
+                widths,
+                colors,
+                radius,
+            } => {
                 if visible(rect.y, rect.y + rect.h) {
                     canvas.draw_border(shift(rect), *widths, *colors, *radius);
                 }
             }
-            Item::Text { x, y, text, font, size, color } => {
+            Item::Text {
+                x,
+                y,
+                text,
+                font,
+                size,
+                color,
+            } => {
                 if visible(y - size * 1.2, y + size * 0.5) {
                     canvas.draw_text(fonts, x + dx, y + dy, text, *font, *size, *color);
                 }
             }
             Item::Image { rect, src } => {
                 if visible(rect.y, rect.y + rect.h)
-                    && let Some(img) = images.get(&**src) {
-                        canvas.draw_image(img, shift(rect));
-                    }
+                    && let Some(img) = images.get(&**src)
+                {
+                    canvas.draw_image(img, shift(rect));
+                }
             }
             Item::PushClip(rect) => canvas.push_clip(shift(rect)),
             Item::PopClip => canvas.pop_clip(),

@@ -4,17 +4,19 @@
 
 <p align="center">Part of <a href="https://github.com/pierruno-labs">Pierruno Labs</a></p>
 
-A small web browser written in Rust with **its own rendering engine**. It
-doesn't use a WebView or any system web engine: Prowl parses HTML and CSS,
-runs the cascade, lays out the page and rasterizes it in software.
+A small web browser written in Rust with **its own rendering engine**. Prowl
+parses HTML and CSS, runs the cascade, lays out the page and rasterizes it in
+software:
 
 ```
 URL ─► net ─► html ─► DOM ─► css + style (cascade) ─► layout ─► display list ─► paint ─► window
 ```
 
-There is no JavaScript. Pages that render on the server, such as Hacker News,
-Wikipedia, Lobsters, blogs, docs and DuckDuckGo's HTML search, work well. Pages
-built entirely in JavaScript show whatever their HTML contains.
+The engine renders Prowl's own pages (`about:`, `view-source:` and `prowl://`
+pages such as `prowl://flags` and `prowl://history`). Regular web pages open in
+an embedded WebView2 pane beside the tab sidebar, with a built-in ad blocker.
+The toolbar and tabs are drawn with egui on the GPU when one is available, and
+by the engine otherwise.
 
 ## Features
 
@@ -26,6 +28,8 @@ built entirely in JavaScript show whatever their HTML contains.
 - Forms: text inputs, checkboxes, radios, selects and buttons; GET and POST submission
 - Browser UI drawn by the same engine: back, forward, reload/stop, home, an address bar with selection and clipboard, link previews, zoom, HiDPI, light and dark toolbar
 - `http(s)`, `file://` (with directory listings), `data:`, `view-source:` and a built-in start page
+- Tabs in a vertical sidebar, browsing history, light/dark/auto theme and a `prowl://flags` settings page
+- Ad blocking with uBlock-style filter lists loaded from `filters/`
 
 ## Usage
 
@@ -44,6 +48,12 @@ cargo run --release -- --screenshot page.png news.ycombinator.com 1200
 | `Ctrl+Plus` / `Ctrl+Minus` / `Ctrl+0` | Zoom      |
 | `Ctrl+U`                  | View source           |
 | `Space`, `Page Up/Down`, arrows | Scroll          |
+| `Ctrl+T` / `Ctrl+W`       | New tab / close tab   |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
+| `Ctrl+H`                  | History               |
+| `Shift+K`                 | Shortcut cheatsheet   |
+
+On Windows, `build.bat` builds a release binary into `dist\` along with the filter lists.
 
 ## Documentation
 

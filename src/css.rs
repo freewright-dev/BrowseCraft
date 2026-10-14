@@ -4,12 +4,14 @@
 use crate::dom::{Document, NodeId};
 
 #[derive(Default)]
+#[derive(Clone, Debug)]
 pub struct Stylesheet {
     pub rules: Vec<Rule>,
     /// URLs from `@import`, in order.
     pub imports: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
 pub struct Rule {
     pub selectors: Vec<Selector>,
     pub declarations: Vec<Declaration>,
@@ -86,7 +88,9 @@ fn strip_comments(s: &str) -> String {
     let mut rest = s;
     while let Some(i) = rest.find("/*") {
         out.push_str(&rest[..i]);
-        rest = rest[i + 2..].find("*/").map_or("", |e| &rest[i + 2 + e + 2..]);
+        rest = rest[i + 2..]
+            .find("*/")
+            .map_or("", |e| &rest[i + 2 + e + 2..]);
     }
     out.push_str(rest);
     out
@@ -130,9 +134,10 @@ fn parse_rules(mut s: &str, media: Option<&str>, sheet: &mut Stylesheet) {
             if semi.is_some_and(|semi| brace.is_none_or(|b| semi < b)) {
                 let statement = &s[..semi.unwrap()];
                 if let Some(url) = statement.strip_prefix("@import")
-                    && let Some(url) = import_url(url) {
-                        sheet.imports.push(url);
-                    }
+                    && let Some(url) = import_url(url)
+                {
+                    sheet.imports.push(url);
+                }
                 s = &s[semi.unwrap() + 1..];
                 continue;
             }
@@ -140,10 +145,9 @@ fn parse_rules(mut s: &str, media: Option<&str>, sheet: &mut Stylesheet) {
             let prelude = s[1..brace].trim();
             let body_len = block_end(&s[brace + 1..]);
             let body = &s[brace + 1..brace + 1 + body_len];
-            let (keyword, condition) =
-                prelude.split_once(|c: char| c.is_whitespace() || c == '(').map_or((prelude, ""), |(k, _)| {
-                    (k, prelude[k.len()..].trim())
-                });
+            let (keyword, condition) = prelude
+                .split_once(|c: char| c.is_whitespace() || c == '(')
+                .map_or((prelude, ""), |(k, _)| (k, prelude[k.len()..].trim()));
             match keyword.to_ascii_lowercase().as_str() {
                 "media" => {
                     let combined = match media {
@@ -178,15 +182,25 @@ fn parse_rules(mut s: &str, media: Option<&str>, sheet: &mut Stylesheet) {
         }
         let declarations = parse_declarations(body);
         if !declarations.is_empty() {
-            sheet.rules.push(Rule { selectors, declarations, media: media.map(str::to_string) });
+            sheet.rules.push(Rule {
+                selectors,
+                declarations,
+                media: media.map(str::to_string),
+            });
         }
     }
 }
 
 fn import_url(s: &str) -> Option<String> {
     let s = s.trim();
-    let s = s.strip_prefix("url(").map_or(s, |r| r.split(')').next().unwrap_or(""));
-    let url = s.trim().split(|c: char| c.is_whitespace()).next()?.trim_matches(['"', '\'', ')']);
+    let s = s
+        .strip_prefix("url(")
+        .map_or(s, |r| r.split(')').next().unwrap_or(""));
+    let url = s
+        .trim()
+        .split(|c: char| c.is_whitespace())
+        .next()?
+        .trim_matches(['"', '\'', ')']);
     (!url.is_empty()).then(|| url.to_string())
 }
 
@@ -220,16 +234,24 @@ pub fn parse_declarations(s: &str) -> Vec<Declaration> {
         .filter_map(|decl| {
             let (name, value) = decl.split_once(':')?;
             let name = name.trim();
-            let name = if name.starts_with("--") { name.to_string() } else { name.to_ascii_lowercase() };
+            let name = if name.starts_with("--") {
+                name.to_string()
+            } else {
+                name.to_ascii_lowercase()
+            };
             let mut value = value.trim();
             let mut important = false;
             if let Some(i) = value.rfind('!')
-                && value[i + 1..].trim().eq_ignore_ascii_case("important") {
-                    important = true;
-                    value = value[..i].trim_end();
-                }
-            (!name.is_empty() && !value.is_empty() && !value.contains('{'))
-                .then(|| Declaration { name, value: value.to_string(), important })
+                && value[i + 1..].trim().eq_ignore_ascii_case("important")
+            {
+                important = true;
+                value = value[..i].trim_end();
+            }
+            (!name.is_empty() && !value.is_empty() && !value.contains('{')).then(|| Declaration {
+                name,
+                value: value.to_string(),
+                important,
+            })
         })
         .collect()
 }
@@ -267,8 +289,13 @@ pub fn parse_selector(s: &str) -> Option<Selector> {
         out.push((compound, combinator));
         combinator = comb;
     }
-    let specificity = out.iter().fold((0, 0, 0), |acc, (c, _)| add_spec(acc, compound_specificity(c)));
-    Some(Selector { parts: out, specificity })
+    let specificity = out.iter().fold((0, 0, 0), |acc, (c, _)| {
+        add_spec(acc, compound_specificity(c))
+    });
+    Some(Selector {
+        parts: out,
+        specificity,
+    })
 }
 
 fn add_spec(a: (u16, u16, u16), b: (u16, u16, u16)) -> (u16, u16, u16) {
@@ -283,9 +310,10 @@ fn compound_specificity(c: &Compound) -> (u16, u16, u16) {
     );
     for p in &c.pseudos {
         spec = match p {
-            Pseudo::Not(list) | Pseudo::Is(list) => {
-                add_spec(spec, list.iter().map(|s| s.specificity).max().unwrap_or_default())
-            }
+            Pseudo::Not(list) | Pseudo::Is(list) => add_spec(
+                spec,
+                list.iter().map(|s| s.specificity).max().unwrap_or_default(),
+            ),
             _ => add_spec(spec, (0, 1, 0)),
         };
     }
@@ -311,7 +339,9 @@ fn parse_compound(s: &str) -> Option<(Compound, &str)> {
         }
     }
     loop {
-        let Some(first) = rest.chars().next() else { break };
+        let Some(first) = rest.chars().next() else {
+            break;
+        };
         match first {
             '#' => {
                 let end = ident_end(&rest[1..]) + 1;
@@ -343,7 +373,11 @@ fn parse_compound(s: &str) -> Option<(Compound, &str)> {
                     arg = Some(&rest[1..close]);
                     rest = &rest[close + 1..];
                 }
-                c.pseudos.push(if element { Pseudo::Never } else { parse_pseudo(&name, arg) });
+                c.pseudos.push(if element {
+                    Pseudo::Never
+                } else {
+                    parse_pseudo(&name, arg)
+                });
             }
             _ => break,
         }
@@ -375,7 +409,10 @@ fn matching_paren(s: &str) -> Option<usize> {
 fn parse_attr_selector(s: &str) -> Option<AttrSelector> {
     let s = s.trim();
     let Some(eq) = s.find('=') else {
-        return Some(AttrSelector { name: s.to_ascii_lowercase(), op: None });
+        return Some(AttrSelector {
+            name: s.to_ascii_lowercase(),
+            op: None,
+        });
     };
     let (name, op) = match s[..eq].chars().last() {
         Some(c @ ('~' | '|' | '^' | '$' | '*')) => (&s[..eq - 1], c),
@@ -383,17 +420,28 @@ fn parse_attr_selector(s: &str) -> Option<AttrSelector> {
     };
     let mut value = s[eq + 1..].trim();
     // Drop a trailing case-sensitivity flag.
-    if let Some(stripped) = value.strip_suffix(" i").or_else(|| value.strip_suffix(" s")) {
+    if let Some(stripped) = value
+        .strip_suffix(" i")
+        .or_else(|| value.strip_suffix(" s"))
+    {
         value = stripped.trim();
     }
     let value = value.trim_matches(['"', '\'']).to_string();
-    Some(AttrSelector { name: name.trim().to_ascii_lowercase(), op: Some((op, value)) })
+    Some(AttrSelector {
+        name: name.trim().to_ascii_lowercase(),
+        op: Some((op, value)),
+    })
 }
 
 fn parse_pseudo(name: &str, arg: Option<&str>) -> Pseudo {
     let list = |arg: Option<&str>| -> Vec<Selector> {
-        arg.map(|a| split_top_level(a, ',').into_iter().filter_map(|s| parse_selector(s.trim())).collect())
-            .unwrap_or_default()
+        arg.map(|a| {
+            split_top_level(a, ',')
+                .into_iter()
+                .filter_map(|s| parse_selector(s.trim()))
+                .collect()
+        })
+        .unwrap_or_default()
     };
     match name {
         "first-child" => Pseudo::FirstChild,
@@ -416,7 +464,12 @@ fn parse_pseudo(name: &str, arg: Option<&str>) -> Pseudo {
 
 /// Parses `an+b`, `odd`, `even` or a number.
 fn parse_nth(s: &str) -> Option<(i32, i32)> {
-    let s: String = s.split(" of ").next()?.chars().filter(|c| !c.is_whitespace()).collect();
+    let s: String = s
+        .split(" of ")
+        .next()?
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
     match s.as_str() {
         "odd" => return Some((2, 1)),
         "even" => return Some((2, 0)),
@@ -465,27 +518,38 @@ pub enum SelectorKey {
 }
 
 fn matches_from(parts: &[(Compound, Combinator)], doc: &Document, node: NodeId) -> bool {
-    let Some(((compound, _), rest)) = parts.split_first() else { return true };
+    let Some(((compound, _), rest)) = parts.split_first() else {
+        return true;
+    };
     if !compound_matches(compound, doc, node) {
         return false;
     }
-    let Some((_, combinator)) = rest.first() else { return true };
+    let Some((_, combinator)) = rest.first() else {
+        return true;
+    };
     match combinator {
         Combinator::None => true,
-        Combinator::Child => doc.parent_element(node).is_some_and(|p| matches_from(rest, doc, p)),
+        Combinator::Child => doc
+            .parent_element(node)
+            .is_some_and(|p| matches_from(rest, doc, p)),
         Combinator::Descendant => doc
             .ancestors(node)
             .filter(|&a| doc.element(a).is_some())
             .any(|a| matches_from(rest, doc, a)),
-        Combinator::NextSibling => {
-            doc.previous_elements(node).next().is_some_and(|s| matches_from(rest, doc, s))
-        }
-        Combinator::LaterSibling => doc.previous_elements(node).any(|s| matches_from(rest, doc, s)),
+        Combinator::NextSibling => doc
+            .previous_elements(node)
+            .next()
+            .is_some_and(|s| matches_from(rest, doc, s)),
+        Combinator::LaterSibling => doc
+            .previous_elements(node)
+            .any(|s| matches_from(rest, doc, s)),
     }
 }
 
 fn compound_matches(c: &Compound, doc: &Document, node: NodeId) -> bool {
-    let Some(el) = doc.element(node) else { return false };
+    let Some(el) = doc.element(node) else {
+        return false;
+    };
     if c.tag.as_ref().is_some_and(|t| *t != el.tag) {
         return false;
     }
@@ -496,7 +560,9 @@ fn compound_matches(c: &Compound, doc: &Document, node: NodeId) -> bool {
         return false;
     }
     for a in &c.attrs {
-        let Some(value) = el.attr(&a.name) else { return false };
+        let Some(value) = el.attr(&a.name) else {
+            return false;
+        };
         let ok = match &a.op {
             None => true,
             Some(('=', v)) => value == v,
@@ -544,7 +610,9 @@ fn pseudo_matches(p: &Pseudo, doc: &Document, node: NodeId) -> bool {
 /// Nested `@media` blocks are joined with `&&`.
 pub fn media_matches(query: &str, viewport_width: f32) -> bool {
     query.split("&&").all(|q| {
-        split_top_level(q, ',').iter().any(|q| single_media_matches(q, viewport_width))
+        split_top_level(q, ',')
+            .iter()
+            .any(|q| single_media_matches(q, viewport_width))
     })
 }
 
@@ -552,7 +620,10 @@ fn single_media_matches(query: &str, width: f32) -> bool {
     let q = query.trim().to_ascii_lowercase();
     let (negate, q) = match q.strip_prefix("not ") {
         Some(rest) => (true, rest.trim().to_string()),
-        None => (false, q.strip_prefix("only ").unwrap_or(&q).trim().to_string()),
+        None => (
+            false,
+            q.strip_prefix("only ").unwrap_or(&q).trim().to_string(),
+        ),
     };
     let mut result = true;
     for part in q.split(" and ") {
@@ -582,7 +653,9 @@ fn media_feature(feature: &str, width: f32) -> bool {
     if feature.contains(['<', '>']) && !feature.contains(':') {
         return range_feature(feature, width, &px);
     }
-    let (name, value) = feature.split_once(':').map_or((feature.trim(), ""), |(n, v)| (n.trim(), v.trim()));
+    let (name, value) = feature
+        .split_once(':')
+        .map_or((feature.trim(), ""), |(n, v)| (n.trim(), v.trim()));
     match name {
         "min-width" => px(value).is_some_and(|v| width >= v),
         "max-width" => px(value).is_some_and(|v| width <= v),
@@ -625,16 +698,19 @@ fn range_feature(s: &str, width: f32, px: &dyn Fn(&str) -> Option<f32>) -> bool 
         tokens.push(cur.trim().to_string());
     }
     let value = |t: &str| if t == "W" { Some(width) } else { px(t) };
-    tokens.windows(3).step_by(2).all(|w| match (value(&w[0]), value(&w[2])) {
-        (Some(a), Some(b)) => match w[1].as_str() {
-            "<" => a < b,
-            "<=" => a <= b,
-            ">" => a > b,
-            ">=" => a >= b,
+    tokens
+        .windows(3)
+        .step_by(2)
+        .all(|w| match (value(&w[0]), value(&w[2])) {
+            (Some(a), Some(b)) => match w[1].as_str() {
+                "<" => a < b,
+                "<=" => a <= b,
+                ">" => a > b,
+                ">=" => a >= b,
+                _ => false,
+            },
             _ => false,
-        },
-        _ => false,
-    })
+        })
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -648,7 +724,12 @@ pub struct Color {
 impl Color {
     pub const BLACK: Color = Color::rgb(0, 0, 0);
     pub const WHITE: Color = Color::rgb(255, 255, 255);
-    pub const TRANSPARENT: Color = Color { r: 0, g: 0, b: 0, a: 0 };
+    pub const TRANSPARENT: Color = Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0,
+    };
 
     pub const fn rgb(r: u8, g: u8, b: u8) -> Color {
         Color { r, g, b, a: 255 }
@@ -725,7 +806,10 @@ pub fn split_number(s: &str) -> (&str, &str) {
 /// mixing units falls back to its first term.
 fn parse_calc(s: &str) -> Option<Length> {
     let s = s.trim();
-    let s = s.strip_prefix("calc(").and_then(|r| r.strip_suffix(')')).unwrap_or(s);
+    let s = s
+        .strip_prefix("calc(")
+        .and_then(|r| r.strip_suffix(')'))
+        .unwrap_or(s);
     let tokens: Vec<&str> = s.split_whitespace().collect();
     let mut acc = parse_length(tokens.first()?)?;
     let mut i = 1;
@@ -781,7 +865,10 @@ pub fn parse_color(s: &str) -> Option<Color> {
             _ => None,
         };
     }
-    if let Some(args) = s.strip_prefix("light-dark(").and_then(|r| r.strip_suffix(')')) {
+    if let Some(args) = s
+        .strip_prefix("light-dark(")
+        .and_then(|r| r.strip_suffix(')'))
+    {
         return parse_color(split_top_level(args, ',').first()?);
     }
     if let Some(open) = s.find('(') {
@@ -817,7 +904,12 @@ pub fn parse_color(s: &str) -> Option<Color> {
                 let sat = args[1].trim_end_matches('%').parse::<f32>().ok()? / 100.0;
                 let l = args[2].trim_end_matches('%').parse::<f32>().ok()? / 100.0;
                 let (r, g, b) = hsl_to_rgb(h, sat, l);
-                Some(Color { r, g, b, a: alpha(args.get(3))? })
+                Some(Color {
+                    r,
+                    g,
+                    b,
+                    a: alpha(args.get(3))?,
+                })
             }
             _ => None,
         };
@@ -827,7 +919,11 @@ pub fn parse_color(s: &str) -> Option<Color> {
 
 fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
     let h = h.rem_euclid(360.0) / 360.0;
-    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
     let p = 2.0 * l - q;
     let f = |t: f32| {
         let t = t.rem_euclid(1.0);
@@ -1005,24 +1101,45 @@ mod tests {
             ("p:hover", false),
             ("[class^=x]", true),
         ] {
-            assert_eq!(parse_selector(sel).unwrap().matches(&doc, p2), expected, "{sel}");
+            assert_eq!(
+                parse_selector(sel).unwrap().matches(&doc, p2),
+                expected,
+                "{sel}"
+            );
         }
     }
 
     #[test]
     fn specificity() {
         assert_eq!(parse_selector("#a .b c").unwrap().specificity, (1, 1, 1));
-        assert_eq!(parse_selector("ul li:first-child").unwrap().specificity, (0, 1, 2));
+        assert_eq!(
+            parse_selector("ul li:first-child").unwrap().specificity,
+            (0, 1, 2)
+        );
     }
 
     #[test]
     fn parses_values() {
         assert_eq!(parse_color("#fff"), Some(Color::WHITE));
-        assert_eq!(parse_color("rgb(255 0 0 / 50%)"), Some(Color { r: 255, g: 0, b: 0, a: 128 }));
-        assert_eq!(parse_color("hsl(120, 100%, 25%)"), Some(Color::rgb(0, 128, 0)));
+        assert_eq!(
+            parse_color("rgb(255 0 0 / 50%)"),
+            Some(Color {
+                r: 255,
+                g: 0,
+                b: 0,
+                a: 128
+            })
+        );
+        assert_eq!(
+            parse_color("hsl(120, 100%, 25%)"),
+            Some(Color::rgb(0, 128, 0))
+        );
         assert_eq!(parse_length("1.5em"), Some(Length::Em(1.5)));
         assert_eq!(parse_length("0"), Some(Length::Px(0.0)));
-        assert_eq!(parse_length("calc(100% - 20%)"), Some(Length::Percent(80.0)));
+        assert_eq!(
+            parse_length("calc(100% - 20%)"),
+            Some(Length::Percent(80.0))
+        );
         assert_eq!(parse_length("1e3px"), Some(Length::Px(1000.0)));
     }
 }
