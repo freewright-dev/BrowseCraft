@@ -42,3 +42,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Prowl's keyboard shortcuts (new/close tab, address bar, reload, back/forward, zoom, history and the rest) now work while a web page has the keyboard, instead of only after clicking the toolbar or sidebar.
+- Keyboard shortcuts in the WebView2 pane now use the controller's native `AcceleratorKeyPressed` event instead of an injected script over `window.ipc`, preventing page JavaScript from triggering browser shortcuts.
