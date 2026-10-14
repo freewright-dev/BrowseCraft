@@ -1,4 +1,4 @@
-# Browsecraft
+<p align="center"><img src="assets/logo-wordmark.png" alt="Browsecraft" width="480"></p>
 
 A small web browser written in Rust with **its own rendering engine**. It
 doesn't use a WebView or any system web engine: Browsecraft parses HTML and CSS,
