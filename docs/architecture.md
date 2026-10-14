@@ -1,6 +1,6 @@
 # Architecture
 
-Browsecraft renders pages with its own engine. Each stage is a module in `src/`:
+Prowl renders pages with its own engine. Each stage is a module in `src/`:
 
 ```
 loader ──► net ──► html ──► dom

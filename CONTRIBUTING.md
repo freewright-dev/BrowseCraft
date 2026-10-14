@@ -1,6 +1,6 @@
-# Contributing to Browsecraft
+# Contributing to Prowl
 
-Thanks for helping build Browsecraft! Every change, however small, goes through a pull request.
+Thanks for helping build Prowl! Every change, however small, goes through a pull request.
 
 ## Workflow
 

@@ -276,7 +276,7 @@ impl Browser {
                         }
                 let title = page.doc.title();
                 if let Some(w) = self.window() {
-                    w.set_title(&if title.is_empty() { "Browsecraft".to_string() } else { format!("{title} - Browsecraft") });
+                    w.set_title(&if title.is_empty() { "Prowl".to_string() } else { format!("{title} - Prowl") });
                 }
                 if self.focus != Focus::Address {
                     self.address.set(&page.url);
@@ -1052,7 +1052,7 @@ impl ApplicationHandler<UserEvent> for Browser {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("Browsecraft")
+            .with_title("Prowl")
             .with_inner_size(LogicalSize::new(1200.0, 800.0))
             .with_min_inner_size(LogicalSize::new(400.0, 200.0));
         let window = match event_loop.create_window(attrs) {
