@@ -1,43 +1,65 @@
 # Architecture
 
-Prowl renders pages with its own engine. Each stage is a module in `src/`:
+Prowl renders internal pages with its own engine and ordinary web pages in an
+embedded WebView2 pane (see "Engine pages and the WebView2 pane"). Each engine
+stage is a module in `src/`:
 
 ```
 loader ──► net ──► html ──► dom
               │
               └──► css ──► style ──► layout ──► paint ──► softbuffer window
+                                                       └─► egui texture (GPU chrome)
 ```
 
-| Module         | Purpose                                                                 |
-| -------------- | ----------------------------------------------------------------------- |
-| `main.rs`      | Entry point; window mode or `--screenshot`                              |
-| `browser.rs`   | Window, toolbar, tab strip, history, input, forms, render loop          |
-| `flags.rs`     | User-settable flags persisted to `flags.txt`; the `prowl://flags` page  |
-| `egui_chrome.rs` | GPU chrome: egui toolbar/sidebar on wgpu, page raster as a texture    |
-| `icons.rs`     | Chrome icon codepoints (Phosphor) and the embedded icon font            |
-| `loader.rs`    | Background page loads: document, stylesheets, then images               |
-| `net.rs`       | `http(s)` (ureq + rustls), `file:`, `data:`, charset decoding           |
-| `html.rs`      | Tokenizer and tree builder                                              |
-| `dom.rs`       | Arena-based document tree                                               |
-| `css.rs`       | Stylesheet, selector and value parsing; selector matching; media queries |
-| `style.rs`     | Cascade and computed styles                                             |
-| `ua.css`       | The default (user-agent) stylesheet                                     |
-| `layout.rs`    | Box layout; produces the display list                                   |
-| `paint.rs`     | Software rasterizer                                                     |
-| `font.rs`      | System fonts through fontdue, glyph fallback, caches; Phosphor chrome icons |
-| `textfield.rs` | Text editing for the address bar and form fields                        |
-| `headless.rs`  | Renders a page to PNG without a window                                  |
-| `address.rs`   | Turns address-bar input into a URL                                      |
-| `home.html`    | The `about:home` start page                                             |
+| Module           | Purpose                                                                 |
+| ---------------- | ----------------------------------------------------------------------- |
+| `main.rs`        | Entry point; window mode or `--screenshot`                              |
+| `browser.rs`     | Window, toolbar, tabs, history, input, forms, WebView2 pane, render loop |
+| `flags.rs`       | User-settable flags persisted to `flags.txt`; the `prowl://flags` page  |
+| `egui_chrome.rs` | GPU chrome: egui toolbar/sidebar on wgpu, page raster as a texture      |
+| `icons.rs`       | Chrome icon codepoints (Phosphor) and the embedded icon font            |
+| `adblock.rs`     | Ad blocker ported from uBlock Origin: network and cosmetic filters      |
+| `history.rs`     | In-memory browsing history; the `prowl://history` page                  |
+| `capture.rs`     | Screen-region capture (GDI `BitBlt`) for screenshots of WebView2 pages  |
+| `loader.rs`      | Background page loads: document, stylesheets, then images; internal pages |
+| `net.rs`         | `http(s)` (ureq + rustls), `file:`, `data:`, charset decoding           |
+| `html.rs`        | Tokenizer and tree builder                                              |
+| `dom.rs`         | Arena-based document tree                                               |
+| `css.rs`         | Stylesheet, selector and value parsing; selector matching; media queries |
+| `style.rs`       | Cascade and computed styles                                             |
+| `ua.css`         | The default (user-agent) stylesheet, embedded by `style.rs`             |
+| `layout.rs`      | Box layout; produces the display list                                   |
+| `paint.rs`       | Software rasterizer                                                     |
+| `font.rs`        | System fonts through fontdue, glyph fallback, caches; Phosphor chrome icons |
+| `textfield.rs`   | Single-line text editing for the address bar and form fields            |
+| `headless.rs`    | Renders a page to PNG without a window                                  |
+| `address.rs`     | Turns address-bar input into a URL (or a Startpage search)              |
+| `home.html`      | The `about:home` page that new tabs open, embedded by `loader.rs`       |
+
+## Engine pages and the WebView2 pane
+
+Two kinds of pages live side by side. `browser::request_in_webview` decides:
+`about:`, `view-source:` and `prowl:` URLs (and every form `POST`) go through
+the engine; everything else is loaded into a `wry` WebView2 child window placed
+over the page area. If no web view exists (WebView2 failed to start, or the
+platform is neither Windows nor macOS, where `wry` uses WKWebView), every page
+goes through the engine.
+
+The engine handles these internal URLs in `loader::load_page`:
+`about:home`, `about:blank`, `view-source:<url>`, `prowl://flags`,
+`prowl://history`, and `about:blocked:<url>` (the notice shown when the ad
+filter blocks a page). WebView2 events (`WebStart`, `WebLoad`, `WebTitle`,
+`WebOpen`) reach the UI thread as `UserMessage`s. Pop-ups are denied and
+reopened in the current tab.
 
 ## Loading
 
 `loader::spawn` runs on a background thread. It fetches the document, parses
 it, and fetches every `<link rel=stylesheet>` in parallel, along with nested
 `@import`s. It then sends a `LoadEvent::Page` to the UI thread through winit's
-`EventLoopProxy`. Images follow one by one from a small worker pool
-(`LoadEvent::Image`), and each one triggers a relayout. Every load has a
-generation number, so events from an outdated load are dropped.
+`EventLoopProxy`. Images follow from a small worker pool (`LoadEvent::Image`),
+and each one triggers a relayout. Every load has a generation number, so
+events from an outdated load are dropped.
 
 ## Style
 
@@ -77,49 +99,99 @@ underneath.
 
 `paint::paint_items` draws only the items that intersect the viewport into a
 `u32` buffer, using alpha blending, anti-aliased rounded rectangles and cached
-glyph bitmaps. The browser draws its toolbar with the same `Canvas`, then
-copies the frame to the window with softbuffer.
+glyph bitmaps. On the engine chrome path the browser draws its toolbar and
+sidebar with the same `Canvas`, then copies the frame to the window with
+softbuffer. On the egui path only the page is rasterized and uploaded as a
+texture.
 
 ## Browser chrome and tabs
 
-The toolbar, address bar and tab sidebar are drawn by the engine itself (the
-same `Canvas` as page content), not the system. Icons are Phosphor (embedded
-in the binary by the `egui-phosphor` crate, codepoints in `src/icons.rs`),
-loaded as `Family::Icon` in `font.rs`.
+On the engine chrome path the toolbar, address bar and tab sidebar are drawn
+by the engine itself (the same `Canvas` as page content), not the system.
+Icons are Phosphor (embedded in the binary by the `egui-phosphor` crate,
+codepoints in `src/icons.rs`), loaded as `Family::Icon` in `font.rs`.
 
-Tabs are real: `browser.rs` keeps a `TabState` pantry per open tab (history,
-history index, engine page, loading flag, webview URL/title). Exactly one tab
-is active; its fields are the live `Browser` fields. `park_active_tab` /
-`activate_pantry` swap between the two, so switching tabs never reloads engine
-pages. WebView2 tabs re-issue `load_url` on activation. Ctrl+T/W/Tab and the
-sidebar open, close and cycle tabs. The sidebar sits on the left or right
-(`tabs-position`) and insets the viewport and webview rectangles.
+Tabs are real: `browser.rs` keeps a `TabState` per open tab (history, history
+index, engine page as an optional `Tab`, whether it shows a web page, webview
+URL, title). Exactly one tab is active; its fields are the live `Browser`
+fields. `park_active_tab` / `activate_pantry` swap between the two, so
+switching tabs never reloads engine pages. WebView2 tabs re-issue `load_url`
+on activation (there is one shared web view). Ctrl+T/W/Tab and the sidebar
+open, close and cycle tabs; closing the last tab quits. New tabs open
+`about:home`; the Home button opens `HOME_URL` (Startpage). The sidebar sits
+on the left or right, or is hidden (`tabs-position`), and insets the page and
+webview rectangles.
 
 ## Flags and `prowl://`
 
 `flags.rs` holds user settings (`tabs-position`, `theme`, `chrome`) in a
-`RwLock`, persisted as `key=value` lines in `flags.txt` (cwd or exe dir).
-`prowl://flags` is an engine-internal page: `loader.rs` parses its query string
-with `flags::apply_query`, and the radio buttons submit
+`RwLock`, persisted as `key=value` lines in `flags.txt` in the working
+directory. `prowl://flags` is an engine-internal page: `loader.rs` parses its
+query string with `flags::apply_query`, and the radio buttons submit
 `prowl://flags?key=value`. `prowl://` URLs are routed to the engine by
 `request_in_webview`. The theme toggle (toolbar sun/moon) flips `theme` between
 Light and Dark; `Auto` follows the OS.
 
 ## Chrome: engine or egui
 
-The toolbar and tab sidebar are drawn by the engine (the same `Canvas` as page
-content) by default. GPU chrome lives in `egui_chrome.rs`: when
-`chrome = auto | egui` and a wgpu adapter/device can be created in
-`resumed()`, `EguiChrome` owns the window surface (`egui-wgpu` painter) and
-draws the toolbar/sidebar as egui widgets, with the engine page raster uploaded
-as a texture in the central panel. If GPU setup fails, or `chrome = engine`,
-`browser.rs` keeps the softbuffer chrome (`Gfx::surface` is `Some`). The choice
-is made once at startup; the WebView2 pane is placed from the egui central
-panel rect on the GPU path. See `docs/egui.md`.
+The toolbar and tab sidebar are drawn either by the engine into a softbuffer
+frame or by egui on wgpu (`egui_chrome.rs`). In `resumed()`, unless
+`chrome = engine`, `EguiChrome::new` tries to create a wgpu adapter, device
+and surface; `egui_chrome::resolve` then picks egui when that succeeded.
+`EguiChrome` owns the window surface (`egui-wgpu` painter) and draws the
+toolbar/sidebar as egui widgets, with the engine page raster uploaded as a
+texture in the central panel. If GPU setup fails, or `chrome = engine`,
+`browser.rs` creates the softbuffer surface (`Gfx::surface` is `Some`) and
+draws its own chrome. The choice is made once at startup; the WebView2 pane is
+placed from the egui central panel rect on the GPU path. See `docs/egui.md`.
+
+## Ad blocking
+
+`adblock.rs` is a port of uBlock Origin's static network filtering and `##`
+element hiding, using EasyList/uBO syntax. `adblock::instance()` builds one
+shared `AdBlocker` from a built-in starter list plus every `filters/*.txt`
+file in the working directory and next to the executable. It feeds three
+sinks:
+
+1. **Rust-side network checks** (`matches_network`, through `blocked_page` and
+   `blocked_subresource`): main-frame navigations and pop-ups are checked
+   before they load (a blocked page becomes `about:blocked:<url>`), and engine
+   pages skip blocked stylesheets and images.
+2. **WebView2 pages:** `page_script()` is installed as the web view's
+   initialization script. It cancels matching fetch/XHR/beacon/img/script/
+   iframe loads and injects a `<style>` for the `##` selectors.
+3. **Engine pages:** `engine_cosmetic_css(host)` returns a stylesheet that
+   `loader.rs` appends to fetched pages, hiding matches with `display: none`.
+
+Regex filters, `$redirect`/`$csp`/`$replace`, scriptlets and procedural
+filters are dropped; `$domain=` is only honoured on the Rust side.
+
+## History
+
+`history.rs` keeps up to 500 visits (URL and title) in a global
+`Mutex<Vec<_>>`, shared by all tabs, in memory only: it is not saved to disk.
+Engine pages are recorded in `handle_load` and WebView2 pages in
+`web_loaded`/`web_titled`; consecutive visits to the same URL update the title
+instead of adding a row, and `prowl://`, `about:blank` and `view-source:` URLs
+are skipped. `prowl://history` (Ctrl+H) renders the list, newest first. This
+is separate from each tab's back/forward list (`HistoryEntry` in
+`browser.rs`).
+
+## Screenshots
+
+`prowl --screenshot <out.png> <url> [width]` uses `headless::screenshot`: a
+blocking engine load (`loader::load_blocking`), layout at the given width
+(default 1200) and a PNG of up to 6000 px height. No WebView2 is involved.
+
+In the window, Ctrl+Shift+S saves the visible page area to the Pictures folder
+(or the working directory) as `prowl-YYYYMMDD-HHMMSS.png` (`save_screenshot`). Engine pages are cropped
+from the last rendered frame. A WebView2 page is a separate native window, so
+`capture::screen_region` grabs that rectangle from the screen with GDI
+`BitBlt`; on other platforms capturing a web page fails with a notice.
 
 ## Known limitations
 
-No JavaScript, CSS Grid (laid out as blocks), transforms, SVG, web fonts,
-background images, `::before`/`::after` content or text shaping (ligatures and
-right-to-left scripts). Fixed elements are positioned once, not kept in place
-while scrolling.
+No JavaScript on engine pages, CSS Grid (laid out as blocks), transforms, SVG,
+web fonts, background images, `::before`/`::after` content or text shaping
+(ligatures and right-to-left scripts). Fixed elements are positioned once, not
+kept in place while scrolling.
