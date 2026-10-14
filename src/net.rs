@@ -6,8 +6,11 @@ use std::time::Duration;
 use ureq::ResponseExt;
 use url::Url;
 
-pub const USER_AGENT: &str =
-    concat!("Mozilla/5.0 (compatible; Prowl/", env!("CARGO_PKG_VERSION"), "; +https://github.com/pierruno-labs/prowl)");
+pub const USER_AGENT: &str = concat!(
+    "Mozilla/5.0 (compatible; Prowl/",
+    env!("CARGO_PKG_VERSION"),
+    "; +https://github.com/PierrunoYT/prowl)"
+);
 const MAX_BODY: u64 = 32 * 1024 * 1024;
 
 pub struct Response {
@@ -58,10 +61,17 @@ pub fn fetch(url: &Url, form: Option<&str>, accept: &str) -> Result<Response, St
                 .limit(MAX_BODY)
                 .read_to_vec()
                 .map_err(describe_error)?;
-            Ok(Response { url: final_url, status, content_type, body })
+            Ok(Response {
+                url: final_url,
+                status,
+                content_type,
+                body,
+            })
         }
         "file" => {
-            let path = url.to_file_path().map_err(|_| "invalid file path".to_string())?;
+            let path = url
+                .to_file_path()
+                .map_err(|_| "invalid file path".to_string())?;
             if path.is_dir() {
                 return Ok(Response {
                     url: url.clone(),
@@ -72,11 +82,21 @@ pub fn fetch(url: &Url, form: Option<&str>, accept: &str) -> Result<Response, St
             }
             let body = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             let content_type = mime_from_extension(&path.to_string_lossy()).to_string();
-            Ok(Response { url: url.clone(), status: 200, content_type, body })
+            Ok(Response {
+                url: url.clone(),
+                status: 200,
+                content_type,
+                body,
+            })
         }
         "data" => {
             let (content_type, body) = parse_data_url(url.as_str()).ok_or("malformed data: URL")?;
-            Ok(Response { url: url.clone(), status: 200, content_type, body })
+            Ok(Response {
+                url: url.clone(),
+                status: 200,
+                content_type,
+                body,
+            })
         }
         scheme => Err(format!("the {scheme}: scheme is not supported")),
     }
@@ -113,21 +133,37 @@ fn directory_listing(path: &std::path::Path, url: &Url) -> String {
     let mut entries: Vec<(bool, String)> = std::fs::read_dir(path)
         .map(|rd| {
             rd.filter_map(Result::ok)
-                .map(|e| (e.path().is_dir(), e.file_name().to_string_lossy().into_owned()))
+                .map(|e| {
+                    (
+                        e.path().is_dir(),
+                        e.file_name().to_string_lossy().into_owned(),
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
-    entries.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+    entries.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+    });
     let title = escape_html(&path.display().to_string());
     let mut html = format!("<title>{title}</title><h1>Index of {title}</h1><ul>");
     if url.path() != "/" && path.parent().is_some() {
         html.push_str("<li><a href=\"..\">..</a></li>");
     }
-    let base = if url.path().ends_with('/') { String::new() } else { format!("{}/", url.path().rsplit('/').next().unwrap_or("")) };
+    let base = if url.path().ends_with('/') {
+        String::new()
+    } else {
+        format!("{}/", url.path().rsplit('/').next().unwrap_or(""))
+    };
     for (dir, name) in entries {
         let slash = if dir { "/" } else { "" };
         let href = format!("{base}{}{slash}", percent_encode_path(&name));
-        html.push_str(&format!("<li><a href=\"{}\">{}{slash}</a></li>", escape_html(&href), escape_html(&name)));
+        html.push_str(&format!(
+            "<li><a href=\"{}\">{}{slash}</a></li>",
+            escape_html(&href),
+            escape_html(&name)
+        ));
     }
     html.push_str("</ul>");
     html
@@ -137,7 +173,9 @@ fn percent_encode_path(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
@@ -145,7 +183,10 @@ fn percent_encode_path(s: &str) -> String {
 }
 
 pub fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// Decodes `data:[<mime>][;base64],<payload>`.
@@ -156,7 +197,11 @@ pub fn parse_data_url(url: &str) -> Option<(String, Vec<u8>)> {
     let mime = meta.trim_end_matches(";base64");
     let mime = if mime.is_empty() { "text/plain" } else { mime };
     let bytes = percent_decode(payload);
-    let body = if base64 { decode_base64(&bytes)? } else { bytes };
+    let body = if base64 {
+        decode_base64(&bytes)?
+    } else {
+        bytes
+    };
     Some((mime.to_string(), body))
 }
 
@@ -213,10 +258,11 @@ fn decode_base64(input: &[u8]) -> Option<Vec<u8>> {
 /// (which covers ISO-8859-1 and ASCII).
 pub fn decode_text(body: &[u8], content_type: &str) -> String {
     let body = body.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(body);
-    let header = content_type
-        .to_ascii_lowercase()
-        .split(';')
-        .find_map(|p| p.trim().strip_prefix("charset=").map(|c| c.trim_matches('"').to_string()));
+    let header = content_type.to_ascii_lowercase().split(';').find_map(|p| {
+        p.trim()
+            .strip_prefix("charset=")
+            .map(|c| c.trim_matches('"').to_string())
+    });
     let sniffed = || {
         let head = String::from_utf8_lossy(&body[..body.len().min(4096)]).to_ascii_lowercase();
         let i = head.find("charset=")? + 8;
@@ -229,7 +275,8 @@ pub fn decode_text(body: &[u8], content_type: &str) -> String {
     };
     let label = header.or_else(sniffed).unwrap_or_default();
     match label.as_str() {
-        "iso-8859-1" | "latin1" | "windows-1252" | "cp1252" | "us-ascii" | "ascii" | "iso8859-1" | "l1" => {
+        "iso-8859-1" | "latin1" | "windows-1252" | "cp1252" | "us-ascii" | "ascii"
+        | "iso8859-1" | "l1" => {
             if std::str::from_utf8(body).is_ok() && label.contains("ascii") {
                 return String::from_utf8_lossy(body).into_owned();
             }
@@ -241,8 +288,9 @@ pub fn decode_text(body: &[u8], content_type: &str) -> String {
 
 fn windows_1252(b: u8) -> char {
     const HIGH: [char; 32] = [
-        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}',
-        '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
+        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž',
+        '\u{8f}', '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}',
+        'ž', 'Ÿ',
     ];
     match b {
         0x80..=0x9f => HIGH[(b - 0x80) as usize],
@@ -266,8 +314,14 @@ mod tests {
 
     #[test]
     fn charsets() {
-        assert_eq!(decode_text(b"caf\xe9", "text/html; charset=ISO-8859-1"), "café");
+        assert_eq!(
+            decode_text(b"caf\xe9", "text/html; charset=ISO-8859-1"),
+            "café"
+        );
         assert_eq!(decode_text("café".as_bytes(), "text/html"), "café");
-        assert_eq!(decode_text(b"<meta charset=windows-1252>\x93x\x94", ""), "<meta charset=windows-1252>“x”");
+        assert_eq!(
+            decode_text(b"<meta charset=windows-1252>\x93x\x94", ""),
+            "<meta charset=windows-1252>“x”"
+        );
     }
 }

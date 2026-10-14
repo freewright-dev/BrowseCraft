@@ -5,36 +5,81 @@
 use crate::dom::{Document, Element, NodeId, NodeKind};
 
 const VOID: &[&str] = &[
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
-    "source", "track", "wbr",
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
+    "track", "wbr",
 ];
-const RAW_TEXT: &[&str] = &["script", "style", "textarea", "title", "xmp", "iframe", "noembed"];
-const HEAD_ONLY: &[&str] = &["title", "meta", "link", "style", "script", "base", "noscript"];
+const RAW_TEXT: &[&str] = &[
+    "script", "style", "textarea", "title", "xmp", "iframe", "noembed",
+];
+const HEAD_ONLY: &[&str] = &[
+    "title", "meta", "link", "style", "script", "base", "noscript",
+];
 /// Start tags that close an open `<p>`.
 const CLOSES_P: &[&str] = &[
-    "address", "article", "aside", "blockquote", "center", "details", "dialog", "dir", "div",
-    "dl", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5",
-    "h6", "header", "hgroup", "hr", "li", "main", "menu", "nav", "ol", "p", "pre", "section",
-    "summary", "table", "ul",
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "center",
+    "details",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hgroup",
+    "hr",
+    "li",
+    "main",
+    "menu",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "summary",
+    "table",
+    "ul",
 ];
 /// Elements that stop the search for an open `<p>` to close.
-const P_SCOPE: &[&str] =
-    &["html", "body", "table", "td", "th", "caption", "button", "template", "object"];
+const P_SCOPE: &[&str] = &[
+    "html", "body", "table", "td", "th", "caption", "button", "template", "object",
+];
 
 pub fn parse(source: &str) -> Document {
     let mut builder = Builder::new();
-    let mut tok = Tokenizer { src: source, pos: 0 };
+    let mut tok = Tokenizer {
+        src: source,
+        pos: 0,
+    };
     while let Some(token) = tok.next(builder.raw_text_tag()) {
         builder.token(token);
     }
     let mut doc = builder.finish();
     let start = source.trim_start_matches('\u{feff}').trim_start();
-    doc.quirks = !start.get(..14).is_some_and(|s| s.eq_ignore_ascii_case("<!doctype html"));
+    doc.quirks = !start
+        .get(..14)
+        .is_some_and(|s| s.eq_ignore_ascii_case("<!doctype html"));
     doc
 }
 
 enum Token {
-    Start { tag: String, attrs: Vec<(String, String)>, self_closing: bool },
+    Start {
+        tag: String,
+        attrs: Vec<(String, String)>,
+        self_closing: bool,
+    },
     End(String),
     Text(String),
 }
@@ -66,12 +111,13 @@ impl<'a> Tokenizer<'a> {
             return self.next(None);
         }
         if let Some(after) = rest.strip_prefix("</")
-            && after.starts_with(|c: char| c.is_ascii_alphabetic()) {
-                let end = after.find('>').map_or(after.len(), |i| i + 1);
-                let name = tag_name(&after[..end]);
-                self.pos += 2 + end;
-                return Some(Token::End(name));
-            }
+            && after.starts_with(|c: char| c.is_ascii_alphabetic())
+        {
+            let end = after.find('>').map_or(after.len(), |i| i + 1);
+            let name = tag_name(&after[..end]);
+            self.pos += 2 + end;
+            return Some(Token::End(name));
+        }
         if rest.starts_with('<') && rest[1..].starts_with(|c: char| c.is_ascii_alphabetic()) {
             return Some(self.start_tag());
         }
@@ -104,7 +150,11 @@ impl<'a> Tokenizer<'a> {
             self.pos += close.len() + after.find('>').map_or(after.len(), |i| i + 1);
             return Token::End(tag.to_string());
         }
-        let text = if matches!(tag, "textarea" | "title") { decode_entities(text) } else { text.to_string() };
+        let text = if matches!(tag, "textarea" | "title") {
+            decode_entities(text)
+        } else {
+            text.to_string()
+        };
         Token::Text(text)
     }
 
@@ -112,7 +162,8 @@ impl<'a> Tokenizer<'a> {
         let bytes = self.src.as_bytes();
         let mut i = self.pos + 1;
         let name_start = i;
-        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'>' | b'/') {
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'>' | b'/')
+        {
             i += 1;
         }
         let tag = self.src[name_start..i].to_ascii_lowercase();
@@ -175,7 +226,11 @@ impl<'a> Tokenizer<'a> {
             }
         }
         self.pos = i;
-        Token::Start { tag, attrs, self_closing }
+        Token::Start {
+            tag,
+            attrs,
+            self_closing,
+        }
     }
 }
 
@@ -202,9 +257,19 @@ impl Builder {
         let mut doc = Document::new();
         let html = doc.append(
             Document::ROOT,
-            NodeKind::Element(Element { tag: "html".into(), attrs: Vec::new() }),
+            NodeKind::Element(Element {
+                tag: "html".into(),
+                attrs: Vec::new(),
+            }),
         );
-        Builder { doc, html, head: None, body: None, stack: Vec::new(), skip_newline: false }
+        Builder {
+            doc,
+            html,
+            head: None,
+            body: None,
+            stack: Vec::new(),
+            skip_newline: false,
+        }
     }
 
     fn current(&self) -> NodeId {
@@ -222,7 +287,13 @@ impl Builder {
 
     fn ensure_head(&mut self) -> NodeId {
         *self.head.get_or_insert_with(|| {
-            self.doc.append(self.html, NodeKind::Element(Element { tag: "head".into(), attrs: Vec::new() }))
+            self.doc.append(
+                self.html,
+                NodeKind::Element(Element {
+                    tag: "head".into(),
+                    attrs: Vec::new(),
+                }),
+            )
         })
     }
 
@@ -230,9 +301,13 @@ impl Builder {
         if self.body.is_none() {
             self.ensure_head();
             self.stack.clear();
-            let body = self
-                .doc
-                .append(self.html, NodeKind::Element(Element { tag: "body".into(), attrs: Vec::new() }));
+            let body = self.doc.append(
+                self.html,
+                NodeKind::Element(Element {
+                    tag: "body".into(),
+                    attrs: Vec::new(),
+                }),
+            );
             self.body = Some(body);
             self.stack.push(body);
         }
@@ -241,7 +316,9 @@ impl Builder {
     /// Pops open elements up to and including the innermost `tag`, unless one
     /// of `boundary` is reached first.
     fn close(&mut self, tags: &[&str], boundary: &[&str]) -> bool {
-        let found = self.open_tags().position(|t| tags.contains(&t) || boundary.contains(&t));
+        let found = self
+            .open_tags()
+            .position(|t| tags.contains(&t) || boundary.contains(&t));
         match found {
             Some(depth) if tags.contains(&self.open_tags().nth(depth).unwrap_or("")) => {
                 let keep = self.stack.len() - depth - 1;
@@ -259,21 +336,25 @@ impl Builder {
     fn token(&mut self, token: Token) {
         match token {
             Token::Text(text) => self.text(text),
-            Token::Start { tag, attrs, self_closing } => self.start(tag, attrs, self_closing),
+            Token::Start {
+                tag,
+                attrs,
+                self_closing,
+            } => self.start(tag, attrs, self_closing),
             Token::End(tag) => self.end(&tag),
         }
     }
 
     fn text(&mut self, mut text: String) {
         if std::mem::take(&mut self.skip_newline)
-            && let Some(rest) = text.strip_prefix('\n') {
-                text = rest.to_string();
-            }
+            && let Some(rest) = text.strip_prefix('\n')
+        {
+            text = rest.to_string();
+        }
         if text.is_empty() {
             return;
         }
-        let in_head = self.head.is_some_and(|h| self.current() == h)
-            || self.stack.is_empty();
+        let in_head = self.head.is_some_and(|h| self.current() == h) || self.stack.is_empty();
         if self.body.is_none() && in_head {
             if text.trim().is_empty() {
                 return;
@@ -282,10 +363,11 @@ impl Builder {
         }
         let parent = self.current();
         if let Some(&last) = self.doc.nodes[parent].children.last()
-            && let NodeKind::Text(existing) = &mut self.doc.nodes[last].kind {
-                existing.push_str(&text);
-                return;
-            }
+            && let NodeKind::Text(existing) = &mut self.doc.nodes[last].kind
+        {
+            existing.push_str(&text);
+            return;
+        }
         self.doc.append(parent, NodeKind::Text(text));
     }
 
@@ -349,7 +431,10 @@ impl Builder {
                 self.close(&["a"], &["table", "td", "th"]);
             }
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
-                if matches!(self.doc.tag(self.current()), "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
+                if matches!(
+                    self.doc.tag(self.current()),
+                    "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
+                ) {
                     self.stack.pop();
                 }
             }
@@ -359,7 +444,9 @@ impl Builder {
         let parent = self.current();
         self.skip_newline = matches!(tag.as_str(), "pre" | "textarea" | "listing");
         let is_void = VOID.contains(&tag.as_str());
-        let node = self.doc.append(parent, NodeKind::Element(Element { tag, attrs }));
+        let node = self
+            .doc
+            .append(parent, NodeKind::Element(Element { tag, attrs }));
         let raw = RAW_TEXT.contains(&self.doc.tag(node));
         if !is_void && (!self_closing || raw) {
             self.stack.push(node);
@@ -421,7 +508,11 @@ pub fn decode_entities(s: &str) -> String {
                 Some(hex) => u32::from_str_radix(hex, 16).ok(),
                 None => num.parse::<u32>().ok(),
             };
-            code.map(|c| char::from_u32(c).filter(|&c| c != '\0').unwrap_or('\u{FFFD}'))
+            code.map(|c| {
+                char::from_u32(c)
+                    .filter(|&c| c != '\0')
+                    .unwrap_or('\u{FFFD}')
+            })
         } else {
             named_entity(name)
         };
@@ -541,7 +632,11 @@ mod tests {
     use super::*;
 
     fn tags(doc: &Document, parent: NodeId) -> Vec<String> {
-        doc.nodes[parent].children.iter().map(|&c| doc.tag(c).to_string()).collect()
+        doc.nodes[parent]
+            .children
+            .iter()
+            .map(|&c| doc.tag(c).to_string())
+            .collect()
     }
 
     #[test]
@@ -582,7 +677,10 @@ mod tests {
 
     #[test]
     fn decodes_entities() {
-        assert_eq!(decode_entities("a &lt; b &amp;&amp; &#169; &#x2014; &bogus;"), "a < b && © — &bogus;");
+        assert_eq!(
+            decode_entities("a &lt; b &amp;&amp; &#169; &#x2014; &bogus;"),
+            "a < b && © — &bogus;"
+        );
     }
 
     #[test]

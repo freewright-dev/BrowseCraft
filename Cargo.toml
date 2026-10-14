@@ -12,9 +12,15 @@ strip = true
 
 [dependencies]
 arboard = { version = "3", default-features = false }
+egui = "0.36.2"
+egui-phosphor = "0.14.0"
+egui-wgpu = { version = "0.36.2", features = ["winit"] }
+egui-winit = "0.36.2"
 fontdue = "0.9"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+pollster = "1.0.1"
 softbuffer = "0.4"
 ureq = "3"
 url = "2"
 winit = "0.30"
+wry = "0.53"

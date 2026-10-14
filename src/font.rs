@@ -23,7 +23,19 @@ impl std::hash::Hash for Family {
 }
 
 impl FontKey {
-    pub const UI: FontKey = FontKey { family: Family::Sans, bold: false, italic: false };
+    pub const UI: FontKey = FontKey {
+        family: Family::Sans,
+        bold: false,
+        italic: false,
+    };
+
+    /// Phosphor icons for the browser chrome. The font is embedded in the
+    /// binary (see `crate::icons`), so this face is always available.
+    pub const ICON: FontKey = FontKey {
+        family: Family::Icon,
+        bold: false,
+        italic: false,
+    };
 
     fn index(self) -> usize {
         (self.family as usize) * 4 + self.bold as usize * 2 + self.italic as usize
@@ -102,8 +114,11 @@ fn face_paths(key: FontKey) -> &'static [&'static str] {
             "C:/Windows/Fonts/courbd.ttf",
             "/System/Library/Fonts/Supplemental/Courier New Bold.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
-            "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
         ],
+        // The Phosphor icon font is not in `face_paths`: it is embedded in the
+        // binary, so it is installed directly by `Fonts::new`.
+        (Family::Icon, _, _) => &[],
     }
 }
 
@@ -123,8 +138,23 @@ const FALLBACK_PATHS: &[&str] = &[
 ];
 
 fn load(path: &str) -> Option<Font> {
-    let data = std::fs::read(path).ok()?;
-    Font::from_bytes(data, FontSettings { collection_index: 0, scale: 40.0, load_substitutions: false }).ok()
+    load_face(std::path::Path::new(path))
+}
+
+fn load_face(path: &std::path::Path) -> Option<Font> {
+    load_bytes(std::fs::read(path).ok()?)
+}
+
+fn load_bytes(data: Vec<u8>) -> Option<Font> {
+    Font::from_bytes(
+        data,
+        FontSettings {
+            collection_index: 0,
+            scale: 40.0,
+            load_substitutions: false,
+        },
+    )
+    .ok()
 }
 
 pub struct Glyph {
@@ -132,12 +162,12 @@ pub struct Glyph {
     pub coverage: Vec<u8>,
 }
 
-/// Identifies a loaded font: 0..12 are page faces, 12.. are fallbacks.
+/// Identifies a loaded font: 0..16 are page faces, 16.. are fallbacks.
 type FaceId = usize;
-const FALLBACK_BASE: FaceId = 12;
+const FALLBACK_BASE: FaceId = 16;
 
 pub struct Fonts {
-    faces: [OnceCell<Option<Font>>; 12],
+    faces: [OnceCell<Option<Font>>; 16],
     fallbacks: Vec<OnceCell<Option<Font>>>,
     advances: RefCell<HashMap<(FaceId, char, u32), f32>>,
     glyphs: RefCell<HashMap<(FaceId, char, u32), Rc<Glyph>>>,
@@ -162,7 +192,14 @@ impl Fonts {
             resolved: RefCell::default(),
         };
         if fonts.face(FontKey::UI).is_none() {
-            return Err("no usable system font found (looked for Segoe UI, Arial and DejaVu Sans)".into());
+            return Err(
+                "no usable system font found (looked for Segoe UI, Arial and DejaVu Sans)".into(),
+            );
+        }
+        // The Phosphor icon font is embedded in the binary, so this always
+        // succeeds; if it somehow does not, icons fall back to the UI face.
+        if let Some(icon) = load_bytes(crate::icons::FONT_BYTES.to_vec()) {
+            let _ = fonts.faces[FontKey::ICON.index()].set(Some(icon));
         }
         Ok(fonts)
     }
@@ -192,8 +229,15 @@ impl Fonts {
         }
         let candidates = [
             key,
-            FontKey { italic: false, ..key },
-            FontKey { bold: false, italic: false, ..key },
+            FontKey {
+                italic: false,
+                ..key
+            },
+            FontKey {
+                bold: false,
+                italic: false,
+                ..key
+            },
             FontKey::UI,
         ];
         let mut chosen = None;
@@ -210,10 +254,11 @@ impl Fonts {
         if chosen.is_none() {
             for (i, cell) in self.fallbacks.iter().enumerate() {
                 if let Some(font) = cell.get_or_init(|| load(FALLBACK_PATHS[i]))
-                    && font.lookup_glyph_index(ch) != 0 {
-                        chosen = Some(FALLBACK_BASE + i);
-                        break;
-                    }
+                    && font.lookup_glyph_index(ch) != 0
+                {
+                    chosen = Some(FALLBACK_BASE + i);
+                    break;
+                }
             }
         }
         let id = chosen.or(first_available).unwrap_or(FontKey::UI.index());
@@ -222,7 +267,12 @@ impl Fonts {
     }
 
     pub fn advance(&self, key: FontKey, ch: char, size: f32) -> f32 {
-        if ch.is_control() || matches!(ch, '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{ad}' | '\u{fe0f}') {
+        if ch.is_control()
+            || matches!(
+                ch,
+                '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{ad}' | '\u{fe0f}'
+            )
+        {
             return 0.0;
         }
         let face = self.face_for(key, ch);
@@ -241,7 +291,10 @@ impl Fonts {
 
     /// Ascent and descent (both positive) of the face's line metrics.
     pub fn vertical_metrics(&self, key: FontKey, size: f32) -> (f32, f32) {
-        let font = self.face(key).or_else(|| self.face(FontKey::UI)).expect("default font");
+        let font = self
+            .face(key)
+            .or_else(|| self.face(FontKey::UI))
+            .expect("default font");
         match font.horizontal_line_metrics(size) {
             Some(m) => (m.ascent, -m.descent),
             None => (size * 0.8, size * 0.2),
@@ -263,5 +316,45 @@ impl Fonts {
         }
         cache.insert(k, glyph.clone());
         glyph
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Phosphor glyphs the chrome uses. If any of these move or vanish in a
+    /// font update, the toolbar/tab icons silently fall back to the UI font.
+    const ICONS: &[(&str, &str)] = &[
+        (crate::icons::BACK, "arrow-left"),
+        (crate::icons::FORWARD, "arrow-right"),
+        (crate::icons::RELOAD, "arrow-clockwise"),
+        (crate::icons::CLOSE, "x"),
+        (crate::icons::HOME, "house"),
+        (crate::icons::PLUS, "plus"),
+        (crate::icons::SUN, "sun"),
+        (crate::icons::MOON, "moon"),
+        (crate::icons::GLOBE, "globe"),
+        (crate::icons::LOCK, "lock"),
+        (crate::icons::GEAR, "gear"),
+    ];
+
+    #[test]
+    fn icon_glyphs_present() {
+        let font = load_bytes(crate::icons::FONT_BYTES.to_vec()).expect("embedded Phosphor font");
+        for &(icon, name) in ICONS {
+            let ch = icon.chars().next().expect("non-empty icon");
+            assert!(
+                font.lookup_glyph_index(ch) != 0,
+                "Phosphor is missing U+{:04X} ({name})",
+                ch as u32
+            );
+        }
+    }
+
+    #[test]
+    fn icon_face_index_within_faces() {
+        assert!(Family::Icon as usize * 4 < FALLBACK_BASE);
+        assert_eq!(FontKey::UI.index(), 0);
     }
 }

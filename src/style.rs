@@ -69,6 +69,8 @@ pub enum Family {
     Sans,
     Serif,
     Mono,
+    /// Phosphor icons, used by the browser chrome (toolbar, tabs).
+    Icon,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -89,10 +91,16 @@ pub enum WhiteSpace {
 
 impl WhiteSpace {
     pub fn collapses_spaces(self) -> bool {
-        matches!(self, WhiteSpace::Normal | WhiteSpace::NoWrap | WhiteSpace::PreLine)
+        matches!(
+            self,
+            WhiteSpace::Normal | WhiteSpace::NoWrap | WhiteSpace::PreLine
+        )
     }
     pub fn keeps_newlines(self) -> bool {
-        matches!(self, WhiteSpace::Pre | WhiteSpace::PreWrap | WhiteSpace::PreLine)
+        matches!(
+            self,
+            WhiteSpace::Pre | WhiteSpace::PreWrap | WhiteSpace::PreLine
+        )
     }
     pub fn wraps(self) -> bool {
         !matches!(self, WhiteSpace::NoWrap | WhiteSpace::Pre)
@@ -346,10 +354,16 @@ impl<'a> RuleIndex<'a> {
         let mut buckets: HashMap<SelectorKey, Vec<Entry<'a>>> = HashMap::new();
         let mut order = 0;
         let ua = std::iter::once(ua_sheet()).chain(quirks.then(quirks_sheet));
-        let all = ua.map(|s| (ORIGIN_UA, s)).chain(sheets.iter().map(|s| (ORIGIN_AUTHOR, s)));
+        let all = ua
+            .map(|s| (ORIGIN_UA, s))
+            .chain(sheets.iter().map(|s| (ORIGIN_AUTHOR, s)));
         for (origin, sheet) in all {
             for rule in &sheet.rules {
-                if rule.media.as_ref().is_some_and(|m| !css::media_matches(m, viewport_css_width)) {
+                if rule
+                    .media
+                    .as_ref()
+                    .is_some_and(|m| !css::media_matches(m, viewport_css_width))
+                {
                     continue;
                 }
                 for selector in &rule.selectors {
@@ -367,7 +381,9 @@ impl<'a> RuleIndex<'a> {
     }
 
     fn matching(&self, doc: &Document, node: NodeId) -> Vec<&Entry<'a>> {
-        let Some(el) = doc.element(node) else { return Vec::new() };
+        let Some(el) = doc.element(node) else {
+            return Vec::new();
+        };
         let mut keys = vec![SelectorKey::Universal, SelectorKey::Tag(el.tag.clone())];
         if let Some(id) = el.id() {
             keys.push(SelectorKey::Id(id.to_string()));
@@ -390,11 +406,14 @@ pub fn media_signature(sheets: &[Stylesheet], viewport_css_width: f32) -> Vec<bo
     let mut seen: Vec<&str> = Vec::new();
     for rule in sheets.iter().flat_map(|s| &s.rules) {
         if let Some(m) = &rule.media
-            && !seen.contains(&m.as_str()) {
-                seen.push(m);
-            }
+            && !seen.contains(&m.as_str())
+        {
+            seen.push(m);
+        }
     }
-    seen.iter().map(|m| css::media_matches(m, viewport_css_width)).collect()
+    seen.iter()
+        .map(|m| css::media_matches(m, viewport_css_width))
+        .collect()
 }
 
 pub struct StyleContext {
@@ -412,7 +431,9 @@ pub fn compute_styles(doc: &Document, sheets: &[Stylesheet], ctx: &StyleContext)
 
     // Nodes are created in document order, so parents come before children.
     for id in 1..doc.nodes.len() {
-        let parent = doc.nodes[id].parent.map_or(root_style.clone(), |p| styles[p].clone());
+        let parent = doc.nodes[id]
+            .parent
+            .map_or(root_style.clone(), |p| styles[p].clone());
         styles[id] = match &doc.nodes[id].kind {
             NodeKind::Element(_) => {
                 let style = compute_element(doc, id, &parent, &index, ctx, root_font);
@@ -446,7 +467,10 @@ fn compute_element(
     for d in &hints {
         entries.push((false, ORIGIN_HINT, (0, 0, 0), 0, d));
     }
-    let inline = el.attr("style").map(css::parse_declarations).unwrap_or_default();
+    let inline = el
+        .attr("style")
+        .map(css::parse_declarations)
+        .unwrap_or_default();
     for d in &inline {
         entries.push((d.important, ORIGIN_INLINE, (0, 0, 0), u32::MAX, d));
     }
@@ -456,7 +480,8 @@ fn compute_element(
     let mut vars: Option<HashMap<String, String>> = None;
     for (_, _, _, _, d) in &entries {
         if d.name.starts_with("--") {
-            vars.get_or_insert_with(|| (*parent.vars).clone()).insert(d.name.clone(), d.value.clone());
+            vars.get_or_insert_with(|| (*parent.vars).clone())
+                .insert(d.name.clone(), d.value.clone());
         }
     }
     let vars = vars.map_or_else(|| parent.vars.clone(), Rc::new);
@@ -466,7 +491,9 @@ fn compute_element(
         if d.name.starts_with("--") {
             continue;
         }
-        let Some(value) = substitute_vars(&d.value, &vars, 0) else { continue };
+        let Some(value) = substitute_vars(&d.value, &vars, 0) else {
+            continue;
+        };
         for (name, value) in expand_shorthand(&d.name, &value) {
             specified.insert(name, value);
         }
@@ -474,7 +501,11 @@ fn compute_element(
 
     let mut style = Style::inherit(parent, ctx.zoom);
     style.vars = vars;
-    let resolver = Resolver { parent, ctx, root_font };
+    let resolver = Resolver {
+        parent,
+        ctx,
+        root_font,
+    };
 
     // Font size and color first: other values depend on them.
     if let Some(v) = specified.get("font-size") {
@@ -539,9 +570,16 @@ fn apply(style: &mut Style, name: &str, value: &str, r: &Resolver) {
     let v = value.trim();
     let lower = v.to_ascii_lowercase();
     let fs = style.font_size;
-    if matches!(lower.as_str(), "inherit" | "initial" | "unset" | "revert" | "revert-layer") {
+    if matches!(
+        lower.as_str(),
+        "inherit" | "initial" | "unset" | "revert" | "revert-layer"
+    ) {
         let initial = Style::initial(r.ctx.zoom);
-        let from = if lower == "inherit" { r.parent } else { &initial };
+        let from = if lower == "inherit" {
+            r.parent
+        } else {
+            &initial
+        };
         copy_property(name, from, style);
         return;
     }
@@ -557,7 +595,9 @@ fn apply(style: &mut Style, name: &str, value: &str, r: &Resolver) {
                 "flex" | "-webkit-box" | "-webkit-flex" => Display::Flex,
                 "inline-flex" | "-webkit-inline-flex" => Display::InlineFlex,
                 "table" => Display::Table,
-                "table-row-group" | "table-header-group" | "table-footer-group" => Display::TableRowGroup,
+                "table-row-group" | "table-header-group" | "table-footer-group" => {
+                    Display::TableRowGroup
+                }
                 "table-row" => Display::TableRow,
                 "table-cell" => Display::TableCell,
                 "contents" => Display::Contents,
@@ -589,8 +629,9 @@ fn apply(style: &mut Style, name: &str, value: &str, r: &Resolver) {
         }
         "overflow" | "overflow-x" | "overflow-y" => {
             if name == "overflow" || name == "overflow-y" {
-                style.overflow_hidden = matches!(lower.as_str(), "hidden" | "clip" | "auto" | "scroll")
-                    && !lower.contains("visible");
+                style.overflow_hidden =
+                    matches!(lower.as_str(), "hidden" | "clip" | "auto" | "scroll")
+                        && !lower.contains("visible");
             }
         }
         "color" => {
@@ -671,7 +712,9 @@ fn apply(style: &mut Style, name: &str, value: &str, r: &Resolver) {
                 _ => WhiteSpace::Normal,
             }
         }
-        "text-wrap" | "text-wrap-mode" if lower == "nowrap" => style.white_space = WhiteSpace::NoWrap,
+        "text-wrap" | "text-wrap-mode" if lower == "nowrap" => {
+            style.white_space = WhiteSpace::NoWrap
+        }
         "text-transform" => {
             style.text_transform = match lower.as_str() {
                 "uppercase" => TextTransform::Uppercase,
@@ -724,7 +767,10 @@ fn apply(style: &mut Style, name: &str, value: &str, r: &Resolver) {
         }
         "flex-wrap" => style.flex_wrap = lower.starts_with("wrap"),
         "justify-content" => {
-            style.justify = match lower.trim_start_matches("safe ").trim_start_matches("unsafe ") {
+            style.justify = match lower
+                .trim_start_matches("safe ")
+                .trim_start_matches("unsafe ")
+            {
                 "center" => Justify::Center,
                 "flex-end" | "end" | "right" => Justify::End,
                 "space-between" => Justify::SpaceBetween,
@@ -740,7 +786,9 @@ fn apply(style: &mut Style, name: &str, value: &str, r: &Resolver) {
         "flex-basis" => style.flex_basis = size_value(&lower, len),
         "order" => style.order = lower.parse().unwrap_or(0),
         "row-gap" | "grid-row-gap" => style.row_gap = len(&lower).unwrap_or(style.row_gap),
-        "column-gap" | "grid-column-gap" => style.column_gap = len(&lower).unwrap_or(style.column_gap),
+        "column-gap" | "grid-column-gap" => {
+            style.column_gap = len(&lower).unwrap_or(style.column_gap)
+        }
         "border-spacing" => {
             if let Some(px) = r.px(lower.split_whitespace().next().unwrap_or(""), fs) {
                 style.border_spacing = px;
@@ -776,7 +824,10 @@ fn apply(style: &mut Style, name: &str, value: &str, r: &Resolver) {
                 } else {
                     style.border_color[side] = None;
                 }
-            } else if let Some(side) = ["top", "right", "bottom", "left"].iter().position(|s| *s == name) {
+            } else if let Some(side) = ["top", "right", "bottom", "left"]
+                .iter()
+                .position(|s| *s == name)
+            {
                 style.inset[side] = len(&lower).unwrap_or(Length::Auto);
             }
         }
@@ -829,32 +880,42 @@ fn copy_property(name: &str, from: &Style, to: &mut Style) {
 
 fn size_value(v: &str, len: impl Fn(&str) -> Option<Length>) -> Length {
     match v {
-        "none" | "auto" | "fit-content" | "max-content" | "min-content" | "-webkit-fill-available"
+        "none"
+        | "auto"
+        | "fit-content"
+        | "max-content"
+        | "min-content"
+        | "-webkit-fill-available"
         | "stretch" => Length::Auto,
         _ => len(v).unwrap_or(Length::Auto),
     }
 }
 
 fn parse_align(v: &str) -> Option<Align> {
-    Some(match v.trim_start_matches("safe ").trim_start_matches("unsafe ") {
-        "stretch" | "normal" => Align::Stretch,
-        "flex-start" | "start" | "self-start" => Align::Start,
-        "center" => Align::Center,
-        "flex-end" | "end" | "self-end" => Align::End,
-        "baseline" | "first baseline" | "last baseline" => Align::Baseline,
-        _ => return None,
-    })
+    Some(
+        match v.trim_start_matches("safe ").trim_start_matches("unsafe ") {
+            "stretch" | "normal" => Align::Stretch,
+            "flex-start" | "start" | "self-start" => Align::Start,
+            "center" => Align::Center,
+            "flex-end" | "end" | "self-end" => Align::End,
+            "baseline" | "first baseline" | "last baseline" => Align::Baseline,
+            _ => return None,
+        },
+    )
 }
 
 fn side_index(name: &str, prefix: &str) -> Option<usize> {
     let side = name.strip_prefix(prefix)?;
-    ["top", "right", "bottom", "left"].iter().position(|s| *s == side).or(match side {
-        "block-start" => Some(0),
-        "inline-end" => Some(1),
-        "block-end" => Some(2),
-        "inline-start" => Some(3),
-        _ => None,
-    })
+    ["top", "right", "bottom", "left"]
+        .iter()
+        .position(|s| *s == side)
+        .or(match side {
+            "block-start" => Some(0),
+            "inline-end" => Some(1),
+            "block-end" => Some(2),
+            "inline-start" => Some(3),
+            _ => None,
+        })
 }
 
 fn border_side(name: &str, suffix: &str) -> Option<usize> {
@@ -871,14 +932,33 @@ fn parse_color_value(v: &str, current: Color) -> Option<Color> {
 fn parse_family(v: &str) -> Option<Family> {
     for name in v.split(',') {
         let name = name.trim().trim_matches(['"', '\'']).trim();
-        let mono = ["monospace", "courier", "consolas", "menlo", "monaco", "mono", "code", "fira code", "source code"];
+        let mono = [
+            "monospace",
+            "courier",
+            "consolas",
+            "menlo",
+            "monaco",
+            "mono",
+            "code",
+            "fira code",
+            "source code",
+        ];
         if mono.iter().any(|m| name.contains(m)) {
             return Some(Family::Mono);
         }
         if name == "serif"
-            || ["times", "georgia", "garamond", "cambria", "palatino", "baskerville", "book antiqua", "charter"]
-                .iter()
-                .any(|s| name.contains(s))
+            || [
+                "times",
+                "georgia",
+                "garamond",
+                "cambria",
+                "palatino",
+                "baskerville",
+                "book antiqua",
+                "charter",
+            ]
+            .iter()
+            .any(|s| name.contains(s))
         {
             return Some(Family::Serif);
         }
@@ -886,9 +966,21 @@ fn parse_family(v: &str) -> Option<Family> {
             || name == "system-ui"
             || name.starts_with("-apple-system")
             || name.starts_with("blinkmacsystemfont")
-            || ["arial", "helvetica", "verdana", "tahoma", "segoe", "roboto", "inter", "open sans", "lato", "noto sans", "ubuntu"]
-                .iter()
-                .any(|s| name.contains(s))
+            || [
+                "arial",
+                "helvetica",
+                "verdana",
+                "tahoma",
+                "segoe",
+                "roboto",
+                "inter",
+                "open sans",
+                "lato",
+                "noto sans",
+                "ubuntu",
+            ]
+            .iter()
+            .any(|s| name.contains(s))
         {
             return Some(Family::Sans);
         }
@@ -945,7 +1037,11 @@ fn substitute_vars(value: &str, vars: &HashMap<String, String>, depth: u32) -> O
 
 /// Splits a value into space-separated tokens, keeping functions together.
 fn tokens(v: &str) -> Vec<&str> {
-    css::split_top_level(v, ' ').into_iter().map(str::trim).filter(|t| !t.is_empty()).collect()
+    css::split_top_level(v, ' ')
+        .into_iter()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .collect()
 }
 
 fn four_sides(v: &str) -> Option<[String; 4]> {
@@ -966,7 +1062,11 @@ fn expand_shorthand(name: &str, value: &str) -> Vec<(String, String)> {
     let one = |n: &str, v: &str| vec![(n.to_string(), v.to_string())];
     let sides = |prefix: &str, suffix: &str| -> Vec<(String, String)> {
         four_sides(value).map_or_else(Vec::new, |vals| {
-            SIDES.iter().zip(vals).map(|(s, v)| (format!("{prefix}{s}{suffix}"), v)).collect()
+            SIDES
+                .iter()
+                .zip(vals)
+                .map(|(s, v)| (format!("{prefix}{s}{suffix}"), v))
+                .collect()
         })
     };
     match name {
@@ -975,35 +1075,62 @@ fn expand_shorthand(name: &str, value: &str) -> Vec<(String, String)> {
         "margin-inline" | "padding-inline" => {
             let base = name.trim_end_matches("-inline");
             let t = tokens(value);
-            let (a, b) = (t.first().copied().unwrap_or("0"), t.get(1).or(t.first()).copied().unwrap_or("0"));
-            vec![(format!("{base}-left"), a.into()), (format!("{base}-right"), b.into())]
+            let (a, b) = (
+                t.first().copied().unwrap_or("0"),
+                t.get(1).or(t.first()).copied().unwrap_or("0"),
+            );
+            vec![
+                (format!("{base}-left"), a.into()),
+                (format!("{base}-right"), b.into()),
+            ]
         }
         "margin-block" | "padding-block" => {
             let base = name.trim_end_matches("-block");
             let t = tokens(value);
-            let (a, b) = (t.first().copied().unwrap_or("0"), t.get(1).or(t.first()).copied().unwrap_or("0"));
-            vec![(format!("{base}-top"), a.into()), (format!("{base}-bottom"), b.into())]
+            let (a, b) = (
+                t.first().copied().unwrap_or("0"),
+                t.get(1).or(t.first()).copied().unwrap_or("0"),
+            );
+            vec![
+                (format!("{base}-top"), a.into()),
+                (format!("{base}-bottom"), b.into()),
+            ]
         }
         "border-width" => sides("border-", "-width"),
         "border-style" => sides("border-", "-style"),
         "border-color" => sides("border-", "-color"),
-        "border" | "border-top" | "border-right" | "border-bottom" | "border-left" | "border-inline"
-        | "border-block" => {
+        "border" | "border-top" | "border-right" | "border-bottom" | "border-left"
+        | "border-inline" | "border-block" => {
             let targets: Vec<&str> = match name {
                 "border" => SIDES.to_vec(),
                 "border-inline" => vec!["left", "right"],
                 "border-block" => vec!["top", "bottom"],
                 n => vec![n.trim_start_matches("border-")],
             };
-            let (mut width, mut style, mut color) = ("medium".to_string(), "none".to_string(), "currentcolor".to_string());
+            let (mut width, mut style, mut color) = (
+                "medium".to_string(),
+                "none".to_string(),
+                "currentcolor".to_string(),
+            );
             for t in tokens(value) {
                 let lower = t.to_ascii_lowercase();
                 if matches!(
                     lower.as_str(),
-                    "none" | "hidden" | "solid" | "dashed" | "dotted" | "double" | "groove" | "ridge" | "inset" | "outset"
+                    "none"
+                        | "hidden"
+                        | "solid"
+                        | "dashed"
+                        | "dotted"
+                        | "double"
+                        | "groove"
+                        | "ridge"
+                        | "inset"
+                        | "outset"
                 ) {
                     style = lower;
-                } else if matches!(lower.as_str(), "thin" | "medium" | "thick") || css::parse_length(&lower).is_some() {
+                } else if matches!(lower.as_str(), "thin" | "medium" | "thick")
+                    || css::parse_length(&lower).is_some()
+                {
                     width = lower;
                 } else {
                     color = lower;
@@ -1029,10 +1156,16 @@ fn expand_shorthand(name: &str, value: &str) -> Vec<(String, String)> {
                     color = t.to_string();
                 }
             }
-            if let Some(url) = layers.iter().find_map(|l| tokens(l).into_iter().find(|t| t.starts_with("url("))) {
+            if let Some(url) = layers
+                .iter()
+                .find_map(|l| tokens(l).into_iter().find(|t| t.starts_with("url(")))
+            {
                 image = url.to_string();
             }
-            vec![("background-color".into(), color), ("background-image".into(), image)]
+            vec![
+                ("background-color".into(), color),
+                ("background-image".into(), image),
+            ]
         }
         "font" => expand_font(value),
         "list-style" => tokens(value)
@@ -1062,7 +1195,11 @@ fn expand_shorthand(name: &str, value: &str) -> Vec<(String, String)> {
         "flex-flow" => tokens(value)
             .into_iter()
             .map(|t| {
-                let prop = if t.contains("wrap") { "flex-wrap" } else { "flex-direction" };
+                let prop = if t.contains("wrap") {
+                    "flex-wrap"
+                } else {
+                    "flex-direction"
+                };
                 (prop.to_string(), t.to_string())
             })
             .collect(),
@@ -1070,7 +1207,10 @@ fn expand_shorthand(name: &str, value: &str) -> Vec<(String, String)> {
             let t = tokens(value);
             let row = t.first().copied().unwrap_or("0");
             let col = t.get(1).copied().unwrap_or(row);
-            vec![("row-gap".into(), row.into()), ("column-gap".into(), col.into())]
+            vec![
+                ("row-gap".into(), row.into()),
+                ("column-gap".into(), col.into()),
+            ]
         }
         "place-items" => one("align-items", tokens(value).first().copied().unwrap_or("")),
         "inline-size" => one("width", value),
@@ -1105,7 +1245,9 @@ fn expand_font(value: &str) -> Vec<(String, String)> {
         }
         i += 1;
     }
-    let Some(size_tok) = t.get(i) else { return Vec::new() };
+    let Some(size_tok) = t.get(i) else {
+        return Vec::new();
+    };
     let (size, line_height) = size_tok.split_once('/').unwrap_or((size_tok, ""));
     out.push(("font-size".into(), size.to_string()));
     if !line_height.is_empty() {
@@ -1131,33 +1273,57 @@ fn presentational_hints(doc: &Document, node: NodeId) -> Vec<Declaration> {
     let el = doc.element(node).expect("element");
     let mut out = Vec::new();
     let mut add = |name: &str, value: String| {
-        out.push(Declaration { name: name.to_string(), value, important: false });
+        out.push(Declaration {
+            name: name.to_string(),
+            value,
+            important: false,
+        });
     };
     let dim = |v: &str| -> Option<String> {
         let v = v.trim();
         if let Some(p) = v.strip_suffix('%') {
             return p.trim().parse::<f32>().ok().map(|p| format!("{p}%"));
         }
-        let n: String = v.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        let n: String = v
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
         n.parse::<f32>().ok().map(|n| format!("{n}px"))
     };
     let tag = el.tag.as_str();
     if let Some(c) = el.attr("bgcolor") {
         add("background-color", legacy_color(c));
     }
-    if matches!(tag, "img" | "table" | "td" | "th" | "col" | "hr" | "canvas" | "video" | "iframe" | "embed" | "object" | "input" | "svg") {
+    if matches!(
+        tag,
+        "img"
+            | "table"
+            | "td"
+            | "th"
+            | "col"
+            | "hr"
+            | "canvas"
+            | "video"
+            | "iframe"
+            | "embed"
+            | "object"
+            | "input"
+            | "svg"
+    ) {
         if let Some(w) = el.attr("width").and_then(dim) {
             add("width", w);
         }
         if let Some(h) = el.attr("height").and_then(dim)
-            && (tag != "td" && tag != "th" || !h.ends_with('%')) {
-                add("height", h);
-            }
-    }
-    if matches!(tag, "td" | "th" | "tr")
-        && let Some(h) = el.attr("height").and_then(dim) {
+            && (tag != "td" && tag != "th" || !h.ends_with('%'))
+        {
             add("height", h);
         }
+    }
+    if matches!(tag, "td" | "th" | "tr")
+        && let Some(h) = el.attr("height").and_then(dim)
+    {
+        add("height", h);
+    }
     if let Some(align) = el.attr("align").map(str::to_ascii_lowercase) {
         match tag {
             "table" if align == "center" => {
@@ -1186,15 +1352,24 @@ fn presentational_hints(doc: &Document, node: NodeId) -> Vec<Declaration> {
                 s if s.starts_with('-') => 3 - s[1..].parse::<i32>().unwrap_or(0),
                 s => s.parse().unwrap_or(3),
             };
-            let size = ["x-small", "x-small", "small", "medium", "large", "x-large", "xx-large", "xxx-large"]
-                [n.clamp(0, 7) as usize];
+            let size = [
+                "x-small",
+                "x-small",
+                "small",
+                "medium",
+                "large",
+                "x-large",
+                "xx-large",
+                "xxx-large",
+            ][n.clamp(0, 7) as usize];
             add("font-size", size.into());
         }
     }
     if tag == "body"
-        && let Some(c) = el.attr("text") {
-            add("color", legacy_color(c));
-        }
+        && let Some(c) = el.attr("text")
+    {
+        add("color", legacy_color(c));
+    }
     if tag == "table" {
         if let Some(b) = el.attr("border") {
             let b = b.trim().parse::<f32>().unwrap_or(1.0);
@@ -1221,22 +1396,24 @@ fn presentational_hints(doc: &Document, node: NodeId) -> Vec<Declaration> {
         }
     }
     if matches!(tag, "ul" | "ol")
-        && let Some(t) = el.attr("type") {
-            let v = match t {
-                "1" => "decimal",
-                "a" => "lower-alpha",
-                "A" => "upper-alpha",
-                "i" => "lower-roman",
-                "I" => "upper-roman",
-                other => other,
-            };
-            add("list-style-type", v.to_ascii_lowercase());
-        }
+        && let Some(t) = el.attr("type")
+    {
+        let v = match t {
+            "1" => "decimal",
+            "a" => "lower-alpha",
+            "A" => "upper-alpha",
+            "i" => "lower-roman",
+            "I" => "upper-roman",
+            other => other,
+        };
+        add("list-style-type", v.to_ascii_lowercase());
+    }
     if tag == "input"
         && let Some(size) = el.attr("size").and_then(|s| s.parse::<f32>().ok())
-            && el.attr("width").is_none() {
-                add("width", format!("{:.1}em", size * 0.55 + 0.4));
-            }
+        && el.attr("width").is_none()
+    {
+        add("width", format!("{:.1}em", size * 0.55 + 0.4));
+    }
     out
 }
 
@@ -1258,7 +1435,11 @@ mod tests {
     fn style_of(markup: &str, css: &str, tag: &str) -> Style {
         let doc = html::parse(markup);
         let sheets = vec![css::parse_stylesheet(css)];
-        let ctx = StyleContext { zoom: 1.0, viewport_width: 1000.0, viewport_height: 800.0 };
+        let ctx = StyleContext {
+            zoom: 1.0,
+            viewport_width: 1000.0,
+            viewport_height: 800.0,
+        };
         let styles = compute_styles(&doc, &sheets, &ctx);
         let node = doc.find_tag(tag).unwrap();
         (*styles[node]).clone()
@@ -1278,10 +1459,22 @@ mod tests {
 
     #[test]
     fn inherits_and_resolves_em() {
-        let s = style_of("<div><span>t</span></div>", "div { font-size: 20px; color: #123456 } span { padding: 0.5em 1em }", "span");
+        let s = style_of(
+            "<div><span>t</span></div>",
+            "div { font-size: 20px; color: #123456 } span { padding: 0.5em 1em }",
+            "span",
+        );
         assert_eq!(s.font_size, 20.0);
         assert_eq!(s.color, Color::rgb(0x12, 0x34, 0x56));
-        assert_eq!(s.padding, [Length::Px(10.0), Length::Px(20.0), Length::Px(10.0), Length::Px(20.0)]);
+        assert_eq!(
+            s.padding,
+            [
+                Length::Px(10.0),
+                Length::Px(20.0),
+                Length::Px(10.0),
+                Length::Px(20.0)
+            ]
+        );
     }
 
     #[test]
@@ -1297,7 +1490,11 @@ mod tests {
 
     #[test]
     fn shorthands() {
-        let s = style_of("<div>t</div>", "div { border: 2px solid red; background: #eee url(x.png); font: bold 12px/1.5 monospace }", "div");
+        let s = style_of(
+            "<div>t</div>",
+            "div { border: 2px solid red; background: #eee url(x.png); font: bold 12px/1.5 monospace }",
+            "div",
+        );
         assert_eq!(s.border_width, [2.0; 4]);
         assert_eq!(s.border_color[0], Some(Color::rgb(255, 0, 0)));
         assert_eq!(s.background, Color::rgb(0xee, 0xee, 0xee));
@@ -1310,7 +1507,11 @@ mod tests {
 
     #[test]
     fn media_queries_apply() {
-        let narrow = style_of("<p>t</p>", "@media (max-width: 600px) { p { color: red } }", "p");
+        let narrow = style_of(
+            "<p>t</p>",
+            "@media (max-width: 600px) { p { color: red } }",
+            "p",
+        );
         assert_eq!(narrow.color, Color::BLACK);
     }
 }

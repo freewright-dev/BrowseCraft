@@ -63,7 +63,11 @@ impl TextField {
         if self.delete_selection() || self.cursor == 0 {
             return;
         }
-        let start = if word { self.word_start(self.cursor) } else { self.prev(self.cursor) };
+        let start = if word {
+            self.word_start(self.cursor)
+        } else {
+            self.prev(self.cursor)
+        };
         self.text.replace_range(start..self.cursor, "");
         self.cursor = start;
         self.anchor = start;
@@ -73,7 +77,11 @@ impl TextField {
         if self.delete_selection() || self.cursor == self.text.len() {
             return;
         }
-        let end = if word { self.word_end(self.cursor) } else { self.next(self.cursor) };
+        let end = if word {
+            self.word_end(self.cursor)
+        } else {
+            self.next(self.cursor)
+        };
         self.text.replace_range(self.cursor..end, "");
     }
 
@@ -109,24 +117,40 @@ impl TextField {
     }
 
     fn prev(&self, i: usize) -> usize {
-        self.text[..i].char_indices().next_back().map_or(0, |(p, _)| p)
+        self.text[..i]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(p, _)| p)
     }
 
     fn next(&self, i: usize) -> usize {
-        self.text[i..].chars().next().map_or(i, |c| i + c.len_utf8())
+        self.text[i..]
+            .chars()
+            .next()
+            .map_or(i, |c| i + c.len_utf8())
     }
 
     fn word_start(&self, i: usize) -> usize {
         let before = &self.text[..i];
         let trimmed = before.trim_end_matches(|c: char| !c.is_alphanumeric());
-        trimmed.rfind(|c: char| !c.is_alphanumeric()).map_or(0, |p| p + trimmed[p..].chars().next().map_or(1, char::len_utf8))
+        trimmed
+            .rfind(|c: char| !c.is_alphanumeric())
+            .map_or(0, |p| {
+                p + trimmed[p..].chars().next().map_or(1, char::len_utf8)
+            })
     }
 
     fn word_end(&self, i: usize) -> usize {
         let after = &self.text[i..];
-        let skip = after.len() - after.trim_start_matches(|c: char| !c.is_alphanumeric()).len();
+        let skip = after.len()
+            - after
+                .trim_start_matches(|c: char| !c.is_alphanumeric())
+                .len();
         let rest = &after[skip..];
-        i + skip + rest.find(|c: char| !c.is_alphanumeric()).unwrap_or(rest.len())
+        i + skip
+            + rest
+                .find(|c: char| !c.is_alphanumeric())
+                .unwrap_or(rest.len())
     }
 }
 
