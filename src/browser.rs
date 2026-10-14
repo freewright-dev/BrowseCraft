@@ -90,6 +90,8 @@ pub enum UserMessage {
     WebLoad(String),
     /// The WebView2 pane wants to open this URL (pop-ups, blocked pages).
     WebOpen(String),
+    /// A shortcut pressed inside the WebView2 pane (`key:<mods>:<key>`).
+    WebKey(String),
     /// Stop the current load.
     Stop,
 }
@@ -360,6 +362,117 @@ fn caret_x(fonts: &Fonts, key: FontKey, size: f32, text: &str, password: bool, a
 
 fn is_char(key: &Key, c: &str) -> bool {
     matches!(key, Key::Character(s) if s.as_str().eq_ignore_ascii_case(c))
+}
+
+/// A browser-wide keyboard shortcut.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Shortcut {
+    CycleTab(isize),
+    Go(isize),
+    Home,
+    NewTab,
+    CloseTab,
+    FocusAddress,
+    Screenshot,
+    Reload,
+    ViewSource,
+    History,
+    Quit,
+    Zoom(Option<bool>),
+}
+
+/// The browser-wide shortcut for `key` with these modifiers, if any. `typing`
+/// is true while a text field has the keyboard, which keeps `Ctrl+Left` and
+/// `Ctrl+Right` for moving by word. `WEB_KEYS_SCRIPT` mirrors this table for
+/// pages shown in the WebView2 pane.
+fn shortcut_for(key: &Key, ctrl: bool, shift: bool, alt: bool, typing: bool) -> Option<Shortcut> {
+    if ctrl && !alt {
+        let found = match key {
+            Key::Named(NamedKey::Tab) => Some(Shortcut::CycleTab(if shift { -1 } else { 1 })),
+            Key::Named(NamedKey::ArrowLeft) if !typing => Some(Shortcut::Go(-1)),
+            Key::Named(NamedKey::ArrowRight) if !typing => Some(Shortcut::Go(1)),
+            Key::Character(c) => match c.to_ascii_lowercase().as_str() {
+                "t" => Some(Shortcut::NewTab),
+                "w" => Some(Shortcut::CloseTab),
+                "l" => Some(Shortcut::FocusAddress),
+                "s" if shift => Some(Shortcut::Screenshot),
+                "s" => Some(Shortcut::FocusAddress),
+                "r" => Some(Shortcut::Reload),
+                "u" => Some(Shortcut::ViewSource),
+                "h" => Some(Shortcut::History),
+                "q" => Some(Shortcut::Quit),
+                "=" | "+" => Some(Shortcut::Zoom(Some(true))),
+                "-" | "_" => Some(Shortcut::Zoom(Some(false))),
+                "0" => Some(Shortcut::Zoom(None)),
+                _ => return None,
+            },
+            _ => None,
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+    if alt && !ctrl {
+        match key {
+            Key::Named(NamedKey::ArrowLeft) => return Some(Shortcut::Go(-1)),
+            Key::Named(NamedKey::ArrowRight) => return Some(Shortcut::Go(1)),
+            Key::Named(NamedKey::Home) => return Some(Shortcut::Home),
+            _ => {}
+        }
+    }
+    match key {
+        Key::Named(NamedKey::F5) => Some(Shortcut::Reload),
+        Key::Named(NamedKey::F6) => Some(Shortcut::FocusAddress),
+        _ => None,
+    }
+}
+
+/// Injected into WebView2 pages, which get the keyboard to themselves: posts
+/// Prowl's shortcuts to the browser over IPC as `key:<mods>:<KeyboardEvent.key>`
+/// (mods from `c`trl, `s`hift, `a`lt). Tab, close and quit shortcuts are taken
+/// before the page sees them; the rest only when the page didn't handle the
+/// key itself. Mirrors `shortcut_for`.
+const WEB_KEYS_SCRIPT: &str = r#"(() => {
+  if (window.__prowlKeys || !window.ipc) return;
+  window.__prowlKeys = true;
+  const MAC = /^Mac/.test(navigator.platform);
+  const editable = t => !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+  const kind = e => {
+    const ctrl = e.ctrlKey || (MAC && e.metaKey), k = e.key;
+    if (ctrl && !e.altKey) {
+      if (k === 'Tab' || /^[twq]$/i.test(k)) return 'reserved';
+      if (/^[lsruh=+\-_0]$/i.test(k)) return 'shortcut';
+      if ((k === 'ArrowLeft' || k === 'ArrowRight') && !editable(e.target)) return 'shortcut';
+    }
+    if (e.altKey && !ctrl && (k === 'ArrowLeft' || k === 'ArrowRight' || k === 'Home')) return 'shortcut';
+    if (k === 'F5' || k === 'F6') return 'shortcut';
+    return null;
+  };
+  const send = e => {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const ctrl = e.ctrlKey || (MAC && e.metaKey);
+    window.ipc.postMessage('key:' + (ctrl ? 'c' : '') + (e.shiftKey ? 's' : '') + (e.altKey ? 'a' : '') + ':' + e.key);
+  };
+  addEventListener('keydown', e => { if (kind(e) === 'reserved') send(e); }, true);
+  addEventListener('keydown', e => { if (!e.defaultPrevented && kind(e) === 'shortcut') send(e); });
+})();"#;
+
+/// Parses a `key:<mods>:<key>` message from `WEB_KEYS_SCRIPT` into the key
+/// and its ctrl, shift and alt state.
+fn parse_web_key(message: &str) -> Option<(Key, bool, bool, bool)> {
+    let (mods, name) = message.strip_prefix("key:")?.split_once(':')?;
+    let key = match name {
+        "Tab" => Key::Named(NamedKey::Tab),
+        "ArrowLeft" => Key::Named(NamedKey::ArrowLeft),
+        "ArrowRight" => Key::Named(NamedKey::ArrowRight),
+        "Home" => Key::Named(NamedKey::Home),
+        "F5" => Key::Named(NamedKey::F5),
+        "F6" => Key::Named(NamedKey::F6),
+        c if c.chars().count() == 1 => Key::Character(c.into()),
+        _ => return None,
+    };
+    Some((key, mods.contains('c'), mods.contains('s'), mods.contains('a')))
 }
 
 /// Applies an editing key to a text field. Returns `true` when the key was an
@@ -1216,6 +1329,7 @@ impl Browser {
         let popup_proxy = self.proxy.clone();
         let title_proxy = self.proxy.clone();
         let load_proxy = self.proxy.clone();
+        let key_proxy = self.proxy.clone();
         let size = window.inner_size();
         let bounds = wry::Rect {
             position: WryPosition::Physical(WryPhysicalPosition::new(0, 0)),
@@ -1225,6 +1339,13 @@ impl Browser {
             .with_visible(false)
             .with_bounds(bounds)
             .with_initialization_script(adblock::instance().page_script())
+            .with_initialization_script(WEB_KEYS_SCRIPT)
+            .with_ipc_handler(move |request| {
+                let body = request.body();
+                if body.starts_with("key:") {
+                    let _ = key_proxy.send_event(UserMessage::WebKey(body.clone()));
+                }
+            })
             .with_navigation_handler(move |url| {
                 // Main-frame navigations the ad filter blocks become an engine
                 // notice page instead.
@@ -1717,73 +1838,39 @@ impl Browser {
             }
         }
 
-        // Browser-wide shortcuts.
-        if ctrl && !alt {
-            let handled = match &base {
-                Key::Named(NamedKey::Tab) => {
-                    self.cycle_tab(if shift { -1 } else { 1 });
-                    true
-                }
-                Key::Named(NamedKey::ArrowLeft) if !typing => {
-                    self.go(-1);
-                    true
-                }
-                Key::Named(NamedKey::ArrowRight) if !typing => {
-                    self.go(1);
-                    true
-                }
-                Key::Character(c) => {
-                    let c = c.to_ascii_lowercase();
-                    match c.as_str() {
-                        "t" => self.new_tab(),
-                        "w" => self.close_tab(self.active),
-                        "l" => self.focus_address(),
-                        "s" if shift => self.save_screenshot(),
-                        "s" => self.focus_address(),
-                        "r" => self.reload(),
-                        "u" => self.view_source(),
-                        "h" => self.open_history_page(),
-                        "q" => self.quit = true,
-                        "=" | "+" => self.zoom(Some(true)),
-                        "-" | "_" => self.zoom(Some(false)),
-                        "0" => self.zoom(None),
-                        _ => return self.key_in_focus(event, &base, typing),
-                    }
-                    true
-                }
-                _ => false,
-            };
-            if handled {
-                self.request_redraw();
-                return;
-            }
-        }
-        if alt && !ctrl {
-            let handled = match &base {
-                Key::Named(NamedKey::ArrowLeft) => {
-                    self.go(-1);
-                    true
-                }
-                Key::Named(NamedKey::ArrowRight) => {
-                    self.go(1);
-                    true
-                }
-                Key::Named(NamedKey::Home) => {
-                    self.home();
-                    true
-                }
-                _ => false,
-            };
-            if handled {
-                return;
-            }
-        }
-        match &base {
-            Key::Named(NamedKey::F5) => return self.reload(),
-            Key::Named(NamedKey::F6) => return self.focus_address(),
-            _ => {}
+        if let Some(shortcut) = shortcut_for(&base, ctrl, shift, alt, typing) {
+            self.run_shortcut(shortcut);
+            return;
         }
         self.key_in_focus(event, &base, typing);
+    }
+
+    fn run_shortcut(&mut self, shortcut: Shortcut) {
+        match shortcut {
+            Shortcut::CycleTab(delta) => self.cycle_tab(delta),
+            Shortcut::Go(delta) => self.go(delta),
+            Shortcut::Home => self.home(),
+            Shortcut::NewTab => self.new_tab(),
+            Shortcut::CloseTab => self.close_tab(self.active),
+            Shortcut::FocusAddress => self.focus_address(),
+            Shortcut::Screenshot => self.save_screenshot(),
+            Shortcut::Reload => self.reload(),
+            Shortcut::ViewSource => self.view_source(),
+            Shortcut::History => self.open_history_page(),
+            Shortcut::Quit => self.quit = true,
+            Shortcut::Zoom(change) => self.zoom(change),
+        }
+        self.request_redraw();
+    }
+
+    /// A shortcut pressed while a WebView2 page had the keyboard, as posted
+    /// by `WEB_KEYS_SCRIPT`.
+    fn web_key(&mut self, message: &str) {
+        if let Some((key, ctrl, shift, alt)) = parse_web_key(message)
+            && let Some(shortcut) = shortcut_for(&key, ctrl, shift, alt, false)
+        {
+            self.run_shortcut(shortcut);
+        }
     }
 
     /// Keys handled by whatever has focus: the address bar, a form field or
@@ -2973,6 +3060,7 @@ impl Browser {
             UserMessage::WebLoad(url) => self.web_loaded(url),
             UserMessage::WebTitle(title) => self.web_titled(title),
             UserMessage::WebOpen(url) => self.web_open(url),
+            UserMessage::WebKey(message) => self.web_key(&message),
             UserMessage::Stop => self.stop(),
         }
         self.request_redraw();
@@ -3117,6 +3205,36 @@ impl ApplicationHandler<UserMessage> for Browser {
 mod tests {
     use super::*;
     use crate::html;
+
+    #[test]
+    fn shortcuts() {
+        let ch = |c: &str| Key::Character(c.into());
+        assert_eq!(shortcut_for(&ch("t"), true, false, false, false), Some(Shortcut::NewTab));
+        assert_eq!(shortcut_for(&ch("S"), true, true, false, false), Some(Shortcut::Screenshot));
+        assert_eq!(shortcut_for(&ch("s"), true, false, false, false), Some(Shortcut::FocusAddress));
+        assert_eq!(shortcut_for(&ch("c"), true, false, false, false), None);
+        assert_eq!(shortcut_for(&ch("t"), false, false, false, false), None);
+        let left = Key::Named(NamedKey::ArrowLeft);
+        assert_eq!(shortcut_for(&left, true, false, false, false), Some(Shortcut::Go(-1)));
+        assert_eq!(shortcut_for(&left, true, false, false, true), None);
+        assert_eq!(shortcut_for(&left, false, false, true, true), Some(Shortcut::Go(-1)));
+        let tab = Key::Named(NamedKey::Tab);
+        assert_eq!(shortcut_for(&tab, true, true, false, false), Some(Shortcut::CycleTab(-1)));
+        let f5 = Key::Named(NamedKey::F5);
+        assert_eq!(shortcut_for(&f5, false, false, false, false), Some(Shortcut::Reload));
+    }
+
+    #[test]
+    fn web_key_messages() {
+        let (key, ctrl, shift, alt) = parse_web_key("key:cs:S").unwrap();
+        assert_eq!((key, ctrl, shift, alt), (Key::Character("S".into()), true, true, false));
+        let (key, ctrl, shift, alt) = parse_web_key("key:a:ArrowLeft").unwrap();
+        assert_eq!((key, ctrl, shift, alt), (Key::Named(NamedKey::ArrowLeft), false, false, true));
+        let (key, ..) = parse_web_key("key::F5").unwrap();
+        assert_eq!(key, Key::Named(NamedKey::F5));
+        assert!(parse_web_key("key:c:Enter").is_none());
+        assert!(parse_web_key("hello").is_none());
+    }
 
     #[test]
     fn webview_routing() {

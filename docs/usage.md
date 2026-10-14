@@ -31,7 +31,7 @@ The address bar supports selection with the mouse or `Shift` + arrows, `Ctrl` + 
 
 On Windows, web pages (`http:`, `https:`, `file:` and `data:` addresses) are shown in an embedded WebView2 pane (WKWebView on macOS). Prowl's own engine renders the built-in pages (`about:`, `prowl://` and `view-source:`), the result of a POST form submitted from an engine page, and every page when WebView2 is unavailable or on other platforms.
 
-This matters for input. While a WebView2 page has the keyboard, keys go to that page, so Prowl's shortcuts below do not fire until you click the toolbar, the address bar or the tab sidebar. Forms, link hover, `Ctrl`+wheel and the scrolling keys described here apply to engine pages; WebView2 pages handle these themselves.
+This matters for input. Prowl's shortcuts below also work while a WebView2 page has the keyboard. `Ctrl+T`, `Ctrl+W`, `Ctrl+Q` and `Ctrl+Tab` always go to Prowl; the other shortcuts go to Prowl unless the page uses that key itself (for example a web app that saves on `Ctrl+S`). Keys pressed inside an embedded frame on the page stay with that frame. Forms, link hover, `Ctrl`+wheel and the scrolling keys described here apply to engine pages; WebView2 pages handle these themselves.
 
 ## Built-in pages
 
