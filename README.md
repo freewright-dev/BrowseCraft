@@ -4,60 +4,127 @@
 
 <p align="center">Part of <a href="https://github.com/pierruno-labs">Pierruno Labs</a></p>
 
-A small web browser written in Rust with **its own rendering engine**. Prowl
-parses HTML and CSS, runs the cascade, lays out the page and rasterizes it in
-software:
+A small web browser written in Rust, with tabs, a built-in ad blocker and
+**its own rendering engine**.
+
+Prowl uses two renderers side by side:
+
+- **Prowl's engine** draws the browser's own pages: the new-tab page
+  (`about:home`), `view-source:` and the `prowl://` pages (`prowl://flags`,
+  `prowl://history`). It parses HTML and CSS, runs the cascade, lays out the
+  page and rasterizes it in software.
+- **WebView2** (through `wry`) shows regular websites, so JavaScript-heavy
+  sites work as they would in Edge.
 
 ```
 URL ─► net ─► html ─► DOM ─► css + style (cascade) ─► layout ─► display list ─► paint ─► window
 ```
 
-The engine renders Prowl's own pages (`about:`, `view-source:` and `prowl://`
-pages such as `prowl://flags` and `prowl://history`). Regular web pages open in
-an embedded WebView2 pane beside the tab sidebar, with a built-in ad blocker.
-The toolbar and tabs are drawn with egui on the GPU when one is available, and
-by the engine otherwise.
+The toolbar and tab sidebar are drawn with egui on the GPU when one is
+available, and by the engine otherwise.
 
 ## Features
+
+**Browser**
+
+- Tabs in a vertical sidebar (left, right or hidden)
+- Back, forward, reload/stop, home (Startpage) and an address bar that tells URLs from searches (searches also go to Startpage)
+- Browsing history at `prowl://history`
+- Light, dark or automatic theme, toggled from the toolbar
+- Settings page at `prowl://flags`, saved to `flags.txt`
+- Zoom, view source, link previews on hover and HiDPI support
+- Screenshots of the visible page (`Ctrl+Shift+S`), plus a headless `--screenshot` mode
+- A shortcut cheatsheet on `Shift+K`
+
+**Ad blocking**
+
+- A network and element-hiding filter engine ported from uBlock Origin's core, reading EasyList/uBO filter syntax
+- Blocks navigations, popups and subresources, and hides matching elements on both WebView2 and engine pages
+- Ships with a starter list; drop more lists into `filters/`
+
+**Rendering engine**
 
 - HTML parser with implied tags, auto-closing `<p>`/`<li>`/table parts, entities and quirks-mode detection
 - CSS parser: selectors with combinators, attributes and pseudo-classes (`:not`, `:is`, `:nth-child`, …), `@media`, `@import`, `@supports`, custom properties and `var()`, `calc()` basics
 - Cascade with specificity, `!important`, inline styles, inheritance and legacy HTML attributes (`bgcolor`, `align`, `cellpadding`, …)
-- Layout: block flow with margin collapsing, inline text with line breaking, inline-blocks, floats, flexbox (row/column, wrap, grow/shrink, justify/align, gap), tables (auto column widths, colspan), absolute/fixed/relative positioning, lists, `overflow: hidden`
+- Layout: block flow with margin collapsing, inline text with line breaking, inline-blocks, floats, flexbox, tables, absolute/fixed/relative positioning, lists, `overflow: hidden`
 - Painting: backgrounds, borders, rounded corners, anti-aliased text with system fonts and glyph fallback, PNG/JPEG/GIF/WebP images
-- Forms: text inputs, checkboxes, radios, selects and buttons; GET and POST submission
-- Browser UI drawn by the same engine: back, forward, reload/stop, home, an address bar with selection and clipboard, link previews, zoom, HiDPI, light and dark toolbar
-- `http(s)`, `file://` (with directory listings), `data:`, `view-source:` and a built-in start page
-- Tabs in a vertical sidebar, browsing history, light/dark/auto theme and a `prowl://flags` settings page
-- Ad blocking with uBlock-style filter lists loaded from `filters/`
+- Forms with GET and POST submission; `http(s)`, `file://` (with directory listings) and `data:` URLs
 
-## Usage
+## Requirements
+
+Prowl is developed and tested on Windows. Building it needs:
+
+- Rust 1.95 or newer (`rustup update stable`)
+- The Visual Studio Build Tools with the "Desktop development with C++" workload
+- The WebView2 runtime at run time (included with Windows 11 and current Windows 10)
+
+## Getting started
+
+On Windows, `build.bat` checks your toolchain, builds a release binary and
+copies it into `dist\` together with the filter lists:
+
+```bat
+build.bat            :: release build into dist\prowl.exe
+build.bat run        :: build, then start Prowl
+build.bat debug      :: faster build that keeps a console window for logs
+build.bat test       :: run the unit tests
+build.bat clean      :: remove target\ and dist\
+```
+
+Or use Cargo directly:
 
 ```sh
 cargo run --release                  # opens the start page
 cargo run --release -- example.com   # opens a URL or search
 cargo run --release -- --screenshot page.png news.ycombinator.com 1200
+cargo test
 ```
 
-| Shortcut                  | Action                |
-| ------------------------- | --------------------- |
-| `Ctrl+L` / `F6`           | Focus address bar     |
-| `F5` / `Ctrl+R`           | Reload                |
-| `Alt+Left` / `Alt+Right`  | Back / forward        |
-| `Alt+Home`                | Home                  |
-| `Ctrl+Plus` / `Ctrl+Minus` / `Ctrl+0` | Zoom      |
-| `Ctrl+U`                  | View source           |
-| `Space`, `Page Up/Down`, arrows | Scroll          |
-| `Ctrl+T` / `Ctrl+W`       | New tab / close tab   |
-| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
-| `Ctrl+H`                  | History               |
-| `Shift+K`                 | Shortcut cheatsheet   |
+## Shortcuts
 
-On Windows, `build.bat` builds a release binary into `dist\` along with the filter lists.
+| Shortcut                              | Action                    |
+| ------------------------------------- | ------------------------- |
+| `Ctrl+L` / `F6` / `Ctrl+S`            | Focus address bar         |
+| `Ctrl+T` / `Ctrl+W`                   | New tab / close tab       |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab`         | Next / previous tab       |
+| `Alt+Left` / `Alt+Right`              | Back / forward            |
+| `F5` / `Ctrl+R`                       | Reload                    |
+| `Alt+Home`                            | Home page (Startpage)     |
+| `Ctrl+H`                              | History                   |
+| `Ctrl+Plus` / `Ctrl+Minus` / `Ctrl+0` | Zoom in / out / reset     |
+| `Ctrl+U`                              | View source               |
+| `Ctrl+Shift+S`                        | Save a screenshot to Pictures |
+| `Shift+K`                             | Shortcut cheatsheet       |
+| `Ctrl+Q`                              | Quit                      |
+
+The full list is in [docs/usage.md](docs/usage.md).
+
+## Settings
+
+Open `prowl://flags` to change:
+
+- **Tab sidebar:** left, right or hidden
+- **Theme:** auto (follows the OS), light or dark
+- **Chrome backend:** `auto`, `egui` (GPU) or `engine` (software). This one takes effect after a restart.
+
+Settings are saved as `key=value` lines in `flags.txt` in the working directory.
+
+## Ad-block filter lists
+
+Prowl builds its blocker from a built-in starter list plus every `filters/*.txt`
+file it finds next to the executable or in the working directory. To block
+more, add a list such as [EasyList](https://easylist.to/) to `filters/`.
+
+Some uBlock Origin features aren't supported: regex filters, `$redirect`,
+`$csp`, `$replace`, scriptlets and procedural filters. Rules that use them are
+skipped rather than applied loosely.
 
 ## Documentation
 
-- [Usage](docs/usage.md): address bar rules, toolbar, shortcuts and forms
+- [Usage](docs/usage.md): address bar rules, toolbar, tabs, settings, shortcuts and forms
 - [Architecture](docs/architecture.md): how the engine's stages fit together
+- [egui chrome](docs/egui.md): the GPU toolbar and sidebar, and how they sit next to WebView2
 - [Development](docs/development.md): building, tests, headless screenshots and common changes
 - [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md)
