@@ -38,3 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced the original wry/tao-only browser with a hybrid design: Prowl's own engine and winit window draw the chrome and internal pages, while websites render in an embedded WebView2 pane. The HTML toolbar webview is gone; the toolbar is drawn by the engine or by egui.
 - Searches use Startpage instead of DuckDuckGo.
 - The home page (`Alt+Home`, and the page shown at startup without an argument) is Startpage; new tabs open the built-in `about:home` start page.
+
+### Fixed
+
+- Prowl's keyboard shortcuts (new/close tab, address bar, reload, back/forward, zoom, history and the rest) now work while a web page has the keyboard, instead of only after clicking the toolbar or sidebar.

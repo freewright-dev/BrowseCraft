@@ -49,8 +49,16 @@ The engine handles these internal URLs in `loader::load_page`:
 `about:home`, `about:blank`, `view-source:<url>`, `prowl://flags`,
 `prowl://history`, and `about:blocked:<url>` (the notice shown when the ad
 filter blocks a page). WebView2 events (`WebStart`, `WebLoad`, `WebTitle`,
-`WebOpen`) reach the UI thread as `UserMessage`s. Pop-ups are denied and
+`WebOpen`, `WebKey`) reach the UI thread as `UserMessage`s. Pop-ups are denied and
 reopened in the current tab.
+
+A WebView2 page has the keyboard to itself, so winit never sees its keys.
+`WEB_KEYS_SCRIPT` (injected into every page) catches Prowl's shortcuts and
+posts them over wry's IPC channel as `key:<mods>:<key>`; `web_key` parses them
+and runs them through `shortcut_for`, the same table `key()` uses. Tab, close
+and quit shortcuts are taken before the page sees them; the others only when
+the page didn't handle the key itself. Only the main frame is covered, so keys
+pressed inside an iframe still go to the iframe alone.
 
 ## Loading
 
