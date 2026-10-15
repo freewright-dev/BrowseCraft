@@ -24,3 +24,6 @@ ureq = "3"
 url = "2"
 winit = "0.30"
 wry = "0.53"
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"

@@ -53,12 +53,12 @@ filter blocks a page). WebView2 events (`WebStart`, `WebLoad`, `WebTitle`,
 reopened in the current tab.
 
 A WebView2 page has the keyboard to itself, so winit never sees its keys.
-`WEB_KEYS_SCRIPT` (injected into every page) catches Prowl's shortcuts and
-posts them over wry's IPC channel as `key:<mods>:<key>`; `web_key` parses them
-and runs them through `shortcut_for`, the same table `key()` uses. Tab, close
-and quit shortcuts are taken before the page sees them; the others only when
-the page didn't handle the key itself. Only the main frame is covered, so keys
-pressed inside an iframe still go to the iframe alone.
+On Windows, `attach_webview_shortcuts` hooks the WebView2 controller's native
+`AcceleratorKeyPressed` event, maps the virtual key and modifiers through
+`vk_to_key` and `shortcut_for` (the same table `key()` uses), marks the key
+handled and sends `UserMessage::WebKey` to the UI thread. Because this runs on
+the controller rather than in page JavaScript, pages cannot forge shortcuts
+over IPC and keys pressed inside iframes are covered too.
 
 ## Loading
 

@@ -3007,6 +3007,7 @@ dependencies = [
  "softbuffer",
  "ureq",
  "url",
+ "webview2-com",
  "winit",
  "wry",
 ]
