@@ -172,6 +172,7 @@ pub fn layout(input: &LayoutInput) -> Layout {
         inline_bgs: Vec::new(),
         intrinsic_cache: HashMap::new(),
         first_baseline: None,
+        ordinals: HashMap::new(),
     };
     let Some(html) = html else { return engine.out };
 
@@ -199,6 +200,10 @@ pub fn layout(input: &LayoutInput) -> Layout {
     engine.out.width = engine.out.width.max(size.w);
     engine.out
 }
+
+/// Columns per table. Each one costs width bookkeeping for every row, and
+/// `colspan` alone lets a few KB of HTML ask for millions.
+const MAX_TABLE_COLUMNS: usize = 1000;
 
 #[derive(Clone, Copy)]
 enum Sizing {
@@ -297,6 +302,8 @@ struct Engine<'a> {
     inline_bgs: Vec<InlineBg>,
     intrinsic_cache: HashMap<NodeId, (f32, f32)>,
     first_baseline: Option<f32>,
+    /// List item numbers, filled in for a whole list at its first marker.
+    ordinals: HashMap<NodeId, i32>,
 }
 
 fn resolve(l: Length, base: f32) -> Option<f32> {
@@ -703,37 +710,38 @@ impl<'a> Engine<'a> {
         }
     }
 
+    /// The number of list item `node`: its `value`, or one more than the
+    /// previous `<li>`, starting from the list's `start`. Numbers the whole
+    /// list in one pass, since counting the previous siblings for every item
+    /// is quadratic.
+    fn ordinal(&mut self, node: NodeId) -> i32 {
+        if let Some(&n) = self.ordinals.get(&node) {
+            return n;
+        }
+        let doc = self.doc();
+        let number = |n: NodeId, attr: &str| -> Option<i32> {
+            doc.element(n)?.attr(attr)?.trim().parse().ok()
+        };
+        let Some(list) = doc.parent_element(node) else {
+            return number(node, "value").unwrap_or(1);
+        };
+        let mut next = number(list, "start").unwrap_or(1);
+        for &child in &doc.nodes[list].children {
+            if doc.element(child).is_none() {
+                continue;
+            }
+            let n = number(child, "value").unwrap_or(next);
+            self.ordinals.insert(child, n);
+            if doc.tag(child) == "li" {
+                next = n.saturating_add(1);
+            }
+        }
+        self.ordinals.get(&node).copied().unwrap_or(next)
+    }
+
     fn list_marker(&mut self, node: NodeId, cx: f32, cy: f32) {
         let st = self.st(node);
-        let doc = self.doc();
-        let ordinal = || -> i32 {
-            let start = doc
-                .parent_element(node)
-                .and_then(|p| doc.element(p))
-                .and_then(|e| e.attr("start"))
-                .and_then(|s| s.trim().parse().ok())
-                .unwrap_or(1);
-            let mut n = start;
-            for sib in doc
-                .previous_elements(node)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-            {
-                if doc.tag(sib) == "li" {
-                    n = doc
-                        .element(sib)
-                        .and_then(|e| e.attr("value"))
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(n)
-                        + 1;
-                }
-            }
-            doc.element(node)
-                .and_then(|e| e.attr("value"))
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(n)
-        };
+        let mut ordinal = || self.ordinal(node);
         let text = match st.list_style {
             ListStyle::None => return,
             ListStyle::Disc => "•".to_string(),
@@ -1358,7 +1366,9 @@ impl<'a> Engine<'a> {
                     continue;
                 }
             }
-            // Break words wider than a whole line.
+            // Break words wider than a whole line, a line's worth at a time.
+            // Cutting by offset copies each character once; handing the
+            // rest back as a new piece would copy it again for every line.
             if let (PieceKind::Word(text), true) = (
                 &piece.kind,
                 piece.width > ls.avail - ls.line_w + 0.01 && wraps,
@@ -1368,32 +1378,42 @@ impl<'a> Engine<'a> {
                 };
                 let st = self.st(*node);
                 let key = font_key(st);
-                let room = ls.avail - ls.line_w;
-                let mut split = 0;
-                let mut used = 0.0;
-                for (i, c) in text.char_indices() {
-                    let cw = fonts.advance(key, c, st.font_size);
-                    if used + cw > room && i > 0 {
-                        break;
+                let mut start = 0;
+                let mut rest_w = piece.width;
+                loop {
+                    let room = ls.avail - ls.line_w;
+                    let mut split = start;
+                    let mut used = 0.0;
+                    for (i, c) in text[start..].char_indices() {
+                        let cw = fonts.advance(key, c, st.font_size);
+                        if used + cw > room && i > 0 {
+                            break;
+                        }
+                        used += cw;
+                        split = start + i + c.len_utf8();
                     }
-                    used += cw;
-                    split = i + c.len_utf8();
-                }
-                let (head, rest) = text.split_at(split);
-                ls.line.push(Piece {
-                    kind: PieceKind::Word(head.to_string()),
-                    width: used,
-                    item: piece.item,
-                });
-                ls.line_w += used;
-                if !rest.is_empty() {
-                    let rest_w = piece.width - used;
-                    pending = Some(Piece {
-                        kind: PieceKind::Word(rest.to_string()),
-                        width: rest_w,
+                    ls.line.push(Piece {
+                        kind: PieceKind::Word(text[start..split].to_string()),
+                        width: used,
                         item: piece.item,
                     });
+                    ls.line_w += used;
+                    rest_w -= used;
+                    start = split;
+                    if start == text.len() {
+                        break;
+                    }
                     self.finish_line(&mut ls, &items, &atomics, cst, cx, w, indent);
+                    // The rest fits, or floats are in the way: the main loop
+                    // places it (and moves below the floats if need be).
+                    if rest_w <= ls.avail - ls.line_w + 0.01 || ls.next_float_bottom().is_some() {
+                        pending = Some(Piece {
+                            kind: PieceKind::Word(text[start..].to_string()),
+                            width: rest_w,
+                            item: piece.item,
+                        });
+                        break;
+                    }
                 }
                 continue;
             }
@@ -2027,13 +2047,17 @@ impl<'a> Engine<'a> {
             .iter()
             .map(|(_, cells)| cells.iter().map(|&c| self.colspan(c)).sum::<usize>())
             .max()
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .min(MAX_TABLE_COLUMNS);
         let mut mins = vec![0.0f32; n];
         let mut maxs = vec![0.0f32; n];
         let mut spans = Vec::new();
         for (_, cells) in rows {
             let mut col = 0;
             for &cell in cells {
+                if col >= n {
+                    break; // past MAX_TABLE_COLUMNS
+                }
                 let span = self.colspan(cell);
                 let (mut min, mut max) = self.intrinsic(cell);
                 if let Length::Px(w) = self.st(cell).width {
@@ -2564,5 +2588,83 @@ mod tests {
         ] {
             render_on_main_stack(open.repeat(n) + "x");
         }
+    }
+}
+
+#[cfg(test)]
+mod scaling_tests {
+    use super::*;
+    use crate::{css, html};
+    use std::time::{Duration, Instant};
+
+    /// The text items `markup` lays out to, or `None` without system fonts.
+    fn texts(markup: &str, css: &str) -> Option<Vec<String>> {
+        let fonts = crate::font::Fonts::new().ok()?;
+        let doc = html::parse(markup);
+        let sheets = vec![css::parse_stylesheet(css)];
+        let ctx = crate::style::StyleContext {
+            zoom: 1.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+        };
+        let styles = crate::style::compute_styles(&doc, &sheets, &ctx);
+        let (images, form) = (HashMap::new(), FormState::default());
+        let input = LayoutInput {
+            doc: &doc,
+            styles: &styles,
+            fonts: &fonts,
+            images: &images,
+            form: &form,
+            zoom: 1.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+        };
+        let items = layout(&input).items;
+        Some(
+            items
+                .into_iter()
+                .filter_map(|i| match i {
+                    Item::Text { text, .. } => Some(text),
+                    _ => None,
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn list_numbers_follow_start_and_value() {
+        let markup = r#"<ol start="5"><li>a<li>b<li value="10">c<p>x</p><li>d</ol>"#;
+        let Some(t) = texts(markup, "") else { return };
+        let markers: Vec<_> = t.iter().filter(|s| s.ends_with('.')).collect();
+        assert_eq!(markers, ["5.", "6.", "10.", "11."]);
+        let Some(t) = texts(r#"<ol><li value="2147483647">a<li>b</ol>"#, "") else {
+            return;
+        };
+        assert!(t.contains(&"2147483647.".to_string()));
+    }
+
+    #[test]
+    fn long_lists_tables_and_words_lay_out_quickly() {
+        let start = Instant::now();
+        let list = "<ol>".to_string() + &"<li>x".repeat(40_000) + "</ol>";
+        let Some(t) = texts(&list, "") else { return };
+        assert!(t.contains(&"40000.".to_string()));
+
+        let cells = "<td colspan=1000>x</td>".repeat(20_000);
+        texts(
+            &format!("<table><tr>{cells}</tr><tr><td>y</td></tr></table>"),
+            "",
+        );
+
+        let word = "w".repeat(400_000);
+        let t = texts(&format!("<div style=\"width:1px\">{word}</div>"), "").unwrap();
+        let pieces: Vec<_> = t.iter().filter(|s| s.starts_with('w')).collect();
+        assert_eq!(pieces.iter().map(|s| s.len()).sum::<usize>(), 400_000);
+        assert!(pieces.len() > 1000);
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "{:?}",
+            start.elapsed()
+        );
     }
 }
