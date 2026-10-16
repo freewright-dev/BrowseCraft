@@ -73,7 +73,7 @@ struct DomainSel {
     neg: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Tok {
     Lit(String),
     Sep,
@@ -508,109 +508,100 @@ fn match_pattern(rule: &NetRule, hay: &str, host_end: Option<usize>, url_host: &
     match_tokens(hay, &p.toks, 0, !p.left_anchor, p.right_anchor)
 }
 
+/// Whether `toks` match `hay` from byte `at` (anywhere from `at` on when
+/// `scan`), up to the end of `hay` when `right`.
+///
+/// The tokens between `*`s form segments of fixed length (a `^` may also
+/// match the end of the URL, but only there). Placing each segment at its
+/// leftmost match is therefore always safe, since a later placement never
+/// leaves more room for what follows; only a right-anchored final segment
+/// has to end exactly at the end. That makes matching linear in the URL
+/// length instead of trying every placement of every segment, which with
+/// several `*`s was O(n^k).
 fn match_tokens(hay: &str, toks: &[Tok], at: usize, scan: bool, right: bool) -> bool {
     let end = hay.len();
     if toks.is_empty() {
         return !right || at >= end;
     }
-    if scan {
-        // Search the first token forward from `at` (unanchored patterns).
-        return match &toks[0] {
-            Tok::Lit(s) => {
-                let mut k = at;
-                while let Some(rel) = hay.get(k..end).and_then(|rest| rest.find(s.as_str())) {
-                    let p = k + rel;
-                    if match_tokens(hay, &toks[1..], p + s.len(), false, right) {
-                        return true;
-                    }
-                    if s.is_empty() {
-                        break;
-                    }
-                    k = p + s.len().max(1);
-                    if k > end {
-                        break;
-                    }
-                }
-                false
+    let trailing_any = matches!(toks.last(), Some(Tok::Any));
+    let segments: Vec<&[Tok]> = toks.split(|t| matches!(t, Tok::Any)).collect();
+    let last = segments.len() - 1;
+    let mut cur = at;
+    for (i, seg) in segments.iter().enumerate() {
+        if seg.is_empty() {
+            continue; // a leading or trailing `*`
+        }
+        // After a `*` (or anywhere, for an unanchored start) the segment may
+        // start at any later position.
+        let floating = i > 0 || scan;
+        let must_end = i == last && right && !trailing_any;
+        let found = match (floating, must_end) {
+            (false, _) => match_segment_at(hay, seg, cur).filter(|&e| !must_end || e == end),
+            (true, true) => {
+                // The segment is at least `len - 1` bytes long.
+                let from = cur.max(end.saturating_sub(segment_len(seg)));
+                (from..=end).find_map(|p| match_segment_at(hay, seg, p).filter(|&e| e == end))
             }
-            Tok::Sep => {
-                for k in at..=end {
-                    if k < end && !is_sep(hay.as_bytes()[k] as char) {
-                        continue;
-                    }
-                    if match_tokens(
-                        hay,
-                        &toks[1..],
-                        if k < end { k + 1 } else { k },
-                        false,
-                        right,
-                    ) {
-                        return true;
-                    }
-                }
-                false
-            }
-            Tok::Any => match_tokens(hay, toks, at, false, right),
+            (true, false) => find_segment(hay, seg, cur),
         };
-    }
-    match &toks[0] {
-        Tok::Lit(s) => {
-            hay.get(at..at + s.len()) == Some(s.as_str())
-                && match_tokens(hay, &toks[1..], at + s.len(), false, right)
-        }
-        Tok::Sep => {
-            if at == end {
-                return match_tokens(hay, &toks[1..], end, false, right);
-            }
-            hay.as_bytes().get(at).is_some_and(|&b| is_sep(b as char))
-                && match_tokens(hay, &toks[1..], at + 1, false, right)
-        }
-        Tok::Any => {
-            if toks.len() == 1 {
-                return true; // a wildcard consumes everything up to end-of-URL
-            }
-            match &toks[1] {
-                Tok::Lit(s) => {
-                    let mut k = at;
-                    while let Some(rel) = hay.get(k..end).and_then(|rest| rest.find(s.as_str())) {
-                        let p = k + rel;
-                        if match_tokens(hay, &toks[2..], p + s.len(), false, right) {
-                            return true;
-                        }
-                        if s.is_empty() {
-                            break;
-                        }
-                        k = p + s.len().max(1);
-                        if k > end {
-                            break;
-                        }
-                    }
-                    false
-                }
-                Tok::Sep => {
-                    for k in at..=end {
-                        if k < end && !is_sep(hay.as_bytes()[k] as char) {
-                            continue;
-                        }
-                        if match_tokens(
-                            hay,
-                            &toks[2..],
-                            if k < end { k + 1 } else { k },
-                            false,
-                            right,
-                        ) {
-                            return true;
-                        }
-                    }
-                    false
-                }
-                Tok::Any => {
-                    // Consecutive `*` can't happen: parse collapses them.
-                    false
-                }
-            }
+        match found {
+            Some(e) => cur = e,
+            None => return false,
         }
     }
+    !right || trailing_any || cur >= end
+}
+
+/// The length of `seg` when each `^` matches one separator character.
+fn segment_len(seg: &[Tok]) -> usize {
+    seg.iter()
+        .map(|t| match t {
+            Tok::Lit(s) => s.len(),
+            _ => 1,
+        })
+        .sum()
+}
+
+/// Where `seg` ends if it matches `hay` starting exactly at `p`.
+fn match_segment_at(hay: &str, seg: &[Tok], mut p: usize) -> Option<usize> {
+    for tok in seg {
+        match tok {
+            Tok::Lit(s) => {
+                if hay.get(p..p + s.len()) != Some(s.as_str()) {
+                    return None;
+                }
+                p += s.len();
+            }
+            // `^` matches a separator, or the end of the URL.
+            Tok::Sep if p == hay.len() => {}
+            Tok::Sep => {
+                if !hay.as_bytes().get(p).is_some_and(|&b| is_sep(b as char)) {
+                    return None;
+                }
+                p += 1;
+            }
+            Tok::Any => return None, // segments never contain `*`
+        }
+    }
+    Some(p)
+}
+
+/// Where the leftmost match of `seg` at or after `from` ends.
+fn find_segment(hay: &str, seg: &[Tok], from: usize) -> Option<usize> {
+    let mut p = from;
+    while p <= hay.len() {
+        // Jump straight to occurrences of a leading literal.
+        if let Some(Tok::Lit(s)) = seg.first()
+            && !s.is_empty()
+        {
+            p += hay.get(p..)?.find(s.as_str())?;
+        }
+        if let Some(e) = match_segment_at(hay, seg, p) {
+            return Some(e);
+        }
+        p += 1;
+    }
+    None
 }
 
 // ---- Parsing ----
@@ -1068,6 +1059,163 @@ mod tests {
         ab.matches_network(url, &host, types, doc)
     }
 
+    /// The original backtracking matcher, kept as the reference that the
+    /// linear one must agree with.
+    fn match_tokens_reference(hay: &str, toks: &[Tok], at: usize, scan: bool, right: bool) -> bool {
+        let end = hay.len();
+        if toks.is_empty() {
+            return !right || at >= end;
+        }
+        if scan {
+            // Search the first token forward from `at` (unanchored patterns).
+            return match &toks[0] {
+                Tok::Lit(s) => {
+                    let mut k = at;
+                    while let Some(rel) = hay.get(k..end).and_then(|rest| rest.find(s.as_str())) {
+                        let p = k + rel;
+                        if match_tokens_reference(hay, &toks[1..], p + s.len(), false, right) {
+                            return true;
+                        }
+                        if s.is_empty() {
+                            break;
+                        }
+                        k = p + s.len().max(1);
+                        if k > end {
+                            break;
+                        }
+                    }
+                    false
+                }
+                Tok::Sep => {
+                    for k in at..=end {
+                        if k < end && !is_sep(hay.as_bytes()[k] as char) {
+                            continue;
+                        }
+                        if match_tokens(
+                            hay,
+                            &toks[1..],
+                            if k < end { k + 1 } else { k },
+                            false,
+                            right,
+                        ) {
+                            return true;
+                        }
+                    }
+                    false
+                }
+                Tok::Any => match_tokens_reference(hay, toks, at, false, right),
+            };
+        }
+        match &toks[0] {
+            Tok::Lit(s) => {
+                hay.get(at..at + s.len()) == Some(s.as_str())
+                    && match_tokens_reference(hay, &toks[1..], at + s.len(), false, right)
+            }
+            Tok::Sep => {
+                if at == end {
+                    return match_tokens_reference(hay, &toks[1..], end, false, right);
+                }
+                hay.as_bytes().get(at).is_some_and(|&b| is_sep(b as char))
+                    && match_tokens_reference(hay, &toks[1..], at + 1, false, right)
+            }
+            Tok::Any => {
+                if toks.len() == 1 {
+                    return true; // a wildcard consumes everything up to end-of-URL
+                }
+                match &toks[1] {
+                    Tok::Lit(s) => {
+                        let mut k = at;
+                        while let Some(rel) = hay.get(k..end).and_then(|rest| rest.find(s.as_str()))
+                        {
+                            let p = k + rel;
+                            if match_tokens_reference(hay, &toks[2..], p + s.len(), false, right) {
+                                return true;
+                            }
+                            if s.is_empty() {
+                                break;
+                            }
+                            k = p + s.len().max(1);
+                            if k > end {
+                                break;
+                            }
+                        }
+                        false
+                    }
+                    Tok::Sep => {
+                        for k in at..=end {
+                            if k < end && !is_sep(hay.as_bytes()[k] as char) {
+                                continue;
+                            }
+                            if match_tokens(
+                                hay,
+                                &toks[2..],
+                                if k < end { k + 1 } else { k },
+                                false,
+                                right,
+                            ) {
+                                return true;
+                            }
+                        }
+                        false
+                    }
+                    Tok::Any => {
+                        // Consecutive `*` can't happen: parse collapses them.
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn linear_matcher_agrees_with_backtracking_reference() {
+        let mut seed = 0x9e37_79b9_u32;
+        let mut next = |n: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed % n
+        };
+        let alphabet = ["a", "b", "/", "?", "ab", "ba"];
+        for _ in 0..20_000 {
+            let mut toks: Vec<Tok> = Vec::new();
+            for _ in 0..1 + next(5) {
+                let tok = match next(4) {
+                    0 => Tok::Sep,
+                    1 if !matches!(toks.last(), Some(Tok::Any)) => Tok::Any,
+                    _ => Tok::Lit(alphabet[next(6) as usize].to_string()),
+                };
+                toks.push(tok);
+            }
+            let hay: String = (0..next(12))
+                .map(|_| ["a", "b", "/", "?"][next(4) as usize])
+                .collect();
+            for at in [0, 1, hay.len()] {
+                let at = at.min(hay.len());
+                for (scan, right) in [(false, false), (false, true), (true, false), (true, true)] {
+                    assert_eq!(
+                        match_tokens(&hay, &toks, at, scan, right),
+                        match_tokens_reference(&hay, &toks, at, scan, right),
+                        "{toks:?} {hay:?} at={at} scan={scan} right={right}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn many_wildcards_on_a_long_url_are_fast() {
+        let ab = blocker(&["a*a*a*a*a*a*a*b|"]);
+        let url = format!("https://example.com/{}", "a".repeat(20_000));
+        let start = std::time::Instant::now();
+        assert_eq!(decide(&ab, &url, TYPE_ALL, "x.com"), Decision::Neutral);
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(
+            decide(&ab, &(url + "b"), TYPE_ALL, "x.com"),
+            Decision::Block
+        );
+    }
+
     #[test]
     fn hostname_anchor_uses_the_parsed_host() {
         let ab = blocker(&["||doubleclick.net^", "||ads.example^$document"]);
@@ -1082,7 +1230,11 @@ mod tests {
             "https://user:pw@sub.doubleclick.net/ad.js",
             "HTTPS://DOUBLECLICK.NET/X",
         ] {
-            assert_eq!(decide(&ab, url, TYPE_ALL, "other.com"), Decision::Block, "{url}");
+            assert_eq!(
+                decide(&ab, url, TYPE_ALL, "other.com"),
+                Decision::Block,
+                "{url}"
+            );
         }
         assert_eq!(
             decide(&ab, "https://doubleclick.network/", TYPE_ALL, "other.com"),
