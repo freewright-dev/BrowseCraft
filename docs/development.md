@@ -10,8 +10,8 @@
   Windows 10)
 - System fonts: Segoe UI or Arial on Windows, Arial on macOS, DejaVu or Liberation fonts on Linux
 
-Prowl is developed and tested on Windows; CI runs only on `windows-latest`.
-`about:`, `view-source:` and `prowl:` pages render in Prowl's own engine;
+Browsecraft is developed and tested on Windows; CI runs only on `windows-latest`.
+`about:`, `view-source:` and `browsecraft:` pages render in Browsecraft's own engine;
 everything else renders in an embedded WebView2 pane via the `wry` crate.
 
 ## Build and run
@@ -34,7 +34,7 @@ build takes a few minutes.
 On Windows, `build.bat` wraps the same steps:
 
 ```bat
-build.bat              :: optimised release build -> dist\prowl.exe
+build.bat              :: optimised release build -> dist\browsecraft.exe
 build.bat debug        :: faster build with a console window for eprintln!
 build.bat test         :: run the unit tests instead of building
 build.bat clean        :: remove target\ and dist\
@@ -42,7 +42,7 @@ build.bat run          :: start the browser after a successful build
 ```
 
 It checks that `rustc` is 1.95 or newer (and runs `rustup update stable` if
-not), builds, then copies the executable to `dist\prowl.exe` and the
+not), builds, then copies the executable to `dist\browsecraft.exe` and the
 `filters\` folder to `dist\filters\`. Set `NOPAUSE=1` to skip the closing
 `pause`.
 
@@ -57,7 +57,7 @@ and restart; `build.bat` copies the folder into `dist\`.
 
 ## Flags
 
-Settings from `prowl://flags` are saved as `key=value` lines in `flags.txt` in
+Settings from `browsecraft://flags` are saved as `key=value` lines in `flags.txt` in
 the working directory (ignored by git).
 
 ## Headless screenshots
@@ -67,7 +67,7 @@ cargo run --release -- --screenshot out.png https://news.ycombinator.com/ 1200
 ```
 
 This runs without a window (see `src/headless.rs`); the width is optional and
-defaults to 1200. It always uses Prowl's own engine, never WebView2. It loads
+defaults to 1200. It always uses Browsecraft's own engine, never WebView2. It loads
 the page and all its images, then renders the full page (up to
 6000 px tall) at the given width to a PNG. It runs the same style, layout and
 paint code as the window, so it's the quickest way to check a rendering change.
@@ -100,7 +100,7 @@ routing, zoom steps, shortcuts and form submission (`browser.rs`). The
 - **Which pages use WebView2:** `request_in_webview()` in `src/browser.rs`.
 - **Ad blocking:** `src/adblock.rs` (`load_default()`, built-in `START_LIST`); extra lists in `filters/`.
 - **Tabs:** `TabState`, `park_active_tab`/`activate_pantry`/`switch_tab`/`new_tab`/`close_tab` in `src/browser.rs`.
-- **Flags / settings page:** `src/flags.rs` (`prowl://flags` HTML in `page_html()`); routing in `src/loader.rs`. **History page:** `src/history.rs`.
+- **Flags / settings page:** `src/flags.rs` (`browsecraft://flags` HTML in `page_html()`); routing in `src/loader.rs`. **History page:** `src/history.rs`.
 - **Icons:** Phosphor codepoints in `src/icons.rs` (font embedded via the `egui-phosphor` crate), loaded as `Family::Icon` in `src/font.rs`.
 - **Shortcuts:** `Browser::key()` in `src/browser.rs`.
 

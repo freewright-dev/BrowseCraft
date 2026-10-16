@@ -1,5 +1,5 @@
 //! Browsing history: every page that finishes loading is recorded here, and
-//! `prowl://history` renders it as an internal page.
+//! `browsecraft://history` renders it as an internal page.
 //!
 //! The store is global (all tabs share it) and is read from the loader thread
 //! when the history page is built, so it lives behind a `Mutex` in a
@@ -52,10 +52,10 @@ pub fn record(url: &str, title: &str) {
 /// Pages that shouldn't clutter the history (the history page itself, blank
 /// tabs, view-source of another page).
 fn is_internal(url: &str) -> bool {
-    url.starts_with("prowl://") || url == "about:blank" || url.starts_with("view-source:")
+    url.starts_with("browsecraft://") || url == "about:blank" || url.starts_with("view-source:")
 }
 
-/// The HTML for the `prowl://history` page, newest visits first.
+/// The HTML for the `browsecraft://history` page, newest visits first.
 pub fn page_html() -> String {
     let entries = store().lock().map(|e| e.clone()).unwrap_or_default();
     let mut rows = String::new();
@@ -97,7 +97,7 @@ pub fn page_html() -> String {
          .u {{ display: block; color: #8c959f; font-size: 12px; word-break: break-all; margin-top: 2px }}\
          .empty {{ color: #57606a }}\
          </style><main><h1>History</h1>\
-         <p class=\"sub\">Pages Prowl has loaded, newest first.</p>{body}</main>"
+         <p class=\"sub\">Pages Browsecraft has loaded, newest first.</p>{body}</main>"
     )
 }
 
@@ -124,11 +124,11 @@ mod tests {
     #[test]
     fn internal_pages_are_ignored() {
         let _guard = SERIAL.lock().unwrap();
-        record("prowl://history", "History");
+        record("browsecraft://history", "History");
         record("about:blank", "");
         record("view-source:https://example.com/", "src");
         let html = page_html();
-        assert!(!html.contains("prowl://history"));
+        assert!(!html.contains("browsecraft://history"));
         assert!(!html.contains("view-source:"));
     }
 

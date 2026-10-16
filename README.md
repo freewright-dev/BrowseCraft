@@ -1,17 +1,17 @@
 <p align="center"><img src="assets/logo.png" alt="" width="160"></p>
 
-<h1 align="center">Prowl</h1>
+<h1 align="center">Browsecraft</h1>
 
 <p align="center">Part of <a href="https://github.com/pierruno-labs">Pierruno Labs</a></p>
 
 A small web browser written in Rust, with tabs, a built-in ad blocker and
 **its own rendering engine**.
 
-Prowl uses two renderers side by side:
+Browsecraft uses two renderers side by side:
 
-- **Prowl's engine** draws the browser's own pages: the new-tab page
-  (`about:home`), `view-source:` and the `prowl://` pages (`prowl://flags`,
-  `prowl://history`). It parses HTML and CSS, runs the cascade, lays out the
+- **Browsecraft's engine** draws the browser's own pages: the new-tab page
+  (`about:home`), `view-source:` and the `browsecraft://` pages (`browsecraft://flags`,
+  `browsecraft://history`). It parses HTML and CSS, runs the cascade, lays out the
   page and rasterizes it in software.
 - **WebView2** (through `wry`) shows regular websites, so JavaScript-heavy
   sites work as they would in Edge.
@@ -29,9 +29,9 @@ available, and by the engine otherwise.
 
 - Tabs in a vertical sidebar (left, right or hidden)
 - Back, forward, reload/stop, home (Startpage) and an address bar that tells URLs from searches (searches also go to Startpage)
-- Browsing history at `prowl://history`
+- Browsing history at `browsecraft://history`
 - Light, dark or automatic theme, toggled from the toolbar
-- Settings page at `prowl://flags`, saved to `flags.txt`
+- Settings page at `browsecraft://flags`, saved to `flags.txt`
 - Zoom, view source, link previews on hover and HiDPI support
 - Screenshots of the visible page (`Ctrl+Shift+S`), plus a headless `--screenshot` mode
 - A shortcut cheatsheet on `Shift+K`
@@ -53,7 +53,7 @@ available, and by the engine otherwise.
 
 ## Requirements
 
-Prowl is developed and tested on Windows. Building it needs:
+Browsecraft is developed and tested on Windows. Building it needs:
 
 - Rust 1.95 or newer (`rustup update stable`)
 - The Visual Studio Build Tools with the "Desktop development with C++" workload
@@ -65,8 +65,8 @@ On Windows, `build.bat` checks your toolchain, builds a release binary and
 copies it into `dist\` together with the filter lists:
 
 ```bat
-build.bat            :: release build into dist\prowl.exe
-build.bat run        :: build, then start Prowl
+build.bat            :: release build into dist\browsecraft.exe
+build.bat run        :: build, then start Browsecraft
 build.bat debug      :: faster build that keeps a console window for logs
 build.bat test       :: run the unit tests
 build.bat clean      :: remove target\ and dist\
@@ -102,7 +102,7 @@ The full list is in [docs/usage.md](docs/usage.md).
 
 ## Settings
 
-Open `prowl://flags` to change:
+Open `browsecraft://flags` to change:
 
 - **Tab sidebar:** left, right or hidden
 - **Theme:** auto (follows the OS), light or dark
@@ -112,7 +112,7 @@ Settings are saved as `key=value` lines in `flags.txt` in the working directory.
 
 ## Ad-block filter lists
 
-Prowl builds its blocker from a built-in starter list plus every `filters/*.txt`
+Browsecraft builds its blocker from a built-in starter list plus every `filters/*.txt`
 file it finds next to the executable or in the working directory. To block
 more, add a list such as [EasyList](https://easylist.to/) to `filters/`.
 

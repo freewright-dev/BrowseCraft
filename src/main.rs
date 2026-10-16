@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! Prowl: a small web browser with its own rendering engine.
+//! Browsecraft: a small web browser with its own rendering engine.
 //!
 //! Pipeline: `net` fetches bytes, `html` parses them into a `dom`, `css`
 //! parses stylesheets, `style` runs the cascade, `layout` builds a display
@@ -33,19 +33,19 @@ fn main() {
     let fonts = match font::Fonts::new() {
         Ok(fonts) => fonts,
         Err(e) => {
-            eprintln!("prowl: {e}");
+            eprintln!("browsecraft: {e}");
             std::process::exit(1);
         }
     };
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--screenshot") {
         let (Some(out), Some(url)) = (args.get(2), args.get(3)) else {
-            eprintln!("usage: prowl --screenshot <out.png> <url> [width]");
+            eprintln!("usage: browsecraft --screenshot <out.png> <url> [width]");
             std::process::exit(2);
         };
         let width = args.get(4).and_then(|w| w.parse().ok()).unwrap_or(1200);
         if let Err(e) = headless::screenshot(&fonts, &address::resolve(url), out, width) {
-            eprintln!("prowl: {e}");
+            eprintln!("browsecraft: {e}");
             std::process::exit(1);
         }
         return;
@@ -58,12 +58,12 @@ fn main() {
     let event_loop = match EventLoop::with_user_event().build() {
         Ok(el) => el,
         Err(e) => {
-            eprintln!("prowl: failed to start the event loop: {e}");
+            eprintln!("browsecraft: failed to start the event loop: {e}");
             std::process::exit(1);
         }
     };
     let mut app = browser::Browser::new(event_loop.create_proxy(), fonts, start_url);
     if let Err(e) = event_loop.run_app(&mut app) {
-        eprintln!("prowl: {e}");
+        eprintln!("browsecraft: {e}");
     }
 }

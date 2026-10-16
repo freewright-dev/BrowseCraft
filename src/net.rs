@@ -7,9 +7,9 @@ use ureq::ResponseExt;
 use url::Url;
 
 pub const USER_AGENT: &str = concat!(
-    "Mozilla/5.0 (compatible; Prowl/",
+    "Mozilla/5.0 (compatible; Browsecraft/",
     env!("CARGO_PKG_VERSION"),
-    "; +https://github.com/PierrunoYT/prowl)"
+    "; +https://github.com/pierruno-labs/browsecraft)"
 );
 const MAX_BODY: u64 = 32 * 1024 * 1024;
 
