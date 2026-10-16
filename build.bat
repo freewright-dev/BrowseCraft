@@ -1,9 +1,9 @@
 @echo off
 rem ===========================================================================
-rem  Prowl - build script for Windows
+rem  Browsecraft - build script for Windows
 rem
 rem  Usage:   build.bat [release|debug] [test] [clean] [run]
-rem             (no arguments)  optimised release build  -> dist\prowl.exe
+rem             (no arguments)  optimised release build  -> dist\browsecraft.exe
 rem             debug           faster build with a console window for eprintln!
 rem             test            run the unit tests instead of building
 rem             clean           remove target\ and dist\
@@ -15,7 +15,7 @@ rem         At run time the embedded web view needs the WebView2 runtime
 rem         (already part of Windows 11 and current Windows 10).
 rem ===========================================================================
 setlocal EnableExtensions
-title Prowl build
+title Browsecraft build
 cd /d "%~dp0"
 
 set "MODE=release"
@@ -84,7 +84,7 @@ rem ---- 3. Build --------------------------------------------------------------
 set "CARGO_ARGS="
 if /i "%MODE%"=="release" set "CARGO_ARGS=--release"
 
-echo Building Prowl ^(%MODE%^)...
+echo Building Browsecraft ^(%MODE%^)...
 if /i "%MODE%"=="release" echo The release profile uses LTO, so the first build takes a few minutes.
 cargo build %CARGO_ARGS%
 if errorlevel 1 (
@@ -97,23 +97,23 @@ if errorlevel 1 (
 )
 
 rem ---- 4. Collect a ready-to-run folder --------------------------------------
-set "EXE=target\%MODE%\prowl.exe"
+set "EXE=target\%MODE%\browsecraft.exe"
 if not exist "%EXE%" (
     echo [error] Expected %EXE% but it was not produced.
     goto :fail
 )
 if exist dist rmdir /s /q dist
 mkdir dist
-copy /y "%EXE%" "dist\prowl.exe" >nul
+copy /y "%EXE%" "dist\browsecraft.exe" >nul
 if exist filters xcopy /e /i /y /q filters "dist\filters" >nul
 
 echo.
-echo Build finished: %CD%\dist\prowl.exe
+echo Build finished: %CD%\dist\browsecraft.exe
 echo The ad-filter lists in dist\filters are loaded next to the executable.
 
 if defined RUN_AFTER (
-    echo Starting Prowl...
-    start "" "dist\prowl.exe"
+    echo Starting Browsecraft...
+    start "" "dist\browsecraft.exe"
 )
 goto :done
 

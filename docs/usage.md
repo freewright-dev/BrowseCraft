@@ -3,21 +3,21 @@
 ## Starting the browser
 
 ```sh
-prowl                 # opens Startpage (the home page)
-prowl example.com     # opens a URL
-prowl "rust browser"  # runs a search
-prowl --screenshot out.png example.com 1200   # renders to a PNG
+browsecraft                 # opens Startpage (the home page)
+browsecraft example.com     # opens a URL
+browsecraft "rust browser"  # runs a search
+browsecraft --screenshot out.png example.com 1200   # renders to a PNG
 ```
 
-The command-line argument is read the same way as text typed into the address bar. `--screenshot <out.png> <url> [width]` renders the page with Prowl's own engine (never WebView2) and exits; the width defaults to 1200 pixels.
+The command-line argument is read the same way as text typed into the address bar. `--screenshot <out.png> <url> [width]` renders the page with Browsecraft's own engine (never WebView2) and exits; the width defaults to 1200 pixels.
 
 ## Address bar
 
-Press `Enter` to go. Prowl decides what the text means using these rules, in order:
+Press `Enter` to go. Browsecraft decides what the text means using these rules, in order:
 
 | Input                                                  | Result                  |
 | ------------------------------------------------------ | ----------------------- |
-| Has a scheme (`https://…`, `ftp://…`, `prowl://…`)     | Opened unchanged        |
+| Has a scheme (`https://…`, `ftp://…`, `browsecraft://…`)     | Opened unchanged        |
 | Starts with `about:`, `data:`, `file:`, `view-source:` | Opened unchanged        |
 | `localhost` or an IPv4 address, with an optional port  | `http://` is added      |
 | A domain such as `docs.rs/wry` or `example.com:8443`   | `https://` is added     |
@@ -29,9 +29,9 @@ The address bar supports selection with the mouse or `Shift` + arrows, `Ctrl` + 
 
 ## Where pages render
 
-On Windows, web pages (`http:`, `https:`, `file:` and `data:` addresses) are shown in an embedded WebView2 pane (WKWebView on macOS). Prowl's own engine renders the built-in pages (`about:`, `prowl://` and `view-source:`), the result of a POST form submitted from an engine page, and every page when WebView2 is unavailable or on other platforms.
+On Windows, web pages (`http:`, `https:`, `file:` and `data:` addresses) are shown in an embedded WebView2 pane (WKWebView on macOS). Browsecraft's own engine renders the built-in pages (`about:`, `browsecraft://` and `view-source:`), the result of a POST form submitted from an engine page, and every page when WebView2 is unavailable or on other platforms.
 
-This matters for input. Prowl's shortcuts below also work while a WebView2 page has the keyboard. `Ctrl+T`, `Ctrl+W`, `Ctrl+Q` and `Ctrl+Tab` always go to Prowl; the other shortcuts go to Prowl unless the page uses that key itself (for example a web app that saves on `Ctrl+S`). Keys pressed inside an embedded frame on the page stay with that frame. Forms, link hover, `Ctrl`+wheel and the scrolling keys described here apply to engine pages; WebView2 pages handle these themselves.
+This matters for input. Browsecraft's shortcuts below also work while a WebView2 page has the keyboard. `Ctrl+T`, `Ctrl+W`, `Ctrl+Q` and `Ctrl+Tab` always go to Browsecraft; the other shortcuts go to Browsecraft unless the page uses that key itself (for example a web app that saves on `Ctrl+S`). Keys pressed inside an embedded frame on the page stay with that frame. Forms, link hover, `Ctrl`+wheel and the scrolling keys described here apply to engine pages; WebView2 pages handle these themselves.
 
 ## Built-in pages
 
@@ -39,11 +39,11 @@ This matters for input. Prowl's shortcuts below also work while a WebView2 page 
 | --------------------- | ----------------------------------------------------------------- |
 | `about:home`          | The start page that new tabs open                                 |
 | `about:blank`         | An empty page                                                     |
-| `prowl://flags`       | Settings (see below)                                              |
-| `prowl://history`     | Pages visited this session, newest first                          |
+| `browsecraft://flags`       | Settings (see below)                                              |
+| `browsecraft://history`     | Pages visited this session, newest first                          |
 | `view-source:<url>`   | The raw source of an `http:`, `https:` or `file:` page            |
 
-History is kept in memory only (up to 500 entries) and is lost when Prowl quits. Built-in pages are not recorded. When the engine renders a `file://` URL that points at a folder, it shows a directory listing.
+History is kept in memory only (up to 500 entries) and is lost when Browsecraft quits. Built-in pages are not recorded. When the engine renders a `file://` URL that points at a folder, it shows a directory listing.
 
 ## Toolbar
 
@@ -54,7 +54,7 @@ History is kept in memory only (up to 500 entries) and is lost when Prowl quits.
 | ↻ / ✕   | Reload, or stop while a page is loading |
 | ⌂       | Home (Startpage)                        |
 | ☀ / ☾   | Toggle light / dark theme               |
-| ⚙       | Open settings (`prowl://flags`)         |
+| ⚙       | Open settings (`browsecraft://flags`)         |
 
 A bar along the bottom of the toolbar shows that a page is loading. On engine pages, hovering a link shows its address in the bottom-left corner.
 
@@ -64,12 +64,12 @@ The vertical sidebar on the left lists the open tabs; the active one is
 highlighted. Click a tab to switch to it, click its ✕ to close it, and click the
 `+` (New tab) button at the top to open a new one. New tabs open `about:home`
 with the address bar focused. With the engine chrome, middle-clicking a tab
-also closes it. Closing the last tab quits Prowl. The sidebar position (left,
-right or hidden) is set on `prowl://flags`.
+also closes it. Closing the last tab quits Browsecraft. The sidebar position (left,
+right or hidden) is set on `browsecraft://flags`.
 
-## Settings (`prowl://flags`)
+## Settings (`browsecraft://flags`)
 
-`prowl://flags` is an engine-rendered settings page. It controls the tab
+`browsecraft://flags` is an engine-rendered settings page. It controls the tab
 sidebar position, the theme (auto, light or dark) and the chrome backend
 (`auto`, `egui` or `engine`). Pick the options and press **Apply**; choices are
 stored in `flags.txt` in the working directory and take effect immediately.
@@ -79,7 +79,7 @@ is made at startup, so restart to apply a change to it.
 
 ## Ad blocking
 
-Prowl blocks ads and trackers with a small built-in filter list plus every
+Browsecraft blocks ads and trackers with a small built-in filter list plus every
 `.txt` file in a `filters` folder in the working directory or next to the
 executable (EasyList / uBlock Origin syntax). A blocked page shows a "This page
 was blocked" notice while the address bar keeps the original address, and a
@@ -101,8 +101,8 @@ blocked pop-up shows a short notice under the page.
 | `Alt+Home`                            | Home (Startpage)          |
 | `Ctrl+Plus` / `Ctrl+Minus` / `Ctrl+0`, `Ctrl`+wheel | Zoom in / out / reset |
 | `Ctrl+U`                              | View page source          |
-| `Ctrl+H`                              | Open the history page (`prowl://history`) |
-| `Ctrl+Shift+S`                        | Save a PNG of the visible page to your Pictures folder (UTC-stamped `prowl-YYYYMMDD-HHMMSS.png`); the result shows in a strip under the page |
+| `Ctrl+H`                              | Open the history page (`browsecraft://history`) |
+| `Ctrl+Shift+S`                        | Save a PNG of the visible page to your Pictures folder (UTC-stamped `browsecraft-YYYYMMDD-HHMMSS.png`); the result shows in a strip under the page |
 | `Shift+K` (page focused)              | Show / hide the shortcut cheatsheet (`Esc`, `Enter`, `Space` or `K` closes it) |
 | `Space` / `Shift+Space`, `Page Up/Down`, arrows, `Home`/`End` | Scroll |
 | `Shift`+wheel                         | Scroll sideways           |
@@ -116,4 +116,4 @@ These apply to forms on engine pages. Click a text field to type in it. `Enter` 
 
 ## Links and new windows
 
-Links with `target="_blank"` and pop-ups from WebView2 pages open in the current tab. On engine pages, `javascript:`, `mailto:` and `tel:` links are ignored. Prowl has a single window; new pages open in tabs.
+Links with `target="_blank"` and pop-ups from WebView2 pages open in the current tab. On engine pages, `javascript:`, `mailto:` and `tel:` links are ignored. Browsecraft has a single window; new pages open in tabs.

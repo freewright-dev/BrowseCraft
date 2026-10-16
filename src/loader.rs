@@ -111,14 +111,14 @@ fn load_page(request: &Request) -> Page {
     if let Some(inner) = raw.strip_prefix("view-source:") {
         return view_source(inner);
     }
-    if let Some(query) = raw.strip_prefix("prowl://flags") {
+    if let Some(query) = raw.strip_prefix("browsecraft://flags") {
         // The flags page submits to itself with the new values in the query.
         let pairs = url::form_urlencoded::parse(query.strip_prefix('?').unwrap_or("").as_bytes());
         crate::flags::apply_query(pairs.map(|(k, v)| (k.into_owned(), v.into_owned())));
         let source = crate::flags::page_html();
         return internal_page(raw, &source);
     }
-    if raw.starts_with("prowl://history") {
+    if raw.starts_with("browsecraft://history") {
         let source = crate::history::page_html();
         return internal_page(raw, &source);
     }
@@ -137,7 +137,7 @@ fn load_page(request: &Request) -> Page {
     };
     let resp = match net::fetch(&url, form, ACCEPT_HTML) {
         Ok(resp) => resp,
-        Err(e) => return error_page(raw, &format!("Prowl could not load this page: {e}.")),
+        Err(e) => return error_page(raw, &format!("Browsecraft could not load this page: {e}.")),
     };
 
     let mime = resp
@@ -224,7 +224,7 @@ fn ad_blocked_page(raw: &str, url: &str) -> Page {
          <body style=\"font-family:sans-serif;margin:0;background:#f6f7f9;color:#1f2328\">\
          <div style=\"max-width:640px;margin:80px auto;padding:0 24px\">\
          <h1 style=\"font-size:24px;font-weight:600\">This page was blocked.</h1>\
-         <p style=\"color:#57606a\">Prowl's ad filter stopped this address from loading.</p>\
+         <p style=\"color:#57606a\">Browsecraft's ad filter stopped this address from loading.</p>\
          <p style=\"color:#57606a;font-size:14px;word-break:break-all\">{}</p></div>",
         escape_html(url)
     );

@@ -1,6 +1,6 @@
 # Architecture
 
-Prowl renders internal pages with its own engine and ordinary web pages in an
+Browsecraft renders internal pages with its own engine and ordinary web pages in an
 embedded WebView2 pane (see "Engine pages and the WebView2 pane"). Each engine
 stage is a module in `src/`:
 
@@ -15,11 +15,11 @@ loader ──► net ──► html ──► dom
 | ---------------- | ----------------------------------------------------------------------- |
 | `main.rs`        | Entry point; window mode or `--screenshot`                              |
 | `browser.rs`     | Window, toolbar, tabs, history, input, forms, WebView2 pane, render loop |
-| `flags.rs`       | User-settable flags persisted to `flags.txt`; the `prowl://flags` page  |
+| `flags.rs`       | User-settable flags persisted to `flags.txt`; the `browsecraft://flags` page  |
 | `egui_chrome.rs` | GPU chrome: egui toolbar/sidebar on wgpu, page raster as a texture      |
 | `icons.rs`       | Chrome icon codepoints (Phosphor) and the embedded icon font            |
 | `adblock.rs`     | Ad blocker ported from uBlock Origin: network and cosmetic filters      |
-| `history.rs`     | In-memory browsing history; the `prowl://history` page                  |
+| `history.rs`     | In-memory browsing history; the `browsecraft://history` page                  |
 | `capture.rs`     | Screen-region capture (GDI `BitBlt`) for screenshots of WebView2 pages  |
 | `loader.rs`      | Background page loads: document, stylesheets, then images; internal pages |
 | `net.rs`         | `http(s)` (ureq + rustls), `file:`, `data:`, charset decoding           |
@@ -39,21 +39,21 @@ loader ──► net ──► html ──► dom
 ## Engine pages and the WebView2 pane
 
 Two kinds of pages live side by side. `browser::request_in_webview` decides:
-`about:`, `view-source:` and `prowl:` URLs (and every form `POST`) go through
+`about:`, `view-source:` and `browsecraft:` URLs (and every form `POST`) go through
 the engine; everything else is loaded into a `wry` WebView2 child window placed
 over the page area. If no web view exists (WebView2 failed to start, or the
 platform is neither Windows nor macOS, where `wry` uses WKWebView), every page
 goes through the engine.
 
 The engine handles these internal URLs in `loader::load_page`:
-`about:home`, `about:blank`, `view-source:<url>`, `prowl://flags`,
-`prowl://history`, and `about:blocked:<url>` (the notice shown when the ad
+`about:home`, `about:blank`, `view-source:<url>`, `browsecraft://flags`,
+`browsecraft://history`, and `about:blocked:<url>` (the notice shown when the ad
 filter blocks a page). WebView2 events (`WebStart`, `WebLoad`, `WebTitle`,
 `WebOpen`, `WebKey`) reach the UI thread as `UserMessage`s. Pop-ups are denied and
 reopened in the current tab.
 
 A WebView2 page has the keyboard to itself, so winit never sees its keys.
-`WEB_KEYS_SCRIPT` (injected into every page) catches Prowl's shortcuts and
+`WEB_KEYS_SCRIPT` (injected into every page) catches Browsecraft's shortcuts and
 posts them over wry's IPC channel as `key:<mods>:<key>`; `web_key` parses them
 and runs them through `shortcut_for`, the same table `key()` uses. Tab, close
 and quit shortcuts are taken before the page sees them; the others only when
@@ -130,13 +130,13 @@ open, close and cycle tabs; closing the last tab quits. New tabs open
 on the left or right, or is hidden (`tabs-position`), and insets the page and
 webview rectangles.
 
-## Flags and `prowl://`
+## Flags and `browsecraft://`
 
 `flags.rs` holds user settings (`tabs-position`, `theme`, `chrome`) in a
 `RwLock`, persisted as `key=value` lines in `flags.txt` in the working
-directory. `prowl://flags` is an engine-internal page: `loader.rs` parses its
+directory. `browsecraft://flags` is an engine-internal page: `loader.rs` parses its
 query string with `flags::apply_query`, and the radio buttons submit
-`prowl://flags?key=value`. `prowl://` URLs are routed to the engine by
+`browsecraft://flags?key=value`. `browsecraft://` URLs are routed to the engine by
 `request_in_webview`. The theme toggle (toolbar sun/moon) flips `theme` between
 Light and Dark; `Auto` follows the OS.
 
@@ -180,19 +180,19 @@ filters are dropped; `$domain=` is only honoured on the Rust side.
 `Mutex<Vec<_>>`, shared by all tabs, in memory only: it is not saved to disk.
 Engine pages are recorded in `handle_load` and WebView2 pages in
 `web_loaded`/`web_titled`; consecutive visits to the same URL update the title
-instead of adding a row, and `prowl://`, `about:blank` and `view-source:` URLs
-are skipped. `prowl://history` (Ctrl+H) renders the list, newest first. This
+instead of adding a row, and `browsecraft://`, `about:blank` and `view-source:` URLs
+are skipped. `browsecraft://history` (Ctrl+H) renders the list, newest first. This
 is separate from each tab's back/forward list (`HistoryEntry` in
 `browser.rs`).
 
 ## Screenshots
 
-`prowl --screenshot <out.png> <url> [width]` uses `headless::screenshot`: a
+`browsecraft --screenshot <out.png> <url> [width]` uses `headless::screenshot`: a
 blocking engine load (`loader::load_blocking`), layout at the given width
 (default 1200) and a PNG of up to 6000 px height. No WebView2 is involved.
 
 In the window, Ctrl+Shift+S saves the visible page area to the Pictures folder
-(or the working directory) as `prowl-YYYYMMDD-HHMMSS.png` (`save_screenshot`). Engine pages are cropped
+(or the working directory) as `browsecraft-YYYYMMDD-HHMMSS.png` (`save_screenshot`). Engine pages are cropped
 from the last rendered frame. A WebView2 page is a separate native window, so
 `capture::screen_region` grabs that rectangle from the screen with GDI
 `BitBlt`; on other platforms capturing a web page fails with a notice.

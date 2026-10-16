@@ -1,6 +1,6 @@
 //! Screen capture used by the "save a screenshot" shortcut.
 //!
-//! Prowl's own frame only holds engine-rendered pixels; an embedded
+//! Browsecraft's own frame only holds engine-rendered pixels; an embedded
 //! WebView2 page is a separate native window, so the only way to capture "the
 //! page as shown" is to grab the screen. On Windows that is a GDI `BitBlt`
 //! from the desktop DC. Everywhere else the shortcut falls back to the engine

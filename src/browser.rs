@@ -1,8 +1,8 @@
 //! The browser shell: window, toolbar, tab sidebar, history, input, forms and
 //! the render loop.
 //!
-//! Two kinds of pages live side by side. `about:`, `view-source:` and `prowl:`
-//! URLs go through Prowl's own engine (loader -> html/css -> style ->
+//! Two kinds of pages live side by side. `about:`, `view-source:` and `browsecraft:`
+//! URLs go through Browsecraft's own engine (loader -> html/css -> style ->
 //! layout -> paint); everything else renders in an embedded WebView2 pane
 //! (`wry`) exposed below the toolbar and beside the tab sidebar. The chrome
 //! (toolbar and tab sidebar) is drawn either by the engine into a softbuffer
@@ -75,7 +75,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl + Shift + S", "Save a screenshot to Pictures"),
     ("Ctrl + + / \u{2212} / 0", "Zoom in / out / reset"),
     ("Ctrl + U", "View the page source"),
-    ("Ctrl + Q", "Quit Prowl"),
+    ("Ctrl + Q", "Quit Browsecraft"),
 ];
 
 #[derive(Clone, Debug)]
@@ -257,10 +257,10 @@ pub struct Browser {
 // ---------------------------------------------------------------------------
 
 /// `true` when `url` should render in the WebView2 pane. The engine keeps
-/// `about:`, `view-source:` and `prowl:` pages for itself.
+/// `about:`, `view-source:` and `browsecraft:` pages for itself.
 pub fn request_in_webview(url: &str) -> bool {
     let lower = url.trim_start().to_ascii_lowercase();
-    !(lower.starts_with("about:") || lower.starts_with("view-source:") || lower.starts_with("prowl:"))
+    !(lower.starts_with("about:") || lower.starts_with("view-source:") || lower.starts_with("browsecraft:"))
 }
 
 /// The next (or previous) zoom level from [`ZOOM_STEPS`].
@@ -281,7 +281,7 @@ fn zoom_step(current: f32, up: bool) -> f32 {
     }
 }
 
-/// `prowl-YYYYMMDD-HHMMSS.png` for a Unix time (UTC).
+/// `browsecraft-YYYYMMDD-HHMMSS.png` for a Unix time (UTC).
 fn screenshot_name(secs: u64) -> String {
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
@@ -296,7 +296,7 @@ fn screenshot_name(secs: u64) -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
-    format!("prowl-{year:04}{month:02}{day:02}-{hour:02}{minute:02}{second:02}.png")
+    format!("browsecraft-{year:04}{month:02}{day:02}-{hour:02}{minute:02}{second:02}.png")
 }
 
 /// Where screenshots go: the user's Pictures folder, else the working
@@ -428,13 +428,13 @@ fn shortcut_for(key: &Key, ctrl: bool, shift: bool, alt: bool, typing: bool) -> 
 }
 
 /// Injected into WebView2 pages, which get the keyboard to themselves: posts
-/// Prowl's shortcuts to the browser over IPC as `key:<mods>:<KeyboardEvent.key>`
+/// Browsecraft's shortcuts to the browser over IPC as `key:<mods>:<KeyboardEvent.key>`
 /// (mods from `c`trl, `s`hift, `a`lt). Tab, close and quit shortcuts are taken
 /// before the page sees them; the rest only when the page didn't handle the
 /// key itself. Mirrors `shortcut_for`.
 const WEB_KEYS_SCRIPT: &str = r#"(() => {
-  if (window.__prowlKeys || !window.ipc) return;
-  window.__prowlKeys = true;
+  if (window.__browsecraftKeys || !window.ipc) return;
+  window.__browsecraftKeys = true;
   const MAC = /^Mac/.test(navigator.platform);
   const editable = t => !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
   const kind = e => {
@@ -900,7 +900,7 @@ impl Browser {
     fn update_window_title(&self) {
         if let Some(g) = &self.gfx {
             g.window
-                .set_title(&format!("{} - Prowl", self.live_title()));
+                .set_title(&format!("{} - Browsecraft", self.live_title()));
         }
     }
 
@@ -1160,7 +1160,7 @@ impl Browser {
     }
 
     fn open_history_page(&mut self) {
-        self.load(Request::Get("prowl://history".to_string()), true);
+        self.load(Request::Get("browsecraft://history".to_string()), true);
     }
 
     fn view_source(&mut self) {
@@ -1384,7 +1384,7 @@ impl Browser {
         };
         match builder.build_as_child(window) {
             Ok(wv) => self.webview = Some(wv),
-            Err(e) => eprintln!("prowl: WebView2 is unavailable ({e}); using the engine for every page"),
+            Err(e) => eprintln!("browsecraft: WebView2 is unavailable ({e}); using the engine for every page"),
         }
     }
 
@@ -1706,7 +1706,7 @@ impl Browser {
             .attr("method")
             .is_some_and(|m| m.eq_ignore_ascii_case("post"));
         let action = el.attr("action").map(str::trim).unwrap_or("");
-        // An empty action submits to the page itself (how `prowl://flags`
+        // An empty action submits to the page itself (how `browsecraft://flags`
         // applies its settings).
         let target = if action.is_empty() {
             tab.page.url.clone()
@@ -2025,7 +2025,7 @@ impl Browser {
                 }
                 Button::Home => self.home(),
                 Button::Theme => self.toggle_theme(),
-                Button::Flags => self.load(Request::Get("prowl://flags".into()), true),
+                Button::Flags => self.load(Request::Get("browsecraft://flags".into()), true),
             }
             return;
         }
@@ -2851,7 +2851,7 @@ impl Browser {
             Some(tex) => tex.set(image, egui::TextureOptions::NEAREST),
             None => {
                 self.page_tex = Some(egui.ctx().load_texture(
-                    "prowl-page",
+                    "browsecraft-page",
                     image,
                     egui::TextureOptions::NEAREST,
                 ));
@@ -2920,7 +2920,7 @@ impl Browser {
                     if egui_chrome::icon_button(ui, true, theme_icon, "Toggle light / dark", 16.0).clicked() {
                         actions.push(Action::Theme);
                     }
-                    if egui_chrome::icon_button(ui, true, ICON_GEAR, "Settings (prowl://flags)", 16.0).clicked() {
+                    if egui_chrome::icon_button(ui, true, ICON_GEAR, "Settings (browsecraft://flags)", 16.0).clicked() {
                         actions.push(Action::Flags);
                     }
                 });
@@ -3029,7 +3029,7 @@ impl Browser {
                 Action::Stop => self.stop(),
                 Action::Home => self.home(),
                 Action::Theme => self.toggle_theme(),
-                Action::Flags => self.load(Request::Get("prowl://flags".into()), true),
+                Action::Flags => self.load(Request::Get("browsecraft://flags".into()), true),
                 Action::Navigate(text) => {
                     ctx.memory_mut(|m| m.surrender_focus(egui_chrome::address_id()));
                     self.navigate_input(&text);
@@ -3073,13 +3073,13 @@ impl ApplicationHandler<UserMessage> for Browser {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("Prowl")
+            .with_title("Browsecraft")
             .with_inner_size(LogicalSize::new(1280.0, 800.0))
             .with_min_inner_size(LogicalSize::new(480.0, 320.0));
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
-                eprintln!("prowl: could not create a window: {e}");
+                eprintln!("browsecraft: could not create a window: {e}");
                 event_loop.exit();
                 return;
             }
@@ -3243,8 +3243,8 @@ mod tests {
         assert!(!request_in_webview("about:home"));
         assert!(!request_in_webview("about:blocked:https://ads.example"));
         assert!(!request_in_webview("view-source:https://example.com"));
-        assert!(!request_in_webview("prowl://history"));
-        assert!(!request_in_webview("PROWL://flags"));
+        assert!(!request_in_webview("browsecraft://history"));
+        assert!(!request_in_webview("BROWSECRAFT://flags"));
     }
 
     #[test]
@@ -3257,9 +3257,9 @@ mod tests {
 
     #[test]
     fn screenshot_names_are_utc_stamps() {
-        assert_eq!(screenshot_name(0), "prowl-19700101-000000.png");
-        assert_eq!(screenshot_name(1_700_000_000), "prowl-20231114-221320.png");
-        assert_eq!(screenshot_name(1_709_164_800), "prowl-20240229-000000.png");
+        assert_eq!(screenshot_name(0), "browsecraft-19700101-000000.png");
+        assert_eq!(screenshot_name(1_700_000_000), "browsecraft-20231114-221320.png");
+        assert_eq!(screenshot_name(1_709_164_800), "browsecraft-20240229-000000.png");
     }
 
     #[test]

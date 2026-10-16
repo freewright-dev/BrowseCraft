@@ -1,5 +1,5 @@
 //! Renders a page to a PNG without opening a window:
-//! `prowl --screenshot out.png <url> [width]`.
+//! `browsecraft --screenshot out.png <url> [width]`.
 
 use std::collections::HashMap;
 use std::rc::Rc;
