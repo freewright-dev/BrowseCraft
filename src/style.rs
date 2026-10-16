@@ -1494,27 +1494,6 @@ mod tests {
     }
 
     #[test]
-    fn many_media_queries_and_repeated_classes_stay_fast() {
-        let css: String = (0..30_000)
-            .map(|i| format!("@media (min-width: {i}px) {{ p {{ z-index: 1 }} }}"))
-            .collect();
-        let sheets = vec![css::parse_stylesheet(&css)];
-        let start = std::time::Instant::now();
-        let signature = media_signature(&sheets, 500.0);
-        assert!(start.elapsed() < std::time::Duration::from_secs(2));
-        assert_eq!(signature.len(), 30_000);
-        assert_eq!(signature.iter().filter(|&&m| m).count(), 501);
-
-        // Each class is looked up once, however often it is repeated.
-        let classes = "a b ".repeat(5000);
-        let rules = ".a { margin-left: 1px } ".repeat(1000);
-        let start = std::time::Instant::now();
-        let s = style_of(&format!("<p class=\"{classes}\">t</p>"), &rules, "p");
-        assert!(start.elapsed() < std::time::Duration::from_secs(5));
-        assert_eq!(s.margin[3], Length::Px(1.0));
-    }
-
-    #[test]
     fn cascade_order() {
         let s = style_of(
             r#"<p id="x" class="c" style="margin-left: 3px">t</p>"#,
@@ -1613,5 +1592,26 @@ mod tests {
             "p",
         );
         assert_eq!(narrow.color, Color::BLACK);
+    }
+
+    #[test]
+    fn many_media_queries_and_repeated_classes_stay_fast() {
+        let css: String = (0..30_000)
+            .map(|i| format!("@media (min-width: {i}px) {{ p {{ z-index: 1 }} }}"))
+            .collect();
+        let sheets = vec![css::parse_stylesheet(&css)];
+        let start = std::time::Instant::now();
+        let signature = media_signature(&sheets, 500.0);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(signature.len(), 30_000);
+        assert_eq!(signature.iter().filter(|&&m| m).count(), 501);
+
+        // Each class is looked up once, however often it is repeated.
+        let classes = "a b ".repeat(5000);
+        let rules = ".a { margin-left: 1px } ".repeat(1000);
+        let start = std::time::Instant::now();
+        let s = style_of(&format!("<p class=\"{classes}\">t</p>"), &rules, "p");
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(s.margin[3], Length::Px(1.0));
     }
 }
