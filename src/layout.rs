@@ -802,8 +802,14 @@ impl<'a> Engine<'a> {
                 Some((widest + 20.0 * zoom, lh))
             }
             "textarea" => {
-                let cols: f32 = el.attr("cols").and_then(|c| c.parse().ok()).unwrap_or(20.0);
-                let rows: f32 = el.attr("rows").and_then(|r| r.parse().ok()).unwrap_or(2.0);
+                // `inf` and `1e30` parse as f32 too.
+                let count = |name: &str, default: f32| -> f32 {
+                    el.attr(name)
+                        .and_then(|v| v.trim().parse::<f32>().ok())
+                        .filter(|v| v.is_finite() && *v >= 1.0)
+                        .map_or(default, |v| v.min(1000.0))
+                };
+                let (cols, rows) = (count("cols", 20.0), count("rows", 2.0));
                 Some((cols * st.font_size * 0.55, rows * lh))
             }
             _ => None,
@@ -2572,6 +2578,12 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    #[test]
+    fn textarea_sizes_must_be_finite() {
+        render_on_main_stack(r#"<textarea cols="inf" rows="1e30">x</textarea>"#.to_string());
+        render_on_main_stack(r#"<textarea cols="-5" rows="NaN">x</textarea>"#.to_string());
     }
 
     #[test]

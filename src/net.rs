@@ -332,6 +332,13 @@ fn windows_1252(b: u8) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_urls_decode_a_trailing_escape() {
+        assert_eq!(parse_data_url("data:,a%41").unwrap().1, b"aA");
+        assert_eq!(parse_data_url("data:,%4").unwrap().1, b"%4");
+        assert_eq!(parse_data_url("data:,%").unwrap().1, b"%");
+    }
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
 

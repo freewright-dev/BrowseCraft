@@ -287,6 +287,15 @@ fn ad_blocked_page(raw: &str, url: &str) -> Page {
 }
 
 fn view_source(inner: &str) -> Page {
+    // The source of a blocked page is not fetched either.
+    let lower = inner.to_ascii_lowercase();
+    if (lower.starts_with("http://") || lower.starts_with("https://"))
+        && crate::adblock::blocked_page(inner, "")
+    {
+        let mut page = ad_blocked_page(inner, inner);
+        page.url = format!("view-source:{inner}");
+        return page;
+    }
     let source = Url::parse(inner)
         .map_err(|e| e.to_string())
         .and_then(|url| net::fetch(&url, None, ACCEPT_HTML))
@@ -590,6 +599,21 @@ fn decode_image(bytes: &[u8], budget: &AtomicU64) -> Option<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_source_of_a_blocked_page_is_not_fetched() {
+        // filters/basic.txt (loaded from the working directory) blocks this.
+        if !crate::adblock::blocked_page("https://doubleclick.net/", "") {
+            return;
+        }
+        let page = load_page(&Request::Get("view-source:https://doubleclick.net/".into()));
+        assert_eq!(page.url, "view-source:https://doubleclick.net/");
+        assert!(
+            page.doc
+                .text_content(Document::ROOT)
+                .contains("was blocked")
+        );
+    }
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
 

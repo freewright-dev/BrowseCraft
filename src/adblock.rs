@@ -126,7 +126,8 @@ impl AdBlocker {
     }
 
     pub fn add_filter_list(&mut self, _name: &str, content: &str) {
-        for line in content.lines() {
+        // `lines()` would miss classic Mac (CR-only) line endings.
+        for line in content.split(['\n', '\r']) {
             self.add_filter_line(line.trim());
         }
     }
@@ -778,7 +779,9 @@ fn parse_cosmetic(line: &str) -> Option<Cosmetic> {
     let pos = line.find(marker)?;
     let hosts = &line[..pos];
     let selector = &line[pos + marker.len()..];
-    if selector.is_empty() {
+    // The selector goes into a stylesheet as `selector { display: none }`;
+    // braces would let it close that rule and add rules of its own.
+    if selector.is_empty() || selector.contains(['{', '}']) {
         return None;
     }
     let host = if hosts.trim().is_empty() {
@@ -821,8 +824,26 @@ fn bit(allow: bool, important: bool) -> u32 {
     (allow as u32) | ((important as u32) << 1)
 }
 
+/// `s` as a JavaScript string literal. Control characters and the U+2028 /
+/// U+2029 line separators must be escaped too: one raw line break is a
+/// syntax error that silently disables the whole page script.
 fn quote(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() || c == '\u{2028}' || c == '\u{2029}' => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn token_regex(toks: &[Tok], left_anchor: bool, right_anchor: bool) -> String {
@@ -1045,6 +1066,25 @@ const START_LIST: &str = r#"! BrowseCraft starter list (subset of uBlock Origin 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_script_strings_are_always_valid_javascript() {
+        assert_eq!(quote("a\\b\"c"), r#""a\\b\"c""#);
+        assert_eq!(
+            quote("x\ry\nz\u{2028}\u{2029}\u{7}"),
+            r#""x\ry\nz\u2028\u2029\u0007""#
+        );
+        // A list with classic Mac (CR-only) line endings is read line by line.
+        let ab = blocker(&["||ads.example^\r||track.example^\r##.banner"]);
+        assert_eq!(
+            decide(&ab, "https://track.example/", TYPE_ALL, "x.com"),
+            Decision::Block
+        );
+        assert_eq!(ab.cosmetic_selectors("x.com"), [".banner"]);
+        // Selectors with braces could add rules of their own: dropped.
+        let ab = blocker(&["##a{}body{display:none}", "##.ok"]);
+        assert_eq!(ab.cosmetic_selectors("x.com"), [".ok"]);
+    }
 
     fn blocker(lists: &[&str]) -> AdBlocker {
         let mut ab = AdBlocker::empty();

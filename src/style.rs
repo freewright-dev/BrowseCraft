@@ -1414,8 +1414,8 @@ fn presentational_hints(doc: &Document, node: NodeId) -> Vec<Declaration> {
         }
         if let Some(size) = el.attr("size") {
             let n: i32 = match size.trim() {
-                s if s.starts_with('+') => 3 + s[1..].parse::<i32>().unwrap_or(0),
-                s if s.starts_with('-') => 3 - s[1..].parse::<i32>().unwrap_or(0),
+                s if s.starts_with('+') => 3i32.saturating_add(s[1..].parse().unwrap_or(0)),
+                s if s.starts_with('-') => 3i32.saturating_sub(s[1..].parse().unwrap_or(0)),
                 s => s.parse().unwrap_or(3),
             };
             let size = [
@@ -1497,6 +1497,13 @@ fn legacy_color(v: &str) -> String {
 mod tests {
     use super::*;
     use crate::html;
+
+    #[test]
+    fn legacy_font_size_does_not_overflow() {
+        let big = style_of(r#"<font size="+2147483647">t</font>"#, "", "font");
+        let small = style_of(r#"<font size="-2147483648">t</font>"#, "", "font");
+        assert!(big.font_size > small.font_size);
+    }
 
     fn style_of(markup: &str, css: &str, tag: &str) -> Style {
         let doc = html::parse(markup);

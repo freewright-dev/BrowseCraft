@@ -312,13 +312,17 @@ fn selector_at(s: &str, depth: u32) -> Option<Selector> {
 }
 
 fn add_spec(a: (u16, u16, u16), b: (u16, u16, u16)) -> (u16, u16, u16) {
-    (a.0 + b.0, a.1 + b.1, a.2 + b.2)
+    (
+        a.0.saturating_add(b.0),
+        a.1.saturating_add(b.1),
+        a.2.saturating_add(b.2),
+    )
 }
 
 fn compound_specificity(c: &Compound) -> (u16, u16, u16) {
     let mut spec = (
         c.id.is_some() as u16,
-        (c.classes.len() + c.attrs.len()) as u16,
+        (c.classes.len() + c.attrs.len()).min(u16::MAX as usize) as u16,
         c.tag.as_ref().is_some_and(|t| t != "*") as u16,
     );
     for p in &c.pseudos {
@@ -1108,6 +1112,14 @@ pub fn parse_url(s: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::html;
+
+    #[test]
+    fn specificity_saturates() {
+        let many = ".a".repeat(70_000);
+        assert_eq!(parse_selector(&many).unwrap().specificity.1, u16::MAX);
+        let nested = format!(":is({many}):is({many})");
+        assert_eq!(parse_selector(&nested).unwrap().specificity.1, u16::MAX);
+    }
 
     #[test]
     fn parses_rules_and_media() {
