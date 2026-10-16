@@ -2,7 +2,7 @@
 //! its images, reporting each stage back to the UI thread.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use url::Url;
@@ -15,8 +15,16 @@ use crate::paint::Image;
 
 const HOME_HTML: &str = include_str!("home.html");
 const ACCEPT_HTML: &str = "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8";
-const MAX_IMAGE_PIXELS: u64 = 40_000_000;
+/// Decoded images are kept as one `u32` per pixel: 16 Mpx is 64 MB.
+const MAX_IMAGE_PIXELS: u64 = 4096 * 4096;
+/// All images of one page together: 64 Mpx is 256 MB.
+const MAX_PAGE_IMAGE_PIXELS: u64 = 4 * MAX_IMAGE_PIXELS;
 const IMAGE_WORKERS: usize = 6;
+/// `<style>` and `<link rel=stylesheet>` elements honoured per page.
+const MAX_SHEETS: usize = 256;
+/// Stylesheet requests per page, `@import`s included.
+const MAX_SHEET_FETCHES: usize = 128;
+const SHEET_WORKERS: usize = 6;
 
 #[derive(Clone, Debug)]
 pub enum Request {
@@ -63,21 +71,9 @@ pub fn spawn(
         let images = image_sources(&page);
         send(generation, LoadEvent::Page(page));
 
-        let queue = Mutex::new(images);
-        std::thread::scope(|scope| {
-            for _ in 0..IMAGE_WORKERS {
-                scope.spawn(|| {
-                    while live() {
-                        let Some((src, url)) = queue.lock().ok().and_then(|mut q| q.pop()) else {
-                            break;
-                        };
-                        if let Some(image) = fetch_image(&url)
-                            && live()
-                        {
-                            send(generation, LoadEvent::Image { src, image });
-                        }
-                    }
-                });
+        fetch_images(images, MAX_PAGE_IMAGE_PIXELS, &live, |src, image| {
+            if live() {
+                send(generation, LoadEvent::Image { src, image });
             }
         });
         if live() {
@@ -90,17 +86,52 @@ pub fn spawn(
 pub fn load_blocking(request: &Request) -> (Page, Vec<(String, Image)>) {
     let page = load_page(request);
     let sources = image_sources(&page);
-    let images = std::thread::scope(|scope| {
-        let handles: Vec<_> = sources
-            .into_iter()
-            .map(|(src, url)| scope.spawn(move || fetch_image(&url).map(|img| (src, img))))
-            .collect();
-        handles
-            .into_iter()
-            .filter_map(|h| h.join().ok().flatten())
-            .collect()
+    let images = Mutex::new(Vec::new());
+    fetch_images(sources, MAX_PAGE_IMAGE_PIXELS, &|| true, |src, image| {
+        if let Ok(mut images) = images.lock() {
+            images.push((src, image));
+        }
     });
-    (page, images)
+    (page, images.into_inner().unwrap_or_default())
+}
+
+/// Runs `work` on up to `workers` threads, the calling thread included, so
+/// the work still gets done if the OS refuses to start more threads.
+fn run_workers(workers: usize, work: impl Fn() + Sync) {
+    std::thread::scope(|scope| {
+        for _ in 1..workers {
+            if std::thread::Builder::new()
+                .spawn_scoped(scope, &work)
+                .is_err()
+            {
+                break;
+            }
+        }
+        work();
+    });
+}
+
+/// Fetches and decodes `sources` (popped from the end) on a few worker
+/// threads while `live()` holds, handing each image to `done`. Decoding
+/// stops once the page's images would exceed `budget` pixels.
+fn fetch_images(
+    sources: Vec<(String, Url)>,
+    budget: u64,
+    live: &(impl Fn() -> bool + Sync),
+    done: impl Fn(String, Image) + Sync,
+) {
+    let queue = Mutex::new(sources);
+    let budget = AtomicU64::new(budget);
+    run_workers(IMAGE_WORKERS, || {
+        while live() {
+            let Some((src, url)) = queue.lock().ok().and_then(|mut q| q.pop()) else {
+                break;
+            };
+            if let Some(image) = fetch_image(&url, &budget) {
+                done(src, image);
+            }
+        }
+    });
 }
 
 fn load_page(request: &Request) -> Page {
@@ -344,45 +375,86 @@ fn inline_sheets(doc: &Document) -> Vec<Stylesheet> {
 /// sheets in parallel.
 fn load_stylesheets(doc: &Document, base: &Url) -> Vec<Stylesheet> {
     let host = base.host_str().map(str::to_lowercase).unwrap_or_default();
-    let host_ref = &host;
-    let sources = sheet_sources(doc, Some(base));
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = sources
-            .into_iter()
-            .map(|source| {
-                scope.spawn(move || match source {
-                    SheetSource::Inline(text, media) => {
-                        let sheet = css::parse_stylesheet(&text);
-                        with_imports(sheet, base, media.as_deref(), 0, host_ref)
-                    }
-                    SheetSource::Link(url, media) => {
-                        fetch_sheet(&url, media.as_deref(), 0, host_ref)
-                    }
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|h| h.join().unwrap_or_default())
-            .collect()
-    })
+    let mut sources = sheet_sources(doc, Some(base));
+    // The same stylesheet linked twice loads once.
+    let mut linked = HashSet::new();
+    sources.retain(|s| match s {
+        SheetSource::Link(url, _) => linked.insert(url.clone()),
+        SheetSource::Inline(..) => true,
+    });
+    sources.truncate(MAX_SHEETS);
+
+    let fetches = AtomicUsize::new(MAX_SHEET_FETCHES);
+    let next = AtomicUsize::new(0);
+    let results: Vec<Mutex<Vec<Stylesheet>>> = sources.iter().map(|_| Mutex::default()).collect();
+    run_workers(SHEET_WORKERS.min(sources.len()), || {
+        loop {
+            let i = next.fetch_add(1, Ordering::SeqCst);
+            let Some(source) = sources.get(i) else {
+                break;
+            };
+            let mut ctx = SheetContext {
+                doc_host: &host,
+                fetches: &fetches,
+                seen: HashSet::new(),
+            };
+            let sheets = match source {
+                SheetSource::Inline(text, media) => {
+                    let sheet = css::parse_stylesheet(text);
+                    with_imports(sheet, base, media.as_deref(), 0, &mut ctx)
+                }
+                SheetSource::Link(url, media) => fetch_sheet(url, media.as_deref(), 0, &mut ctx),
+            };
+            if let Ok(mut slot) = results[i].lock() {
+                *slot = sheets;
+            }
+        }
+    });
+    // Document order, whichever worker finished first.
+    results
+        .into_iter()
+        .flat_map(|r| r.into_inner().unwrap_or_default())
+        .collect()
 }
 
-fn fetch_sheet(url: &Url, media: Option<&str>, depth: u32, doc_host: &str) -> Vec<Stylesheet> {
-    if crate::adblock::blocked_subresource(url.as_str(), crate::adblock::TYPE_STYLESHEET, doc_host)
+/// What one `<style>` or `<link>` and its `@import`s may still fetch.
+struct SheetContext<'a> {
+    doc_host: &'a str,
+    /// Stylesheet requests left for the whole page.
+    fetches: &'a AtomicUsize,
+    /// URLs this sheet's `@import` tree has already fetched, so that `N`
+    /// sheets importing the same `N` sheets cost `N` requests, not `N²`.
+    seen: HashSet<Url>,
+}
+
+impl SheetContext<'_> {
+    fn claim(&mut self, url: &Url) -> bool {
+        self.seen.insert(url.clone())
+            && self
+                .fetches
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+    }
+}
+
+fn fetch_sheet(
+    url: &Url,
+    media: Option<&str>,
+    depth: u32,
+    ctx: &mut SheetContext,
+) -> Vec<Stylesheet> {
+    if crate::adblock::blocked_subresource(
+        url.as_str(),
+        crate::adblock::TYPE_STYLESHEET,
+        ctx.doc_host,
+    ) || !ctx.claim(url)
     {
         return Vec::new();
     }
     match net::fetch(url, None, "text/css,*/*;q=0.1") {
         Ok(resp) if resp.status < 400 => {
             let text = net::decode_text(&resp.body, &resp.content_type);
-            with_imports(
-                css::parse_stylesheet(&text),
-                &resp.url,
-                media,
-                depth,
-                doc_host,
-            )
+            with_imports(css::parse_stylesheet(&text), &resp.url, media, depth, ctx)
         }
         _ => Vec::new(),
     }
@@ -394,7 +466,7 @@ fn with_imports(
     base: &Url,
     media: Option<&str>,
     depth: u32,
-    doc_host: &str,
+    ctx: &mut SheetContext,
 ) -> Vec<Stylesheet> {
     let mut out = Vec::new();
     if depth < 3 {
@@ -402,7 +474,7 @@ fn with_imports(
             if let Ok(url) = base.join(import)
                 && may_fetch(base, &url)
             {
-                out.extend(fetch_sheet(&url, media, depth + 1, doc_host));
+                out.extend(fetch_sheet(&url, media, depth + 1, ctx));
             }
         }
     }
@@ -450,7 +522,9 @@ fn image_sources(page: &Page) -> Vec<(String, Url)> {
     out
 }
 
-fn fetch_image(url: &Url) -> Option<Image> {
+/// Fetches and decodes one image, taking its pixels out of the page's
+/// `budget`. Returns `None` for images that are too big or over budget.
+fn fetch_image(url: &Url, budget: &AtomicU64) -> Option<Image> {
     let resp = net::fetch(
         url,
         None,
@@ -460,14 +534,34 @@ fn fetch_image(url: &Url) -> Option<Image> {
     if resp.status >= 400 {
         return None;
     }
-    let reader = image::ImageReader::new(std::io::Cursor::new(&resp.body))
-        .with_guessed_format()
-        .ok()?;
-    let (w, h) = reader.into_dimensions().ok()?;
-    if w as u64 * h as u64 > MAX_IMAGE_PIXELS {
+    decode_image(&resp.body, budget)
+}
+
+fn decode_image(bytes: &[u8], budget: &AtomicU64) -> Option<Image> {
+    let reader = || {
+        let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(16_384);
+        limits.max_image_height = Some(16_384);
+        // The decoded image in its own format, up to 16 bytes a pixel.
+        limits.max_alloc = Some(MAX_IMAGE_PIXELS * 16);
+        reader.limits(limits);
+        Some(reader)
+    };
+    let (w, h) = reader()?.into_dimensions().ok()?;
+    let area = w as u64 * h as u64;
+    if area > MAX_IMAGE_PIXELS
+        || budget
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(area)
+            })
+            .is_err()
+    {
         return None;
     }
-    let rgba = image::load_from_memory(&resp.body).ok()?.to_rgba8();
+    let rgba = reader()?.decode().ok()?.to_rgba8();
     let pixels = rgba
         .pixels()
         .map(|p| (p[3] as u32) << 24 | (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32)
@@ -482,6 +576,120 @@ fn fetch_image(url: &Url) -> Option<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    /// Serves CSS on 127.0.0.1: `/a.css` imports `b0`…`b9`, each `bN`
+    /// imports `c0`…`c9`, and any other path is a plain rule. Returns the
+    /// base URL and a count of requests served.
+    fn css_server() -> (Url, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let served = count.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let served = served.clone();
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(&stream);
+                    let mut request = String::new();
+                    reader.read_line(&mut request).unwrap_or(0);
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
+                        line.clear();
+                    }
+                    let path = request.split(' ').nth(1).unwrap_or("/").to_string();
+                    served.fetch_add(1, Ordering::SeqCst);
+                    let imports = |prefix: &str| -> String {
+                        (0..10)
+                            .map(|i| format!("@import '{prefix}{i}.css';"))
+                            .collect()
+                    };
+                    let body = match path.as_str() {
+                        "/a.css" => imports("b"),
+                        p if p.starts_with("/b") => imports("c"),
+                        _ => "p { color: red }".to_string(),
+                    };
+                    let _ = write!(
+                        &stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                });
+            }
+        });
+        (base, count)
+    }
+
+    #[test]
+    fn imports_fetch_each_url_once_per_tree() {
+        let (base, count) = css_server();
+        // `<link>`ed twice: loads once.
+        let doc =
+            html::parse(r#"<link rel=stylesheet href=a.css><link rel=stylesheet href=a.css>"#);
+        let sheets = load_stylesheets(&doc, &base);
+        // a, b0..b9, and c0..c9 once (under b0) instead of 10 times.
+        assert_eq!(count.load(Ordering::SeqCst), 21);
+        assert_eq!(sheets.len(), 21);
+    }
+
+    #[test]
+    fn stylesheet_requests_are_capped_per_page() {
+        let (base, count) = css_server();
+        let markup: String = (0..MAX_SHEET_FETCHES + 50)
+            .map(|i| format!("<link rel=stylesheet href=d{i}.css>"))
+            .collect();
+        let sheets = load_stylesheets(&html::parse(&markup), &base);
+        assert_eq!(count.load(Ordering::SeqCst), MAX_SHEET_FETCHES);
+        assert_eq!(sheets.len(), MAX_SHEET_FETCHES);
+    }
+
+    #[test]
+    fn stylesheets_are_capped_and_stay_in_document_order() {
+        let markup: String = (0..MAX_SHEETS + 100)
+            .map(|i| format!("<style>p{{z-index:{i}}}</style>"))
+            .collect();
+        let base = Url::parse("about:blank").unwrap();
+        let sheets = load_stylesheets(&html::parse(&markup), &base);
+        assert_eq!(sheets.len(), MAX_SHEETS);
+        for (i, sheet) in sheets.iter().enumerate() {
+            assert_eq!(sheet.rules[0].declarations[0].value, i.to_string());
+        }
+    }
+
+    /// A PNG of `w`×`h` pixels, or just its header when `header_only`.
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        image::RgbaImage::new(w, h)
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn images_are_capped_per_image_and_per_page() {
+        // Only the header is read for an oversized image: patch the IHDR
+        // dimensions of a tiny PNG (bytes 16..24) to 5000×5000.
+        let mut huge = png(1, 1);
+        huge[16..20].copy_from_slice(&5000u32.to_be_bytes());
+        huge[20..24].copy_from_slice(&5000u32.to_be_bytes());
+        let mut crc = flate2::Crc::new();
+        crc.update(&huge[12..29]); // the IHDR chunk type and data
+        huge[29..33].copy_from_slice(&crc.sum().to_be_bytes());
+        let header = image::ImageReader::new(std::io::Cursor::new(&huge)).with_guessed_format();
+        assert_eq!(header.unwrap().into_dimensions().unwrap(), (5000, 5000));
+        let budget = AtomicU64::new(u64::MAX);
+        assert!(decode_image(&huge, &budget).is_none());
+        assert_eq!(budget.load(Ordering::SeqCst), u64::MAX);
+
+        // A page budget of 25k pixels fits two 100×100 images, not three.
+        let small = png(100, 100);
+        let budget = AtomicU64::new(25_000);
+        assert!(decode_image(&small, &budget).is_some());
+        assert!(decode_image(&small, &budget).is_some());
+        assert!(decode_image(&small, &budget).is_none());
+        assert_eq!(budget.load(Ordering::SeqCst), 5_000);
+    }
 
     const MARKUP: &str = r#"<base href="file:///C:/">
         <link rel="stylesheet" href="file:///C:/a.css"><link rel="stylesheet" href="b.css">
@@ -531,7 +739,13 @@ mod tests {
         let import = format!("@import '{}';", Url::from_file_path(&path).unwrap());
         let imported = |from: &str| {
             let sheet = css::parse_stylesheet(&import);
-            with_imports(sheet, &Url::parse(from).unwrap(), None, 0, "").len()
+            let fetches = AtomicUsize::new(MAX_SHEET_FETCHES);
+            let mut ctx = SheetContext {
+                doc_host: "",
+                fetches: &fetches,
+                seen: HashSet::new(),
+            };
+            with_imports(sheet, &Url::parse(from).unwrap(), None, 0, &mut ctx).len()
         };
         assert_eq!(imported("https://example.com/s.css"), 1);
         assert_eq!(imported("file:///D:/site/s.css"), 2);
