@@ -942,6 +942,9 @@ impl Browser {
 
     /// Moves the live tab fields into the active tab's pantry slot.
     fn park_active_tab(&mut self) {
+        // Every tab shares the one WebView; a parked web tab reloads its URL
+        // when it becomes active again.
+        self.unload_webview();
         let title = self.live_title();
         let state = TabState {
             history: std::mem::take(&mut self.history),
@@ -1125,6 +1128,7 @@ impl Browser {
             return;
         }
 
+        self.unload_webview();
         self.web_page = false;
         self.web_url.clear();
         self.web_expect = false;
@@ -1333,7 +1337,7 @@ impl Browser {
     }
 
     fn web_titled(&mut self, title: String) {
-        if !self.web_page {
+        if !self.web_page || self.webview_blank() {
             return;
         }
         self.title = title.trim().to_string();
@@ -1345,6 +1349,9 @@ impl Browser {
 
     /// A pop-up or a blocked main-frame navigation asked to open `url`.
     fn web_open(&mut self, url: String) {
+        if !self.web_page {
+            return; // from a page that is no longer shown
+        }
         let is_http = url.starts_with("http://") || url.starts_with("https://");
         if is_http && adblock::blocked_page(&url, "") {
             self.set_notice("Blocked a pop-up (ad filter)");
@@ -1354,6 +1361,23 @@ impl Browser {
     }
 
     // ---- the WebView2 pane ----
+
+    /// Navigates the WebView to `about:blank` so that a page that is no longer
+    /// shown stops running scripts, playing media and making requests, which
+    /// merely hiding the WebView does not do.
+    fn unload_webview(&self) {
+        if let Some(wv) = &self.webview
+            && wv.url().is_ok_and(|u| !u.is_empty() && u != "about:blank")
+        {
+            let _ = wv.load_url("about:blank");
+        }
+    }
+
+    fn webview_blank(&self) -> bool {
+        self.webview
+            .as_ref()
+            .is_some_and(|wv| wv.url().is_ok_and(|u| u == "about:blank"))
+    }
 
     fn create_webview(&mut self, window: &Window) {
         // The embedded web view is a WebView2 child window on Windows (and a
