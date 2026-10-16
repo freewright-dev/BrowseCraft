@@ -9,11 +9,11 @@ browsecraft "rust browser"  # runs a search
 browsecraft --screenshot out.png example.com 1200   # renders to a PNG
 ```
 
-The command-line argument is read the same way as text typed into the address bar. `--screenshot <out.png> <url> [width]` renders the page with Browsecraft's own engine (never WebView2) and exits; the width defaults to 1200 pixels.
+The command-line argument is read the same way as text typed into the address bar. `--screenshot <out.png> <url> [width]` renders the page with BrowseCraft's own engine (never WebView2) and exits; the width defaults to 1200 pixels.
 
 ## Address bar
 
-Press `Enter` to go. Browsecraft decides what the text means using these rules, in order:
+Press `Enter` to go. BrowseCraft decides what the text means using these rules, in order:
 
 | Input                                                  | Result                  |
 | ------------------------------------------------------ | ----------------------- |
@@ -29,9 +29,9 @@ The address bar supports selection with the mouse or `Shift` + arrows, `Ctrl` + 
 
 ## Where pages render
 
-On Windows, web pages (`http:`, `https:`, `file:` and `data:` addresses) are shown in an embedded WebView2 pane (WKWebView on macOS). Browsecraft's own engine renders the built-in pages (`about:`, `browsecraft://` and `view-source:`), the result of a POST form submitted from an engine page, and every page when WebView2 is unavailable or on other platforms.
+On Windows, web pages (`http:`, `https:`, `file:` and `data:` addresses) are shown in an embedded WebView2 pane (WKWebView on macOS). BrowseCraft's own engine renders the built-in pages (`about:`, `browsecraft://` and `view-source:`), the result of a POST form submitted from an engine page, and every page when WebView2 is unavailable or on other platforms.
 
-This matters for input. Browsecraft's shortcuts below also work while a WebView2 page has the keyboard (handled on Windows through the WebView2 controller's `AcceleratorKeyPressed` event). Forms, link hover, `Ctrl`+wheel and the scrolling keys described here apply to engine pages; WebView2 pages handle these themselves.
+This matters for input. BrowseCraft's shortcuts below also work while a WebView2 page has the keyboard (handled on Windows through the WebView2 controller's `AcceleratorKeyPressed` event). Forms, link hover, `Ctrl`+wheel and the scrolling keys described here apply to engine pages; WebView2 pages handle these themselves.
 
 ## Built-in pages
 
@@ -43,7 +43,7 @@ This matters for input. Browsecraft's shortcuts below also work while a WebView2
 | `browsecraft://history`     | Pages visited this session, newest first                          |
 | `view-source:<url>`   | The raw source of an `http:`, `https:` or `file:` page            |
 
-History is kept in memory only (up to 500 entries) and is lost when Browsecraft quits. Built-in pages are not recorded. When the engine renders a `file://` URL that points at a folder, it shows a directory listing.
+History is kept in memory only (up to 500 entries) and is lost when BrowseCraft quits. Built-in pages are not recorded. When the engine renders a `file://` URL that points at a folder, it shows a directory listing.
 
 ## Toolbar
 
@@ -64,7 +64,7 @@ The vertical sidebar on the left lists the open tabs; the active one is
 highlighted. Click a tab to switch to it, click its ✕ to close it, and click the
 `+` (New tab) button at the top to open a new one. New tabs open `about:home`
 with the address bar focused. With the engine chrome, middle-clicking a tab
-also closes it. Closing the last tab quits Browsecraft. The sidebar position (left,
+also closes it. Closing the last tab quits BrowseCraft. The sidebar position (left,
 right or hidden) is set on `browsecraft://flags`.
 
 ## Settings (`browsecraft://flags`)
@@ -79,7 +79,7 @@ is made at startup, so restart to apply a change to it.
 
 ## Ad blocking
 
-Browsecraft blocks ads and trackers with a small built-in filter list plus every
+BrowseCraft blocks ads and trackers with a small built-in filter list plus every
 `.txt` file in a `filters` folder in the working directory or next to the
 executable (EasyList / uBlock Origin syntax). A blocked page shows a "This page
 was blocked" notice while the address bar keeps the original address, and a
@@ -116,4 +116,4 @@ These apply to forms on engine pages. Click a text field to type in it. `Enter` 
 
 ## Links and new windows
 
-Links with `target="_blank"` and pop-ups from WebView2 pages open in the current tab. On engine pages, `javascript:`, `mailto:` and `tel:` links are ignored. Browsecraft has a single window; new pages open in tabs.
+Links with `target="_blank"` and pop-ups from WebView2 pages open in the current tab. On engine pages, `javascript:`, `mailto:` and `tel:` links are ignored. BrowseCraft has a single window; new pages open in tabs.

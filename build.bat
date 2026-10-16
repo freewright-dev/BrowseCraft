@@ -1,6 +1,6 @@
 @echo off
 rem ===========================================================================
-rem  Browsecraft - build script for Windows
+rem  BrowseCraft - build script for Windows
 rem
 rem  Usage:   build.bat [release|debug] [test] [clean] [run]
 rem             (no arguments)  optimised release build  -> dist\browsecraft.exe
@@ -15,7 +15,7 @@ rem         At run time the embedded web view needs the WebView2 runtime
 rem         (already part of Windows 11 and current Windows 10).
 rem ===========================================================================
 setlocal EnableExtensions
-title Browsecraft build
+title BrowseCraft build
 cd /d "%~dp0"
 
 set "MODE=release"
@@ -84,7 +84,7 @@ rem ---- 3. Build --------------------------------------------------------------
 set "CARGO_ARGS="
 if /i "%MODE%"=="release" set "CARGO_ARGS=--release"
 
-echo Building Browsecraft ^(%MODE%^)...
+echo Building BrowseCraft ^(%MODE%^)...
 if /i "%MODE%"=="release" echo The release profile uses LTO, so the first build takes a few minutes.
 cargo build %CARGO_ARGS%
 if errorlevel 1 (
@@ -112,7 +112,7 @@ echo Build finished: %CD%\dist\browsecraft.exe
 echo The ad-filter lists in dist\filters are loaded next to the executable.
 
 if defined RUN_AFTER (
-    echo Starting Browsecraft...
+    echo Starting BrowseCraft...
     start "" "dist\browsecraft.exe"
 )
 goto :done

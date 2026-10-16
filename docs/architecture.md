@@ -1,6 +1,6 @@
 # Architecture
 
-Browsecraft renders internal pages with its own engine and ordinary web pages in an
+BrowseCraft renders internal pages with its own engine and ordinary web pages in an
 embedded WebView2 pane (see "Engine pages and the WebView2 pane"). Each engine
 stage is a module in `src/`:
 

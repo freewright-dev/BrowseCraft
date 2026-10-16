@@ -1,15 +1,15 @@
 <p align="center"><img src="assets/logo.png" alt="" width="160"></p>
 
-<h1 align="center">Browsecraft</h1>
+<h1 align="center">BrowseCraft</h1>
 
 <p align="center">Part of <a href="https://github.com/pierruno-labs">Pierruno Labs</a></p>
 
 A small web browser written in Rust, with tabs, a built-in ad blocker and
 **its own rendering engine**.
 
-Browsecraft uses two renderers side by side:
+BrowseCraft uses two renderers side by side:
 
-- **Browsecraft's engine** draws the browser's own pages: the new-tab page
+- **BrowseCraft's engine** draws the browser's own pages: the new-tab page
   (`about:home`), `view-source:` and the `browsecraft://` pages (`browsecraft://flags`,
   `browsecraft://history`). It parses HTML and CSS, runs the cascade, lays out the
   page and rasterizes it in software.
@@ -53,7 +53,7 @@ available, and by the engine otherwise.
 
 ## Requirements
 
-Browsecraft is developed and tested on Windows. Building it needs:
+BrowseCraft is developed and tested on Windows. Building it needs:
 
 - Rust 1.95 or newer (`rustup update stable`)
 - The Visual Studio Build Tools with the "Desktop development with C++" workload
@@ -66,7 +66,7 @@ copies it into `dist\` together with the filter lists:
 
 ```bat
 build.bat            :: release build into dist\browsecraft.exe
-build.bat run        :: build, then start Browsecraft
+build.bat run        :: build, then start BrowseCraft
 build.bat debug      :: faster build that keeps a console window for logs
 build.bat test       :: run the unit tests
 build.bat clean      :: remove target\ and dist\
@@ -112,7 +112,7 @@ Settings are saved as `key=value` lines in `flags.txt` in the working directory.
 
 ## Ad-block filter lists
 
-Browsecraft builds its blocker from a built-in starter list plus every `filters/*.txt`
+BrowseCraft builds its blocker from a built-in starter list plus every `filters/*.txt`
 file it finds next to the executable or in the working directory. To block
 more, add a list such as [EasyList](https://easylist.to/) to `filters/`.
 

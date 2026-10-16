@@ -2,7 +2,7 @@
 //! the render loop.
 //!
 //! Two kinds of pages live side by side. `about:`, `view-source:` and `browsecraft:`
-//! URLs go through Browsecraft's own engine (loader -> html/css -> style ->
+//! URLs go through BrowseCraft's own engine (loader -> html/css -> style ->
 //! layout -> paint); everything else renders in an embedded WebView2 pane
 //! (`wry`) exposed below the toolbar and beside the tab sidebar. The chrome
 //! (toolbar and tab sidebar) is drawn either by the engine into a softbuffer
@@ -75,7 +75,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl + Shift + S", "Save a screenshot to Pictures"),
     ("Ctrl + + / \u{2212} / 0", "Zoom in / out / reset"),
     ("Ctrl + U", "View the page source"),
-    ("Ctrl + Q", "Quit Browsecraft"),
+    ("Ctrl + Q", "Quit BrowseCraft"),
 ];
 
 #[derive(Clone, Debug)]
@@ -930,7 +930,7 @@ impl Browser {
     fn update_window_title(&self) {
         if let Some(g) = &self.gfx {
             g.window
-                .set_title(&format!("{} - Browsecraft", self.live_title()));
+                .set_title(&format!("{} - BrowseCraft", self.live_title()));
         }
     }
 
@@ -3097,7 +3097,7 @@ impl ApplicationHandler<UserMessage> for Browser {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("Browsecraft")
+            .with_title("BrowseCraft")
             .with_inner_size(LogicalSize::new(1280.0, 800.0))
             .with_min_inner_size(LogicalSize::new(480.0, 320.0));
         let window = match event_loop.create_window(attrs) {

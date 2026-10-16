@@ -97,7 +97,7 @@ pub fn page_html() -> String {
          .u {{ display: block; color: #8c959f; font-size: 12px; word-break: break-all; margin-top: 2px }}\
          .empty {{ color: #57606a }}\
          </style><main><h1>History</h1>\
-         <p class=\"sub\">Pages Browsecraft has loaded, newest first.</p>{body}</main>"
+         <p class=\"sub\">Pages BrowseCraft has loaded, newest first.</p>{body}</main>"
     )
 }
 

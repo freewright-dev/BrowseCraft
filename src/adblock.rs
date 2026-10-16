@@ -962,7 +962,7 @@ const origFetch=window.fetch;
 if(origFetch){
   window.fetch=function(input,init){
     const u=typeof input==='string'?input:(input&&input.url?input.url:'');
-    if(u&&decide(abs(u),M.xhr)===1)return Promise.reject(new TypeError('Blocked by Browsecraft'));
+    if(u&&decide(abs(u),M.xhr)===1)return Promise.reject(new TypeError('Blocked by BrowseCraft'));
     return origFetch.apply(this,arguments);
   };
 }
@@ -987,7 +987,7 @@ document.createElement=function(tag){
 
 // ---- Built-in starter list ----
 
-const START_LIST: &str = r#"! Browsecraft starter list (subset of uBlock Origin defaults)
+const START_LIST: &str = r#"! BrowseCraft starter list (subset of uBlock Origin defaults)
 ! Hostname-anchored network filters.
 ||doubleclick.net^
 ||googlesyndication.com^

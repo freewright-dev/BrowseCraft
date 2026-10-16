@@ -1,6 +1,6 @@
-# Contributing to Browsecraft
+# Contributing to BrowseCraft
 
-Thanks for helping build Browsecraft! Every change, however small, goes through a pull request.
+Thanks for helping build BrowseCraft! Every change, however small, goes through a pull request.
 
 ## Workflow
 

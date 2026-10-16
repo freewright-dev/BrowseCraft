@@ -10,8 +10,8 @@
   Windows 10)
 - System fonts: Segoe UI or Arial on Windows, Arial on macOS, DejaVu or Liberation fonts on Linux
 
-Browsecraft is developed and tested on Windows; CI runs only on `windows-latest`.
-`about:`, `view-source:` and `browsecraft:` pages render in Browsecraft's own engine;
+BrowseCraft is developed and tested on Windows; CI runs only on `windows-latest`.
+`about:`, `view-source:` and `browsecraft:` pages render in BrowseCraft's own engine;
 everything else renders in an embedded WebView2 pane via the `wry` crate.
 
 ## Build and run
@@ -67,7 +67,7 @@ cargo run --release -- --screenshot out.png https://news.ycombinator.com/ 1200
 ```
 
 This runs without a window (see `src/headless.rs`); the width is optional and
-defaults to 1200. It always uses Browsecraft's own engine, never WebView2. It loads
+defaults to 1200. It always uses BrowseCraft's own engine, never WebView2. It loads
 the page and all its images, then renders the full page (up to
 6000 px tall) at the given width to a PNG. It runs the same style, layout and
 paint code as the window, so it's the quickest way to check a rendering change.
