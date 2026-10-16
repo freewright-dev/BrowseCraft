@@ -257,7 +257,14 @@ fn document_base(doc: &Document, url: &Url) -> Url {
         .and_then(|b| doc.element(b))
         .and_then(|e| e.attr("href"))
         .and_then(|href| url.join(href).ok())
+        .filter(|base| may_fetch(url, base))
         .unwrap_or_else(|| url.clone())
+}
+
+/// Whether a document (or stylesheet) at `from` may load `url`. Only local
+/// files may load other local files: a web page must not read the disk.
+fn may_fetch(from: &Url, url: &Url) -> bool {
+    url.scheme() != "file" || from.scheme() == "file"
 }
 
 enum SheetSource {
@@ -290,6 +297,7 @@ fn sheet_sources(doc: &Document, base: Option<&Url>) -> Vec<SheetSource> {
                     rel.split_whitespace().any(|r| r == "stylesheet") && !rel.contains("alternate");
                 if let (true, Some(base), Some(href)) = (is_sheet, base, el.attr("href"))
                     && let Ok(url) = base.join(href.trim())
+                    && may_fetch(base, &url)
                 {
                     out.push(SheetSource::Link(url, media));
                 }
@@ -383,7 +391,9 @@ fn with_imports(
     let mut out = Vec::new();
     if depth < 3 {
         for import in &sheet.imports {
-            if let Ok(url) = base.join(import) {
+            if let Ok(url) = base.join(import)
+                && may_fetch(base, &url)
+            {
                 out.extend(fetch_sheet(&url, media, depth + 1, doc_host));
             }
         }
@@ -421,6 +431,7 @@ fn image_sources(page: &Page) -> Vec<(String, Url)> {
             continue;
         }
         if let Ok(url) = page.base.join(src)
+            && may_fetch(&page.base, &url)
             && !crate::adblock::blocked_subresource(url.as_str(), crate::adblock::TYPE_IMAGE, &host)
         {
             out.push((src.to_string(), url));
@@ -458,4 +469,72 @@ fn fetch_image(url: &Url) -> Option<Image> {
         height: rgba.height(),
         pixels,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MARKUP: &str = r#"<base href="file:///C:/">
+        <link rel="stylesheet" href="file:///C:/a.css"><link rel="stylesheet" href="b.css">
+        <img src="file:///C:/secret.png"><img src="c.png">"#;
+
+    fn page_at(url: &str) -> Page {
+        let doc = html::parse(MARKUP);
+        let url = Url::parse(url).unwrap();
+        let base = document_base(&doc, &url);
+        Page {
+            url: url.to_string(),
+            base,
+            doc,
+            sheets: Vec::new(),
+        }
+    }
+
+    fn links(page: &Page) -> Vec<String> {
+        sheet_sources(&page.doc, Some(&page.base))
+            .into_iter()
+            .filter_map(|s| match s {
+                SheetSource::Link(url, _) => Some(url.to_string()),
+                SheetSource::Inline(..) => None,
+            })
+            .collect()
+    }
+
+    fn images(page: &Page) -> Vec<String> {
+        let mut urls: Vec<_> = image_sources(page)
+            .into_iter()
+            .map(|(_, u)| u.to_string())
+            .collect();
+        urls.sort();
+        urls
+    }
+
+    #[test]
+    fn web_pages_cannot_load_local_files() {
+        let page = page_at("https://example.com/dir/page.html");
+        assert_eq!(page.base.as_str(), "https://example.com/dir/page.html");
+        assert_eq!(links(&page), ["https://example.com/dir/b.css"]);
+        assert_eq!(images(&page), ["https://example.com/dir/c.png"]);
+
+        // A real file, so a blocked @import differs from a failed one.
+        let path = std::env::temp_dir().join(format!("browsecraft-{}.css", std::process::id()));
+        std::fs::write(&path, "p { color: red }").unwrap();
+        let import = format!("@import '{}';", Url::from_file_path(&path).unwrap());
+        let imported = |from: &str| {
+            let sheet = css::parse_stylesheet(&import);
+            with_imports(sheet, &Url::parse(from).unwrap(), None, 0, "").len()
+        };
+        assert_eq!(imported("https://example.com/s.css"), 1);
+        assert_eq!(imported("file:///D:/site/s.css"), 2);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn local_pages_can_load_local_files() {
+        let page = page_at("file:///D:/site/page.html");
+        assert_eq!(page.base.as_str(), "file:///C:/");
+        assert_eq!(links(&page), ["file:///C:/a.css", "file:///C:/b.css"]);
+        assert_eq!(images(&page), ["file:///C:/c.png", "file:///C:/secret.png"]);
+    }
 }

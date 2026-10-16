@@ -65,10 +65,18 @@ pub fn fetch(url: &Url, form: Option<&str>, accept: &str) -> Result<Response, St
             })
         }
         "file" => {
+            // On Windows `file://host/share` maps to the UNC path
+            // `\\host\share`, and opening it makes Windows authenticate to
+            // that host over SMB with the user's credentials.
+            if url.host_str().is_some_and(|h| !h.is_empty()) {
+                return Err("file URLs on other computers are not supported".into());
+            }
             let path = url
                 .to_file_path()
                 .map_err(|_| "invalid file path".to_string())?;
-            if path.is_dir() {
+            let describe = |e: std::io::Error| format!("{}: {e}", path.display());
+            let meta = std::fs::metadata(&path).map_err(describe)?;
+            if meta.is_dir() {
                 return Ok(Response {
                     url: url.clone(),
                     status: 200,
@@ -76,7 +84,17 @@ pub fn fetch(url: &Url, form: Option<&str>, accept: &str) -> Result<Response, St
                     body: directory_listing(&path, url).into_bytes(),
                 });
             }
-            let body = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            // Devices such as `CON` or named pipes can block forever.
+            if !meta.is_file() {
+                return Err(format!("{}: not a regular file", path.display()));
+            }
+            let mut body = Vec::new();
+            std::fs::File::open(&path)
+                .and_then(|f| f.take(MAX_BODY + 1).read_to_end(&mut body))
+                .map_err(describe)?;
+            if body.len() as u64 > MAX_BODY {
+                return Err("the file is too large".into());
+            }
             let content_type = mime_from_extension(&path.to_string_lossy()).to_string();
             Ok(Response {
                 url: url.clone(),
@@ -316,6 +334,42 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn file_urls_stay_on_this_computer() {
+        for remote in [
+            "file://attacker.example/share/x.png",
+            "file://192.0.2.1/share/",
+            "file://./pipe/x",
+        ] {
+            let err = fetch(&Url::parse(remote).unwrap(), None, "*/*").err();
+            assert_eq!(
+                err.as_deref(),
+                Some("file URLs on other computers are not supported"),
+                "{remote}"
+            );
+        }
+
+        let dir = std::env::temp_dir().join(format!("browsecraft-net-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("page.html");
+        std::fs::write(&file, "<p>hi").unwrap();
+        let url = Url::from_file_path(&file).unwrap();
+        assert_eq!(fetch(&url, None, "*/*").unwrap().body, b"<p>hi");
+        // `localhost` means this computer.
+        let local = Url::parse(&url.as_str().replacen("file://", "file://localhost", 1)).unwrap();
+        assert_eq!(fetch(&local, None, "*/*").unwrap().body, b"<p>hi");
+        let listing = fetch(&Url::from_directory_path(&dir).unwrap(), None, "*/*").unwrap();
+        assert!(String::from_utf8_lossy(&listing.body).contains("page.html"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn file_urls_refuse_devices() {
+        let err = fetch(&Url::parse("file:///C:/CON").unwrap(), None, "*/*").err();
+        assert!(err.is_some_and(|e| !e.contains("too large")));
+    }
 
     /// Exercise the real HTTP/content-decoding path without an external server.
     fn fetch_test_body(body: Vec<u8>, gzip: bool) -> Result<Response, String> {
