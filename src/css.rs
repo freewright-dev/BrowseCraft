@@ -591,9 +591,12 @@ fn pseudo_matches(p: &Pseudo, doc: &Document, node: NodeId) -> bool {
         Pseudo::FirstOfType => !doc.previous_elements(node).any(|s| doc.tag(s) == tag),
         Pseudo::LastOfType => !doc.next_elements(node).any(|s| doc.tag(s) == tag),
         Pseudo::NthChild(a, b) => {
-            let index = doc.previous_elements(node).count() as i32 + 1;
+            // i64 so that `index - b` and `% a` cannot overflow i32 (e.g.
+            // `-n-2147483647` would otherwise compute `i32::MIN % -1`).
+            let index = doc.previous_elements(node).count() as i64 + 1;
+            let (a, b) = (i64::from(*a), i64::from(*b));
             match a {
-                0 => index == *b,
+                0 => index == b,
                 a => (index - b) % a == 0 && (index - b) / a >= 0,
             }
         }
@@ -1107,6 +1110,29 @@ mod tests {
                 "{sel}"
             );
         }
+    }
+
+    #[test]
+    fn nth_child_extreme_arguments_do_not_overflow() {
+        let doc = html::parse("<p>1</p><p>2</p>");
+        let p = doc
+            .descendants(Document::ROOT)
+            .into_iter()
+            .find(|&n| doc.tag(n) == "p")
+            .unwrap();
+        for sel in [
+            ":nth-child(-n-2147483647)",
+            ":nth-child(-n+2147483647)",
+            ":nth-child(-2147483648n-2147483648)",
+            ":nth-child(2147483647n+2147483647)",
+        ] {
+            parse_selector(sel).unwrap().matches(&doc, p);
+        }
+        assert!(
+            parse_selector(":nth-child(-n+2147483647)")
+                .unwrap()
+                .matches(&doc, p)
+        );
     }
 
     #[test]
