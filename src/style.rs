@@ -230,7 +230,57 @@ pub struct Style {
     pub border_spacing: f32,
 
     /// Custom properties (`--name`), inherited.
-    pub vars: Rc<HashMap<String, String>>,
+    pub vars: Rc<Vars>,
+}
+
+/// Custom properties in scope for an element: the ones it declares itself,
+/// layered over its parent's. Elements share their ancestors' layers instead
+/// of each copying the whole map.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Vars {
+    own: HashMap<String, String>,
+    parent: Option<Rc<Vars>>,
+}
+
+/// Custom properties one element may declare; more are ignored.
+const MAX_OWN_VARS: usize = 4096;
+
+impl Vars {
+    pub fn get(&self, name: &str) -> Option<&str> {
+        let mut layer = Some(self);
+        while let Some(vars) = layer {
+            if let Some(value) = vars.own.get(name) {
+                return Some(value);
+            }
+            layer = vars.parent.as_deref();
+        }
+        None
+    }
+
+    /// `parent` plus `declared`, in cascade order (later wins). Declarations
+    /// that repeat the inherited value add nothing, so `* { --x: 1 }` costs
+    /// one entry for the whole document rather than one per element.
+    fn layered<'a>(
+        parent: &Rc<Vars>,
+        declared: impl Iterator<Item = (&'a str, &'a str)>,
+    ) -> Rc<Vars> {
+        let mut own: HashMap<String, String> = HashMap::new();
+        for (name, value) in declared {
+            if own.get(name).is_none_or(|v| v != value)
+                && (own.contains_key(name) || parent.get(name) != Some(value))
+                && (own.len() < MAX_OWN_VARS || own.contains_key(name))
+            {
+                own.insert(name.to_string(), value.to_string());
+            }
+        }
+        if own.is_empty() {
+            return parent.clone();
+        }
+        Rc::new(Vars {
+            own,
+            parent: Some(parent.clone()),
+        })
+    }
 }
 
 impl Style {
@@ -286,7 +336,7 @@ impl Style {
             row_gap: Length::Px(0.0),
             column_gap: Length::Px(0.0),
             border_spacing: 0.0,
-            vars: Rc::new(HashMap::new()),
+            vars: Rc::new(Vars::default()),
         }
     }
 
@@ -477,14 +527,14 @@ fn compute_element(
     entries.sort_by_key(|a| (a.0, a.1, a.2, a.3));
 
     // Custom properties first, so var() can see this element's own values.
-    let mut vars: Option<HashMap<String, String>> = None;
-    for (_, _, _, _, d) in &entries {
-        if d.name.starts_with("--") {
-            vars.get_or_insert_with(|| (*parent.vars).clone())
-                .insert(d.name.clone(), d.value.clone());
-        }
-    }
-    let vars = vars.map_or_else(|| parent.vars.clone(), Rc::new);
+    let vars = Vars::layered(
+        &parent.vars,
+        entries
+            .iter()
+            .map(|e| e.4)
+            .filter(|d| d.name.starts_with("--"))
+            .map(|d| (d.name.as_str(), d.value.as_str())),
+    );
 
     let mut specified: HashMap<String, String> = HashMap::new();
     for (_, _, _, _, d) in &entries {
@@ -996,12 +1046,7 @@ const VAR_BUDGET: usize = 64 * 1024;
 /// Replaces `var(--name, fallback)` references. Returns `None` when a
 /// variable is missing and has no fallback, or when `budget` runs out, which
 /// makes the declaration invalid.
-fn substitute_vars(
-    value: &str,
-    vars: &HashMap<String, String>,
-    depth: u32,
-    budget: &mut usize,
-) -> Option<String> {
+fn substitute_vars(value: &str, vars: &Vars, depth: u32, budget: &mut usize) -> Option<String> {
     if !value.contains("var(") {
         spend(budget, value.len())?;
         return Some(value.to_string());
@@ -1488,6 +1533,51 @@ mod tests {
         );
         assert_eq!(s.margin[0], Length::Px(1.0));
         assert_eq!(s.margin[1], Length::Px(1.0));
+    }
+
+    #[test]
+    fn custom_properties_share_their_ancestors_layers() {
+        let doc = html::parse(&("<div>".repeat(200) + "<p>t</p>"));
+        let css = ":root{--a:1px;--b:2px} * {--a:1px} div{--c:3px} p{--b:5px;--b:7px}";
+        let sheets = vec![css::parse_stylesheet(css)];
+        let ctx = StyleContext {
+            zoom: 1.0,
+            viewport_width: 1000.0,
+            viewport_height: 800.0,
+        };
+        let styles = compute_styles(&doc, &sheets, &ctx);
+        let p = &styles[doc.find_tag("p").unwrap()].vars;
+        assert_eq!(p.get("--a"), Some("1px"));
+        assert_eq!(p.get("--b"), Some("7px"));
+        assert_eq!(p.get("--c"), Some("3px"));
+        assert_eq!(p.get("--d"), None);
+        // `* { --a: 1px }` repeats the inherited value, and every <div>
+        // repeats `--c: 3px` from its parent div: only the first div and
+        // <p> add a layer.
+        let layers = std::iter::successors(Some(&**p), |v| v.parent.as_deref()).count();
+        assert!(layers <= 5, "{layers}");
+        let total: usize = std::iter::successors(Some(&**p), |v| v.parent.as_deref())
+            .map(|v| v.own.len())
+            .sum();
+        assert!(total <= 5, "{total}");
+
+        // The trigger from issue #22: many properties on :root, and a rule
+        // that re-declares one on every element.
+        let root: String = (0..10_000).map(|i| format!("--v{i}:{i}px;")).collect();
+        let css = format!(":root{{{root}}} *{{--x:1}} p{{margin-left:var(--v100)}}");
+        let doc = html::parse(&"<p>t</p>".repeat(2000));
+        let start = std::time::Instant::now();
+        let styles = compute_styles(&doc, &[css::parse_stylesheet(&css)], &ctx);
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        let p = doc.find_tag("p").unwrap();
+        assert_eq!(styles[p].margin[3], Length::Px(100.0));
+        // Past MAX_OWN_VARS on one element, declarations are ignored.
+        assert_eq!(styles[p].vars.get("--v4000"), Some("4000px"));
+        assert_eq!(styles[p].vars.get("--v9999"), None);
+        assert!(Rc::ptr_eq(
+            &styles[p].vars,
+            &styles[doc.find_tag("body").unwrap()].vars
+        ));
     }
 
     #[test]
