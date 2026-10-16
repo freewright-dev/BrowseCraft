@@ -2,6 +2,8 @@
 //! (implied `<html>`, `<head>` and `<body>`, void elements, auto-closed `<p>`,
 //! `<li>`, table parts) without the full insertion-mode state machine.
 
+use std::collections::HashSet;
+
 use crate::dom::{Document, Element, NodeId, NodeKind};
 
 const VOID: &[&str] = &[
@@ -150,15 +152,14 @@ impl<'a> Tokenizer<'a> {
 
     fn raw_text(&mut self, tag: &str) -> Token {
         let rest = self.rest();
-        let lower = rest.to_ascii_lowercase();
-        let close = format!("</{tag}");
-        let end = lower.find(&close).unwrap_or(rest.len());
+        let end = find_end_tag(rest, tag).unwrap_or(rest.len());
         let text = &rest[..end];
         self.pos += end;
         if end == 0 {
             // Consume the end tag so the builder leaves raw-text mode.
-            let after = &rest[close.len()..];
-            self.pos += close.len() + after.find('>').map_or(after.len(), |i| i + 1);
+            let close_len = 2 + tag.len();
+            let after = &rest[close_len..];
+            self.pos += close_len + after.find('>').map_or(after.len(), |i| i + 1);
             return Token::End(tag.to_string());
         }
         let text = if matches!(tag, "textarea" | "title") {
@@ -179,6 +180,8 @@ impl<'a> Tokenizer<'a> {
         }
         let tag = self.src[name_start..i].to_ascii_lowercase();
         let mut attrs: Vec<(String, String)> = Vec::new();
+        // Attribute names seen so far, once there are too many to scan.
+        let mut names: HashSet<String> = HashSet::new();
         let mut self_closing = false;
         loop {
             while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b'/') {
@@ -232,7 +235,16 @@ impl<'a> Tokenizer<'a> {
                     value = decode_entities(&self.src[vstart..i]);
                 }
             }
-            if !attrs.iter().any(|(n, _)| *n == name) {
+            // The first of several same-named attributes wins.
+            let duplicate = if attrs.len() < 16 {
+                attrs.iter().any(|(n, _)| *n == name)
+            } else {
+                if names.is_empty() {
+                    names.extend(attrs.iter().map(|(n, _)| n.clone()));
+                }
+                !names.insert(name.clone())
+            };
+            if !duplicate {
                 attrs.push((name, value));
             }
         }
@@ -327,8 +339,11 @@ impl Builder {
     /// Pops open elements up to and including the innermost `tag`, unless one
     /// of `boundary` is reached first.
     fn close(&mut self, tags: &[&str], boundary: &[&str]) -> bool {
+        // Elements past MAX_DEPTH are flattened anyway (see `start`), and
+        // searching the whole stack on every tag is quadratic.
         let found = self
             .open_tags()
+            .take(MAX_DEPTH)
             .position(|t| tags.contains(&t) || boundary.contains(&t));
         match found {
             Some(depth) if tags.contains(&self.open_tags().nth(depth).unwrap_or("")) => {
@@ -495,12 +510,24 @@ impl Builder {
 
 fn merge_attrs(element: Option<&mut Element>, attrs: Vec<(String, String)>) {
     if let Some(e) = element {
+        let mut names: HashSet<String> = e.attrs.iter().map(|(n, _)| n.clone()).collect();
         for (name, value) in attrs {
-            if e.attr(&name).is_none() {
+            if names.insert(name.clone()) {
                 e.attrs.push((name, value));
             }
         }
     }
+}
+
+/// The byte offset of the first `</tag` in `s`, ignoring ASCII case, without
+/// lowercasing the rest of the document for every raw-text element.
+fn find_end_tag(s: &str, tag: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    s.match_indices("</").map(|(i, _)| i).find(|&i| {
+        bytes
+            .get(i + 2..i + 2 + tag.len())
+            .is_some_and(|name| name.eq_ignore_ascii_case(tag.as_bytes()))
+    })
 }
 
 /// Replaces character references such as `&amp;`, `&#169;` and `&#x2014;`.
@@ -667,6 +694,29 @@ mod tests {
         let markup = "<!---->".repeat(200_000) + "<!doctype html><?x?><p>x";
         let doc = parse(&markup);
         assert_eq!(doc.text_content(doc.find_tag("p").unwrap()), "x");
+    }
+
+    #[test]
+    fn pathological_markup_parses_in_linear_time() {
+        let start = std::time::Instant::now();
+        let scripts = "<script>x</script>".repeat(60_000) + "<p>end";
+        assert_eq!(parse(&scripts).text_content(parse(&scripts).find_tag("p").unwrap()), "end");
+        let divs = "<div>".repeat(60_000) + "x";
+        assert!(parse(&divs).nodes.len() > 60_000);
+        let attrs: String = (0..60_000).map(|i| format!(" a{i}=1")).collect();
+        let doc = parse(&format!("<p{attrs} a0=2 a59999=2>x</p><body{attrs} extra=1>"));
+        let p = doc.element(doc.find_tag("p").unwrap()).unwrap();
+        assert_eq!(p.attrs.len(), 60_000);
+        assert_eq!(p.attr("a0"), Some("1"));
+        assert_eq!(p.attr("a59999"), Some("1"));
+        let body = doc.element(doc.find_tag("body").unwrap()).unwrap();
+        assert_eq!(body.attrs.len(), 60_001);
+        assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
+
+        // Raw-text end tags still match in any case.
+        let doc = parse("<SCRIPT>a</b></ScRiPt><p>after");
+        assert_eq!(doc.text_content(doc.find_tag("script").unwrap()), "a</b>");
+        assert_eq!(doc.text_content(doc.find_tag("p").unwrap()), "after");
     }
 
     #[test]

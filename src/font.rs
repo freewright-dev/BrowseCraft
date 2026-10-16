@@ -1,6 +1,6 @@
 //! System fonts, glyph fallback and glyph caches, on top of fontdue.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -14,6 +14,10 @@ pub const MAX_FONT_PX: f32 = 2048.0;
 // This also keeps its f32/i32 raster indices well below their precision limits.
 const MAX_GLYPH_SIDE: usize = 4096;
 const MAX_GLYPH_PIXELS: usize = 4 * 1024 * 1024;
+/// Rasterized glyphs kept at once, in coverage bytes.
+const GLYPH_CACHE_BYTES: usize = 64 * 1024 * 1024;
+/// Cached advances; each entry is a few dozen bytes.
+const MAX_CACHED_ADVANCES: usize = 200_000;
 
 fn safe_font_size(size: f32) -> bool {
     size.is_finite() && size > 0.0 && size <= MAX_FONT_PX
@@ -192,6 +196,8 @@ pub struct Fonts {
     fallbacks: Vec<OnceCell<Option<Font>>>,
     advances: RefCell<HashMap<(FaceId, char, u32), f32>>,
     glyphs: RefCell<HashMap<(FaceId, char, u32), Rc<Glyph>>>,
+    /// Coverage bytes held by `glyphs`.
+    glyph_bytes: Cell<usize>,
     /// Which face draws each character for a key.
     resolved: RefCell<HashMap<(usize, char), FaceId>>,
 }
@@ -210,6 +216,7 @@ impl Fonts {
             fallbacks: FALLBACK_PATHS.iter().map(|_| OnceCell::new()).collect(),
             advances: RefCell::default(),
             glyphs: RefCell::default(),
+            glyph_bytes: Cell::new(0),
             resolved: RefCell::default(),
         };
         if fonts.face(FontKey::UI).is_none() {
@@ -303,7 +310,11 @@ impl Fonts {
             return a;
         }
         let a = self.font(face).metrics(ch, size).advance_width;
-        self.advances.borrow_mut().insert(k, a);
+        let mut advances = self.advances.borrow_mut();
+        if advances.len() >= MAX_CACHED_ADVANCES {
+            advances.clear();
+        }
+        advances.insert(k, a);
         a
     }
 
@@ -342,13 +353,17 @@ impl Fonts {
             return empty_glyph();
         }
         let (metrics, coverage) = font.rasterize(ch, size);
+        let bytes = coverage.len();
         let glyph = Rc::new(Glyph { metrics, coverage });
         let mut cache = self.glyphs.borrow_mut();
-        // Keep memory bounded on pages that use many sizes.
-        if cache.len() > 20_000 {
+        // Keep memory bounded on pages that use many (or huge) sizes: by
+        // bytes, since one glyph can be up to MAX_GLYPH_PIXELS.
+        if cache.len() > 20_000 || self.glyph_bytes.get() + bytes > GLYPH_CACHE_BYTES {
             cache.clear();
+            self.glyph_bytes.set(0);
         }
         cache.insert(k, glyph.clone());
+        self.glyph_bytes.set(self.glyph_bytes.get() + bytes);
         glyph
     }
 }
@@ -356,6 +371,22 @@ impl Fonts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glyph_cache_is_bounded_by_bytes() {
+        let Ok(fonts) = Fonts::new() else { return };
+        for size in (400..520).step_by(2) {
+            fonts.glyph(FontKey::UI, 'W', size as f32);
+            assert!(fonts.glyph_bytes.get() <= GLYPH_CACHE_BYTES);
+        }
+        let held: usize = fonts
+            .glyphs
+            .borrow()
+            .values()
+            .map(|g| g.coverage.len())
+            .sum();
+        assert_eq!(held, fonts.glyph_bytes.get());
+    }
 
     #[test]
     fn unsafe_font_sizes_never_reach_fontdue() {
