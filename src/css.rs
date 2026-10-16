@@ -1,6 +1,8 @@
 //! CSS parsing: stylesheets, selectors, declarations and the value types the
 //! style system understands.
 
+use std::collections::HashSet;
+
 use crate::dom::{Document, NodeId};
 
 #[derive(Default)]
@@ -491,7 +493,7 @@ fn parse_nth(s: &str) -> Option<(i32, i32)> {
 
 impl Selector {
     pub fn matches(&self, doc: &Document, node: NodeId) -> bool {
-        matches_from(&self.parts, doc, node)
+        matches_from(&self.parts, doc, node, &mut HashSet::new())
     }
 
     /// The most selective key of the subject, for rule bucketing.
@@ -517,33 +519,45 @@ pub enum SelectorKey {
     Universal,
 }
 
-fn matches_from(parts: &[(Compound, Combinator)], doc: &Document, node: NodeId) -> bool {
+/// Matches `parts` (subject first) against `node`.
+///
+/// The result depends only on how many parts are left and on the node, so
+/// `failed` remembers `(parts.len(), node)` pairs that did not match. Without
+/// it, `a b c …` descendant or `~` chains backtrack exponentially in depth.
+fn matches_from(
+    parts: &[(Compound, Combinator)],
+    doc: &Document,
+    node: NodeId,
+    failed: &mut HashSet<(usize, NodeId)>,
+) -> bool {
     let Some(((compound, _), rest)) = parts.split_first() else {
         return true;
     };
-    if !compound_matches(compound, doc, node) {
+    if failed.contains(&(parts.len(), node)) {
         return false;
     }
-    let Some((_, combinator)) = rest.first() else {
-        return true;
-    };
-    match combinator {
-        Combinator::None => true,
-        Combinator::Child => doc
-            .parent_element(node)
-            .is_some_and(|p| matches_from(rest, doc, p)),
-        Combinator::Descendant => doc
-            .ancestors(node)
-            .filter(|&a| doc.element(a).is_some())
-            .any(|a| matches_from(rest, doc, a)),
-        Combinator::NextSibling => doc
-            .previous_elements(node)
-            .next()
-            .is_some_and(|s| matches_from(rest, doc, s)),
-        Combinator::LaterSibling => doc
-            .previous_elements(node)
-            .any(|s| matches_from(rest, doc, s)),
+    let matched = compound_matches(compound, doc, node)
+        && match rest.first().map(|(_, c)| c) {
+            None | Some(Combinator::None) => true,
+            Some(Combinator::Child) => doc
+                .parent_element(node)
+                .is_some_and(|p| matches_from(rest, doc, p, failed)),
+            Some(Combinator::Descendant) => doc
+                .ancestors(node)
+                .filter(|&a| doc.element(a).is_some())
+                .any(|a| matches_from(rest, doc, a, failed)),
+            Some(Combinator::NextSibling) => doc
+                .previous_elements(node)
+                .next()
+                .is_some_and(|s| matches_from(rest, doc, s, failed)),
+            Some(Combinator::LaterSibling) => doc
+                .previous_elements(node)
+                .any(|s| matches_from(rest, doc, s, failed)),
+        };
+    if !matched {
+        failed.insert((parts.len(), node));
     }
+    matched
 }
 
 fn compound_matches(c: &Compound, doc: &Document, node: NodeId) -> bool {
@@ -591,9 +605,12 @@ fn pseudo_matches(p: &Pseudo, doc: &Document, node: NodeId) -> bool {
         Pseudo::FirstOfType => !doc.previous_elements(node).any(|s| doc.tag(s) == tag),
         Pseudo::LastOfType => !doc.next_elements(node).any(|s| doc.tag(s) == tag),
         Pseudo::NthChild(a, b) => {
-            let index = doc.previous_elements(node).count() as i32 + 1;
+            // i64 so that `index - b` and `% a` cannot overflow i32 (e.g.
+            // `-n-2147483647` would otherwise compute `i32::MIN % -1`).
+            let index = doc.previous_elements(node).count() as i64 + 1;
+            let (a, b) = (i64::from(*a), i64::from(*b));
             match a {
-                0 => index == *b,
+                0 => index == b,
                 a => (index - b) % a == 0 && (index - b) / a >= 0,
             }
         }
@@ -1107,6 +1124,56 @@ mod tests {
                 "{sel}"
             );
         }
+    }
+
+    #[test]
+    fn nth_child_extreme_arguments_do_not_overflow() {
+        let doc = html::parse("<p>1</p><p>2</p>");
+        let p = doc
+            .descendants(Document::ROOT)
+            .into_iter()
+            .find(|&n| doc.tag(n) == "p")
+            .unwrap();
+        for sel in [
+            ":nth-child(-n-2147483647)",
+            ":nth-child(-n+2147483647)",
+            ":nth-child(-2147483648n-2147483648)",
+            ":nth-child(2147483647n+2147483647)",
+        ] {
+            parse_selector(sel).unwrap().matches(&doc, p);
+        }
+        assert!(
+            parse_selector(":nth-child(-n+2147483647)")
+                .unwrap()
+                .matches(&doc, p)
+        );
+    }
+
+    #[test]
+    fn deep_descendant_and_sibling_chains_are_not_exponential() {
+        let depth = 60;
+        let markup = "<div>".repeat(depth) + &"</div>".repeat(depth);
+        let doc = html::parse(&markup);
+        let deepest = *doc
+            .descendants(Document::ROOT)
+            .iter()
+            .filter(|&&n| doc.tag(n) == "div")
+            .next_back()
+            .unwrap();
+        let sel = format!("p {}", ["div"; 12].join(" "));
+        assert!(!parse_selector(&sel).unwrap().matches(&doc, deepest));
+
+        let markup = "<b></b>".repeat(depth) + "<i></i>";
+        let doc = html::parse(&markup);
+        let i = doc
+            .descendants(Document::ROOT)
+            .into_iter()
+            .find(|&n| doc.tag(n) == "i")
+            .unwrap();
+        let sel = format!("p ~ {} ~ i", ["b"; 12].join(" ~ "));
+        assert!(!parse_selector(&sel).unwrap().matches(&doc, i));
+        let sel = format!("{} ~ i", ["b"; 12].join(" ~ "));
+        assert!(parse_selector(&sel).unwrap().matches(&doc, i));
     }
 
     #[test]
