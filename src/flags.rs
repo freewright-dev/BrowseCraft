@@ -1,7 +1,7 @@
 ﻿//! User-settable browser behavior ("flags"), persisted to `flags.txt` in the
 //! working directory.
 //!
-//! Browsecraft's own experiment switches (no Chromium involved): a tiny
+//! BrowseCraft's own experiment switches (no Chromium involved): a tiny
 //! `key=value` store. They load once at process start and are written back whenever they change,
 //! as `key=value` lines. The internal `browsecraft://flags` page edits them; a few
 //! (theme, tab side) also have toolbar/panel shortcuts.
@@ -218,7 +218,7 @@ pub fn page_html() -> String {
          legend{{padding:0 6px;font-weight:600}}label{{display:block;margin:6px 0}}input{{accent-color:#2f6fde}}\
          button{{margin-top:4px;padding:8px 20px;border:0;border-radius:6px;background:#2f6fde;color:white;font-size:14px}}\
          button:focus{{outline:none}}</style>\
-         <main><h1>Flags</h1><p>Experiments for Browsecraft. Changes apply immediately.</p>\
+         <main><h1>Flags</h1><p>Experiments for BrowseCraft. Changes apply immediately.</p>\
          <form><fieldset><legend>Tab sidebar</legend>\
          <label><input type=\"radio\" name=\"tabs-position\" value=\"left\"{0}> Show tabs on the left</label>\
          <label><input type=\"radio\" name=\"tabs-position\" value=\"right\"{1}> Show tabs on the right</label>\

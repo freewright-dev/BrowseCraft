@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! Browsecraft: a small web browser with its own rendering engine.
+//! BrowseCraft: a small web browser with its own rendering engine.
 //!
 //! Pipeline: `net` fetches bytes, `html` parses them into a `dom`, `css`
 //! parses stylesheets, `style` runs the cascade, `layout` builds a display
