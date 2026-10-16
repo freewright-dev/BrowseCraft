@@ -1,4 +1,4 @@
-! Prowl starter filter list. Drop additional lists (any name, .txt) in this
+! Browsecraft starter filter list. Drop additional lists (any name, .txt) in this
 ! folder; they are merged at startup. `!` lines are comments.
 !
 ! Network rules (block requests) are served to both the engine renderer and the

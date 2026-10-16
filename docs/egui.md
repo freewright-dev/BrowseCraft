@@ -23,7 +23,7 @@ automatic:
 - **GPU present** -> egui chrome, wgpu surface, engine page as a texture.
 - **No GPU** -> the existing engine-drawn chrome and softbuffer presentation.
 
-A flag (`chrome = auto | egui | engine`, on `prowl://flags`) forces a path for
+A flag (`chrome = auto | egui | engine`, on `browsecraft://flags`) forces a path for
 testing. `auto` and `egui` attempt the GPU path and fall back to the engine when
 no adapter/device can be created; `engine` always uses the software path.
 
@@ -105,7 +105,7 @@ family).
 - **Engine-page input under egui is untested on real hardware.** The page is
   drawn as a texture, but `window_event` hit-tests clicks, the wheel and typing
   against the page rectangle and forwards them to the engine DOM, so
-  `about:`/`prowl:` pages should be clickable. This path compiles and is shared
+  `about:`/`browsecraft:` pages should be clickable. This path compiles and is shared
   with the engine chrome (which was run end to end), but has not been run on a
   GPU. Mouse clicks and hover use the engine geometry (`page_rect`), not the
   egui central panel rect. Keys reach the browser when egui did not consume
@@ -118,6 +118,6 @@ family).
 
 ## Flags wiring
 
-`prowl://flags` has a "Chrome" fieldset (`chrome = auto | egui | engine`)
+`browsecraft://flags` has a "Chrome" fieldset (`chrome = auto | egui | engine`)
 persisted like the others. The gear button in either chrome opens
-`prowl://flags`; you can also edit `flags.txt` by hand.
+`browsecraft://flags`; you can also edit `flags.txt` by hand.
