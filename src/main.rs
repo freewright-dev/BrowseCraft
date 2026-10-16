@@ -43,7 +43,19 @@ fn main() {
             eprintln!("usage: browsecraft --screenshot <out.png> <url> [width]");
             std::process::exit(2);
         };
-        let width = args.get(4).and_then(|w| w.parse().ok()).unwrap_or(1200);
+        let width = match args.get(4) {
+            None => 1200,
+            Some(w) => match w.parse::<u32>() {
+                Ok(w) if (1..=headless::MAX_WIDTH).contains(&w) => w,
+                _ => {
+                    eprintln!(
+                        "browsecraft: the width must be a number from 1 to {}",
+                        headless::MAX_WIDTH
+                    );
+                    std::process::exit(2);
+                }
+            },
+        };
         if let Err(e) = headless::screenshot(&fonts, &address::resolve(url), out, width) {
             eprintln!("browsecraft: {e}");
             std::process::exit(1);

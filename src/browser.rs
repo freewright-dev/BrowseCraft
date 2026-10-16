@@ -244,6 +244,11 @@ pub struct Browser {
     /// A WebView2 navigation we started ourselves is in flight, so its final
     /// URL replaces the history entry instead of adding one.
     web_expect: bool,
+    /// The URL the WebView was showing when we started that navigation.
+    /// Until it commits, late events for this URL belong to the old page.
+    web_leaving: String,
+    /// Our navigation has started in the WebView (so titles are its own).
+    web_committed: bool,
     web_visible: bool,
     /// When the last screenshot was saved, to allow at most one a second.
     last_screenshot: Option<Instant>,
@@ -269,10 +274,40 @@ pub fn request_in_webview(url: &str) -> bool {
     !(lower.starts_with("about:") || lower.starts_with("view-source:") || lower.starts_with("browsecraft:"))
 }
 
-/// Whether a web page's pop-up may open `url`.
-fn popup_allowed(url: &str) -> bool {
+/// Whether a WebView event for `url` belongs to the page being left
+/// (`leaving`) rather than to the navigation to `target` we are expecting.
+/// A reload of the same URL is ours.
+fn stale_web_event(expecting: bool, leaving: &str, target: &str, url: &str) -> bool {
+    expecting && !leaving.is_empty() && url == leaving && url != target
+}
+
+/// Whether `url` is an http(s) URL, in any letter case (`HTTP://` too).
+fn is_web_url(url: &str) -> bool {
     let lower = url.trim_start().to_ascii_lowercase();
     lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// Whether a web page's pop-up may open `url`.
+fn popup_allowed(url: &str) -> bool {
+    is_web_url(url)
+}
+
+/// A page title fit for the window title and history: control and
+/// bidirectional-formatting characters (which can disguise the rest) are
+/// dropped, whitespace is collapsed, and it is at most 300 characters.
+fn clean_title(title: &str) -> String {
+    let words: String = title
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .filter(|c| !matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'))
+        .collect();
+    words
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(300)
+        .collect()
 }
 
 /// The next (or previous) zoom level from [`ZOOM_STEPS`].
@@ -548,12 +583,14 @@ fn attach_webview_shortcuts(wv: &WebView, proxy: EventLoopProxy<UserMessage>) {
 
 /// Applies an editing key to a text field. Returns `true` when the key was an
 /// editing key (so the caller should redraw).
+/// `secret` fields (passwords) never copy or cut to the clipboard.
 fn edit_field(
     field: &mut TextField,
     key: &Key,
     text: Option<&str>,
     mods: ModifiersState,
     clipboard: &mut Option<arboard::Clipboard>,
+    secret: bool,
 ) -> bool {
     let ctrl = mods.control_key() || (cfg!(target_os = "macos") && mods.super_key());
     let shift = mods.shift_key();
@@ -566,6 +603,7 @@ fn edit_field(
         Key::Named(NamedKey::End) => field.move_to(field.text.len(), shift),
         Key::Character(c) if ctrl && !mods.alt_key() => match c.to_ascii_lowercase().as_str() {
             "a" => field.select_all(),
+            "c" | "x" if secret => {}
             "c" => {
                 if let Some(cb) = clipboard {
                     let _ = cb.set_text(field.selected_text().to_string());
@@ -810,6 +848,8 @@ impl Browser {
             epoch: Instant::now(),
             last_dark: None,
             web_expect: false,
+            web_leaving: String::new(),
+            web_committed: false,
             web_visible: false,
             last_screenshot: None,
             web_bounds: None,
@@ -981,6 +1021,7 @@ impl Browser {
         // Every tab shares the one WebView; a parked web tab reloads its URL
         // when it becomes active again.
         self.unload_webview();
+        self.web_leaving = self.web_url.clone();
         let title = self.live_title();
         let state = TabState {
             history: std::mem::take(&mut self.history),
@@ -1023,6 +1064,7 @@ impl Browser {
         if self.web_page {
             let url = self.web_url.clone();
             self.web_expect = true;
+            self.web_committed = false;
             self.loading = true;
             if let Some(wv) = &self.webview {
                 let _ = wv.load_url(&url);
@@ -1119,9 +1161,7 @@ impl Browser {
         let url = request.url().to_string();
         // Main-frame ad filtering: blocked pages show an engine notice but
         // keep the original URL in the address bar.
-        if (url.starts_with("http://") || url.starts_with("https://"))
-            && adblock::blocked_page(&url, "")
-        {
+        if is_web_url(&url) && adblock::blocked_page(&url, "") {
             request = Request::Get(format!("about:blocked:{url}"));
         }
         if push {
@@ -1151,8 +1191,12 @@ impl Browser {
         if use_webview {
             self.tab = None;
             self.web_page = true;
+            if !self.web_url.is_empty() {
+                self.web_leaving = std::mem::take(&mut self.web_url);
+            }
             self.web_url = target.clone();
             self.web_expect = true;
+            self.web_committed = false;
             self.title.clear();
             self.address.set(&target);
             if let Some(wv) = &self.webview {
@@ -1169,8 +1213,7 @@ impl Browser {
         self.web_url.clear();
         self.web_expect = false;
         self.pending_restore = restore;
-        let shown = target
-            .strip_prefix("about:blocked:")
+        let shown = loader::blocked_notice_target(&target)
             .unwrap_or(&target)
             .to_string();
         self.address.set(&shown);
@@ -1206,6 +1249,7 @@ impl Browser {
     fn reload(&mut self) {
         if self.web_page {
             self.web_expect = true;
+            self.web_committed = false;
             self.loading = true;
             if let Some(wv) = &self.webview {
                 let _ = wv.reload();
@@ -1241,7 +1285,7 @@ impl Browser {
 
     fn view_source(&mut self) {
         let url = self.current_url();
-        if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file:") {
+        if is_web_url(&url) || url.to_ascii_lowercase().starts_with("file:") {
             self.load(Request::Get(format!("view-source:{url}")), true);
         } else {
             self.set_notice("There is no source to show for this page");
@@ -1279,7 +1323,7 @@ impl Browser {
     fn handle_load(&mut self, event: LoadEvent) {
         match event {
             LoadEvent::Page(page) => {
-                let title = page.doc.title().trim().to_string();
+                let title = clean_title(&page.doc.title());
                 let url = page.url.clone();
                 if !self.address_focused() {
                     self.address.set(&url);
@@ -1328,9 +1372,18 @@ impl Browser {
         }
     }
 
+    /// Whether a WebView event for `url` is a late one from the page we
+    /// navigated away from, rather than from our navigation.
+    fn stale_web_event(&self, url: &str) -> bool {
+        stale_web_event(self.web_expect, &self.web_leaving, &self.web_url, url)
+    }
+
     fn web_started(&mut self, url: String) {
-        if !self.web_page {
+        if !self.web_page || self.stale_web_event(&url) {
             return;
+        }
+        if url != "about:blank" {
+            self.web_committed = true;
         }
         self.loading = true;
         if !self.address_focused() && url != "about:blank" {
@@ -1339,13 +1392,14 @@ impl Browser {
     }
 
     fn web_loaded(&mut self, url: String) {
-        if !self.web_page {
+        if !self.web_page || self.stale_web_event(&url) {
             return;
         }
         self.loading = false;
         if url.is_empty() || url == "about:blank" {
             return;
         }
+        self.web_committed = true;
         if self.web_expect {
             // Our own navigation finished; the final URL (after redirects)
             // replaces the entry we made for it.
@@ -1374,10 +1428,11 @@ impl Browser {
     }
 
     fn web_titled(&mut self, title: String) {
-        if !self.web_page || self.webview_blank() {
+        // Before our navigation starts, a title is still the old page's.
+        if !self.web_page || self.webview_blank() || (self.web_expect && !self.web_committed) {
             return;
         }
-        self.title = title.trim().to_string();
+        self.title = clean_title(&title);
         self.update_window_title();
         if !self.loading && !self.web_url.is_empty() {
             history::record(&self.web_url, &self.title);
@@ -1389,8 +1444,7 @@ impl Browser {
         if !self.web_page {
             return; // from a page that is no longer shown
         }
-        let is_http = url.starts_with("http://") || url.starts_with("https://");
-        if is_http && adblock::blocked_page(&url, "") {
+        if is_web_url(&url) && adblock::blocked_page(&url, "") {
             self.set_notice("Blocked a pop-up (ad filter)");
             return;
         }
@@ -1438,12 +1492,9 @@ impl Browser {
             .with_navigation_handler(move |url| {
                 // Main-frame navigations the ad filter blocks become an engine
                 // notice page instead.
-                if (url.starts_with("http://") || url.starts_with("https://"))
-                    && adblock::blocked_page(&url, "")
-                {
-                    let _ = nav_proxy.send_event(UserMessage::WebOpen(format!(
-                        "about:blocked:{url}"
-                    )));
+                if is_web_url(&url) && adblock::blocked_page(&url, "") {
+                    let _ =
+                        nav_proxy.send_event(UserMessage::WebOpen(format!("about:blocked:{url}")));
                     return false;
                 }
                 true
@@ -1996,7 +2047,7 @@ impl Browser {
                 _ if self.egui.is_some() => {}
                 _ => {
                     let text = event.text.as_deref();
-                    edit_field(&mut self.address, base, text, mods, &mut self.clipboard);
+                    edit_field(&mut self.address, base, text, mods, &mut self.clipboard, false);
                 }
             },
             Focus::Input(node) => match base {
@@ -2020,7 +2071,18 @@ impl Browser {
                 Key::Named(NamedKey::Escape) => self.focus = Focus::Page,
                 _ => {
                     let text = event.text.as_deref();
-                    if edit_field(&mut self.input, base, text, mods, &mut self.clipboard) {
+                    let secret = self
+                        .tab
+                        .as_ref()
+                        .is_some_and(|t| input_type(&t.page.doc, node) == "password");
+                    if edit_field(
+                        &mut self.input,
+                        base,
+                        text,
+                        mods,
+                        &mut self.clipboard,
+                        secret,
+                    ) {
                         self.commit_input(node);
                     }
                 }
@@ -2925,7 +2987,10 @@ impl Browser {
 
     fn render_egui(&mut self) {
         let page = self.page_rect();
-        let (fw, fh) = (page.w as usize, page.h as usize);
+        // On a window bigger than the GPU's largest texture (several
+        // monitors), rasterise only the part of the page that fits.
+        let max_side = self.egui.as_ref().map_or(usize::MAX, |e| e.max_texture_side());
+        let (fw, fh) = ((page.w as usize).min(max_side), (page.h as usize).min(max_side));
         if fw == 0 || fh == 0 {
             return;
         }
@@ -3359,6 +3424,20 @@ mod tests {
         assert!(!request_in_webview("about:blocked:https://ads.example"));
         assert!(!request_in_webview("view-source:https://example.com"));
         assert!(!request_in_webview("browsecraft://history"));
+        let (a, b) = ("https://slow.example/", "https://b.example/");
+        assert!(stale_web_event(true, a, b, a));
+        assert!(!stale_web_event(true, a, b, b));
+        assert!(!stale_web_event(true, a, b, "https://b.example/redirected"));
+        assert!(!stale_web_event(false, a, b, a), "a link followed later");
+        assert!(!stale_web_event(true, a, a, a), "a reload");
+        assert!(!stale_web_event(true, "", b, a));
+        assert!(is_web_url("HTTP://example.com/") && is_web_url("https://x.example/"));
+        assert!(!is_web_url("file:///C:/") && !is_web_url("about:blank"));
+        assert_eq!(
+            clean_title("  A\u{202E}gnp.exe \n\t B\u{0007} "),
+            "Agnp.exe B"
+        );
+        assert_eq!(clean_title(&"x".repeat(1000)).len(), 300);
         assert!(popup_allowed("https://example.com/"));
         assert!(popup_allowed(" HTTP://example.com/"));
         for url in [

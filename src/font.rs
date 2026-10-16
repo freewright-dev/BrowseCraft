@@ -290,7 +290,11 @@ impl Fonts {
             }
         }
         let id = chosen.or(first_available).unwrap_or(FontKey::UI.index());
-        self.resolved.borrow_mut().insert((key.index(), ch), id);
+        let mut resolved = self.resolved.borrow_mut();
+        if resolved.len() >= MAX_CACHED_ADVANCES {
+            resolved.clear();
+        }
+        resolved.insert((key.index(), ch), id);
         id
     }
 

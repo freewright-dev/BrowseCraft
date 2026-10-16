@@ -33,6 +33,14 @@ pub fn resolve(input: &str) -> String {
 }
 
 fn has_scheme(input: &str) -> bool {
+    // Checked first: `view-source:https://…` also contains `://`, but
+    // `view-source:https` is not a scheme.
+    if ["about:", "data:", "file:", "view-source:"]
+        .iter()
+        .any(|prefix| input.to_ascii_lowercase().starts_with(prefix))
+    {
+        return true;
+    }
     if input.contains("://") {
         return input.split("://").next().is_some_and(|s| {
             !s.is_empty()
@@ -40,9 +48,7 @@ fn has_scheme(input: &str) -> bool {
                     .all(|b| b.is_ascii_alphanumeric() || b"+-.".contains(&b))
         });
     }
-    ["about:", "data:", "file:", "view-source:"]
-        .iter()
-        .any(|prefix| input.to_ascii_lowercase().starts_with(prefix))
+    false
 }
 
 fn is_ipv4(host: &str) -> bool {
@@ -89,6 +95,14 @@ mod tests {
         assert_eq!(resolve("  http://example.com  "), "http://example.com");
         assert_eq!(resolve("about:blank"), "about:blank");
         assert_eq!(resolve("file:///C:/index.html"), "file:///C:/index.html");
+        assert_eq!(
+            resolve("view-source:https://example.com/"),
+            "view-source:https://example.com/"
+        );
+        assert_eq!(
+            resolve("about:blocked:https://bank.example/"),
+            "about:blocked:https://bank.example/"
+        );
     }
 
     #[test]

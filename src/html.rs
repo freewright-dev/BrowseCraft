@@ -700,18 +700,27 @@ mod tests {
     fn pathological_markup_parses_in_linear_time() {
         let start = std::time::Instant::now();
         let scripts = "<script>x</script>".repeat(60_000) + "<p>end";
-        assert_eq!(parse(&scripts).text_content(parse(&scripts).find_tag("p").unwrap()), "end");
+        assert_eq!(
+            parse(&scripts).text_content(parse(&scripts).find_tag("p").unwrap()),
+            "end"
+        );
         let divs = "<div>".repeat(60_000) + "x";
         assert!(parse(&divs).nodes.len() > 60_000);
         let attrs: String = (0..60_000).map(|i| format!(" a{i}=1")).collect();
-        let doc = parse(&format!("<p{attrs} a0=2 a59999=2>x</p><body{attrs} extra=1>"));
+        let doc = parse(&format!(
+            "<p{attrs} a0=2 a59999=2>x</p><body{attrs} extra=1>"
+        ));
         let p = doc.element(doc.find_tag("p").unwrap()).unwrap();
         assert_eq!(p.attrs.len(), 60_000);
         assert_eq!(p.attr("a0"), Some("1"));
         assert_eq!(p.attr("a59999"), Some("1"));
         let body = doc.element(doc.find_tag("body").unwrap()).unwrap();
         assert_eq!(body.attrs.len(), 60_001);
-        assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "{:?}",
+            start.elapsed()
+        );
 
         // Raw-text end tags still match in any case.
         let doc = parse("<SCRIPT>a</b></ScRiPt><p>after");

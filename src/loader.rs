@@ -134,10 +134,24 @@ fn fetch_images(
     });
 }
 
+/// The URL inside `about:blocked:<url>`, if the ad filter really blocks
+/// it. BrowseCraft makes these addresses itself for blocked pages; anyone
+/// else (a link, a typed address) could otherwise put any URL, say a bank's,
+/// in the address bar over the "blocked" notice.
+pub fn blocked_notice_target(raw: &str) -> Option<&str> {
+    let inner = raw.strip_prefix("about:blocked:")?;
+    let lower = inner.to_ascii_lowercase();
+    let web = lower.starts_with("http://") || lower.starts_with("https://");
+    (web && crate::adblock::blocked_page(inner, "")).then_some(inner)
+}
+
 fn load_page(request: &Request) -> Page {
     let raw = request.url();
-    if let Some(inner) = raw.strip_prefix("about:blocked:") {
-        return ad_blocked_page(raw, inner);
+    if raw.starts_with("about:blocked:") {
+        return match blocked_notice_target(raw) {
+            Some(inner) => ad_blocked_page(raw, inner),
+            None => error_page(raw, "This address is not valid."),
+        };
     }
     if let Some(inner) = raw.strip_prefix("view-source:") {
         return view_source(inner);
@@ -273,6 +287,15 @@ fn ad_blocked_page(raw: &str, url: &str) -> Page {
 }
 
 fn view_source(inner: &str) -> Page {
+    // The source of a blocked page is not fetched either.
+    let lower = inner.to_ascii_lowercase();
+    if (lower.starts_with("http://") || lower.starts_with("https://"))
+        && crate::adblock::blocked_page(inner, "")
+    {
+        let mut page = ad_blocked_page(inner, inner);
+        page.url = format!("view-source:{inner}");
+        return page;
+    }
     let source = Url::parse(inner)
         .map_err(|e| e.to_string())
         .and_then(|url| net::fetch(&url, None, ACCEPT_HTML))
@@ -576,6 +599,21 @@ fn decode_image(bytes: &[u8], budget: &AtomicU64) -> Option<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_source_of_a_blocked_page_is_not_fetched() {
+        // filters/basic.txt (loaded from the working directory) blocks this.
+        if !crate::adblock::blocked_page("https://doubleclick.net/", "") {
+            return;
+        }
+        let page = load_page(&Request::Get("view-source:https://doubleclick.net/".into()));
+        assert_eq!(page.url, "view-source:https://doubleclick.net/");
+        assert!(
+            page.doc
+                .text_content(Document::ROOT)
+                .contains("was blocked")
+        );
+    }
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
 
@@ -724,6 +762,23 @@ mod tests {
             .collect();
         urls.sort();
         urls
+    }
+
+    #[test]
+    fn blocked_notices_only_for_blocked_urls() {
+        // Nothing in the test build's filter blocks a bank.
+        let raw = "about:blocked:https://bank.example/login";
+        assert_eq!(blocked_notice_target(raw), None);
+        let page = load_page(&Request::Get(raw.into()));
+        assert_eq!(page.url, raw);
+        assert!(
+            !page
+                .doc
+                .text_content(Document::ROOT)
+                .contains("was blocked")
+        );
+        assert_eq!(blocked_notice_target("about:blocked:javascript:x"), None);
+        assert_eq!(blocked_notice_target("https://bank.example/"), None);
     }
 
     #[test]
