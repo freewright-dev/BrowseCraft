@@ -178,6 +178,9 @@ struct Tab {
     form: FormState,
     styles: Vec<Rc<Style>>,
     style_key: Option<(Vec<bool>, f32)>,
+    /// The viewport width and zoom `style_key` was last checked for, so the
+    /// media queries are not re-evaluated on every frame.
+    styled_at: (f32, f32),
     layout: Option<Layout>,
     layout_key: (f32, f32),
     scroll_x: f32,
@@ -1270,6 +1273,7 @@ impl Browser {
                     form: FormState::default(),
                     styles: Vec::new(),
                     style_key: None,
+                    styled_at: (0.0, 0.0),
                     layout: None,
                     layout_key: (0.0, 0.0),
                     scroll_x: 0.0,
@@ -1510,16 +1514,19 @@ impl Browser {
         let Some(tab) = self.tab.as_mut() else {
             return;
         };
-        let key = (style::media_signature(&tab.page.sheets, vw / zoom), zoom);
-        if tab.style_key.as_ref() != Some(&key) {
-            let ctx = StyleContext {
-                zoom,
-                viewport_width: vw,
-                viewport_height: vh,
-            };
-            tab.styles = style::compute_styles(&tab.page.doc, &tab.page.sheets, &ctx);
-            tab.style_key = Some(key);
-            tab.layout = None;
+        if tab.style_key.is_none() || tab.styled_at != (vw, zoom) {
+            tab.styled_at = (vw, zoom);
+            let key = (style::media_signature(&tab.page.sheets, vw / zoom), zoom);
+            if tab.style_key.as_ref() != Some(&key) {
+                let ctx = StyleContext {
+                    zoom,
+                    viewport_width: vw,
+                    viewport_height: vh,
+                };
+                tab.styles = style::compute_styles(&tab.page.doc, &tab.page.sheets, &ctx);
+                tab.style_key = Some(key);
+                tab.layout = None;
+            }
         }
         if tab.layout.is_none() || tab.layout_key != (vw, zoom) {
             let input = LayoutInput {

@@ -2,7 +2,7 @@
 //! style. Lengths come out in device pixels (CSS pixels times zoom), except
 //! percentages, which layout resolves.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::OnceLock;
 
@@ -388,8 +388,14 @@ impl<'a> RuleIndex<'a> {
         if let Some(id) = el.id() {
             keys.push(SelectorKey::Id(id.to_string()));
         }
-        keys.extend(el.classes().map(|c| SelectorKey::Class(c.to_string())));
-        keys.dedup();
+        let mut classes: Vec<&str> = el.classes().collect();
+        classes.sort_unstable();
+        classes.dedup();
+        keys.extend(
+            classes
+                .into_iter()
+                .map(|c| SelectorKey::Class(c.to_string())),
+        );
         let mut out = Vec::new();
         for key in &keys {
             if let Some(entries) = self.buckets.get(key) {
@@ -403,15 +409,12 @@ impl<'a> RuleIndex<'a> {
 /// A fingerprint of which `@media` queries match, so callers can skip a
 /// restyle when a resize does not cross a breakpoint.
 pub fn media_signature(sheets: &[Stylesheet], viewport_css_width: f32) -> Vec<bool> {
-    let mut seen: Vec<&str> = Vec::new();
-    for rule in sheets.iter().flat_map(|s| &s.rules) {
-        if let Some(m) = &rule.media
-            && !seen.contains(&m.as_str())
-        {
-            seen.push(m);
-        }
-    }
-    seen.iter()
+    let mut seen: HashSet<&str> = HashSet::new();
+    sheets
+        .iter()
+        .flat_map(|s| &s.rules)
+        .filter_map(|rule| rule.media.as_deref())
+        .filter(|m| seen.insert(m))
         .map(|m| css::media_matches(m, viewport_css_width))
         .collect()
 }
@@ -1488,6 +1491,27 @@ mod tests {
         );
         assert_eq!(s.margin[0], Length::Px(1.0));
         assert_eq!(s.margin[1], Length::Px(1.0));
+    }
+
+    #[test]
+    fn many_media_queries_and_repeated_classes_stay_fast() {
+        let css: String = (0..30_000)
+            .map(|i| format!("@media (min-width: {i}px) {{ p {{ z-index: 1 }} }}"))
+            .collect();
+        let sheets = vec![css::parse_stylesheet(&css)];
+        let start = std::time::Instant::now();
+        let signature = media_signature(&sheets, 500.0);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(signature.len(), 30_000);
+        assert_eq!(signature.iter().filter(|&&m| m).count(), 501);
+
+        // Each class is looked up once, however often it is repeated.
+        let classes = "a b ".repeat(5000);
+        let rules = ".a { margin-left: 1px } ".repeat(1000);
+        let start = std::time::Instant::now();
+        let s = style_of(&format!("<p class=\"{classes}\">t</p>"), &rules, "p");
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(s.margin[3], Length::Px(1.0));
     }
 
     #[test]
