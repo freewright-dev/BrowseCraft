@@ -76,10 +76,15 @@ pub enum Pseudo {
     Never,
 }
 
+/// How deeply nested at-rules, `:not()`/`:is()`, `calc()` and `light-dark()`
+/// may go. Deeper input is dropped as invalid rather than recursing until the
+/// stack overflows.
+const MAX_NESTING: u32 = 32;
+
 pub fn parse_stylesheet(source: &str) -> Stylesheet {
     let source = strip_comments(source);
     let mut sheet = Stylesheet::default();
-    parse_rules(&source, None, &mut sheet);
+    parse_rules(&source, None, &mut sheet, 0);
     sheet
 }
 
@@ -118,7 +123,7 @@ fn block_end(s: &str) -> usize {
     s.len()
 }
 
-fn parse_rules(mut s: &str, media: Option<&str>, sheet: &mut Stylesheet) {
+fn parse_rules(mut s: &str, media: Option<&str>, sheet: &mut Stylesheet, depth: u32) {
     loop {
         s = s.trim_start();
         if s.is_empty() {
@@ -149,18 +154,19 @@ fn parse_rules(mut s: &str, media: Option<&str>, sheet: &mut Stylesheet) {
                 .split_once(|c: char| c.is_whitespace() || c == '(')
                 .map_or((prelude, ""), |(k, _)| (k, prelude[k.len()..].trim()));
             match keyword.to_ascii_lowercase().as_str() {
+                _ if depth >= MAX_NESTING => {}
                 "media" => {
                     let combined = match media {
                         Some(outer) => format!("{outer}&&{condition}"),
                         None => condition.to_string(),
                     };
-                    parse_rules(body, Some(&combined), sheet);
+                    parse_rules(body, Some(&combined), sheet, depth + 1);
                 }
                 "supports" if !condition.trim_start().starts_with("not") => {
-                    parse_rules(body, media, sheet)
+                    parse_rules(body, media, sheet, depth + 1)
                 }
                 "layer" | "document" | "-moz-document" | "container" | "scope" => {
-                    parse_rules(body, media, sheet)
+                    parse_rules(body, media, sheet, depth + 1)
                 }
                 _ => {}
             }
@@ -257,6 +263,11 @@ pub fn parse_declarations(s: &str) -> Vec<Declaration> {
 }
 
 pub fn parse_selector(s: &str) -> Option<Selector> {
+    selector_at(s, 0)
+}
+
+/// `parse_selector` for a selector nested `depth` pseudo-classes deep.
+fn selector_at(s: &str, depth: u32) -> Option<Selector> {
     let mut parts: Vec<(Compound, Combinator)> = Vec::new();
     let mut pending = Combinator::None;
     let mut rest = s.trim();
@@ -264,7 +275,7 @@ pub fn parse_selector(s: &str) -> Option<Selector> {
         return None;
     }
     while !rest.is_empty() {
-        let (compound, after) = parse_compound(rest)?;
+        let (compound, after) = parse_compound(rest, depth)?;
         parts.push((compound, pending));
         let trimmed = after.trim_start();
         let had_space = trimmed.len() != after.len();
@@ -325,7 +336,7 @@ fn ident_end(s: &str) -> usize {
         .unwrap_or(s.len())
 }
 
-fn parse_compound(s: &str) -> Option<(Compound, &str)> {
+fn parse_compound(s: &str, depth: u32) -> Option<(Compound, &str)> {
     let mut c = Compound::default();
     let mut rest = s;
     let start_len = s.len();
@@ -376,7 +387,7 @@ fn parse_compound(s: &str) -> Option<(Compound, &str)> {
                 c.pseudos.push(if element {
                     Pseudo::Never
                 } else {
-                    parse_pseudo(&name, arg)
+                    parse_pseudo(&name, arg, depth)
                 });
             }
             _ => break,
@@ -433,17 +444,18 @@ fn parse_attr_selector(s: &str) -> Option<AttrSelector> {
     })
 }
 
-fn parse_pseudo(name: &str, arg: Option<&str>) -> Pseudo {
+fn parse_pseudo(name: &str, arg: Option<&str>, depth: u32) -> Pseudo {
     let list = |arg: Option<&str>| -> Vec<Selector> {
         arg.map(|a| {
             split_top_level(a, ',')
                 .into_iter()
-                .filter_map(|s| parse_selector(s.trim()))
+                .filter_map(|s| selector_at(s.trim(), depth + 1))
                 .collect()
         })
         .unwrap_or_default()
     };
     match name {
+        "not" | "is" | "where" | "matches" | "-webkit-any" if depth >= MAX_NESTING => Pseudo::Never,
         "first-child" => Pseudo::FirstChild,
         "last-child" => Pseudo::LastChild,
         "only-child" => Pseudo::OnlyChild,
@@ -748,12 +760,21 @@ pub enum Length {
 }
 
 pub fn parse_length(s: &str) -> Option<Length> {
+    length_at(s, 0)
+}
+
+/// `parse_length` for a value nested `depth` `calc()`s deep.
+fn length_at(s: &str, depth: u32) -> Option<Length> {
     let s = s.trim().to_ascii_lowercase();
     if s == "auto" {
         return Some(Length::Auto);
     }
     if let Some(inner) = s.strip_prefix("calc(").and_then(|r| r.strip_suffix(')')) {
-        return parse_calc(inner);
+        return if depth < MAX_NESTING {
+            parse_calc(inner, depth + 1)
+        } else {
+            None
+        };
     }
     let (num, unit) = split_number(&s);
     let n: f32 = num.parse().ok()?;
@@ -804,19 +825,19 @@ pub fn split_number(s: &str) -> (&str, &str) {
 
 /// Handles the common one-term and same-unit cases of `calc()`. Anything
 /// mixing units falls back to its first term.
-fn parse_calc(s: &str) -> Option<Length> {
+fn parse_calc(s: &str, depth: u32) -> Option<Length> {
     let s = s.trim();
     let s = s
         .strip_prefix("calc(")
         .and_then(|r| r.strip_suffix(')'))
         .unwrap_or(s);
     let tokens: Vec<&str> = s.split_whitespace().collect();
-    let mut acc = parse_length(tokens.first()?)?;
+    let mut acc = length_at(tokens.first()?, depth)?;
     let mut i = 1;
     while i + 1 < tokens.len() {
         let op = tokens[i];
         let rhs = tokens[i + 1];
-        acc = match (op, acc, parse_length(rhs), rhs.parse::<f32>().ok()) {
+        acc = match (op, acc, length_at(rhs, depth), rhs.parse::<f32>().ok()) {
             ("*", l, _, Some(k)) => scale_length(l, k),
             ("/", l, _, Some(k)) if k != 0.0 => scale_length(l, 1.0 / k),
             ("+", Length::Px(a), Some(Length::Px(b)), _) => Length::Px(a + b),
@@ -845,6 +866,11 @@ fn scale_length(l: Length, k: f32) -> Length {
 }
 
 pub fn parse_color(s: &str) -> Option<Color> {
+    color_at(s, 0)
+}
+
+/// `parse_color` for a value nested `depth` `light-dark()`s deep.
+fn color_at(s: &str, depth: u32) -> Option<Color> {
     let s = s.trim().to_ascii_lowercase();
     if let Some(hex) = s.strip_prefix('#') {
         let digit = |i: usize| u8::from_str_radix(hex.get(i..i + 1)?, 16).ok();
@@ -869,7 +895,10 @@ pub fn parse_color(s: &str) -> Option<Color> {
         .strip_prefix("light-dark(")
         .and_then(|r| r.strip_suffix(')'))
     {
-        return parse_color(split_top_level(args, ',').first()?);
+        if depth >= MAX_NESTING {
+            return None;
+        }
+        return color_at(split_top_level(args, ',').first()?, depth + 1);
     }
     if let Some(open) = s.find('(') {
         let func = &s[..open];
@@ -1107,6 +1136,36 @@ mod tests {
                 "{sel}"
             );
         }
+    }
+
+    #[test]
+    fn deep_nesting_is_rejected_not_recursed() {
+        // Each of these overflowed the stack before nesting was capped.
+        let n = 20_000;
+        let doc = html::parse("<a>x</a>");
+        let a = doc.find_tag("a").unwrap();
+        let not = format!("a{}", ":not(".repeat(n)) + &")".repeat(n);
+        assert!(!parse_selector(&not).unwrap().matches(&doc, a));
+        let calc = "calc(".repeat(n) + "1px" + &")".repeat(n);
+        assert_eq!(parse_length(&calc), None);
+        let ld = "light-dark(".repeat(n) + "red, blue" + &")".repeat(n);
+        assert_eq!(parse_color(&ld), None);
+        let sheet = parse_stylesheet(&("@media all{".repeat(n) + "p{color:red}"));
+        assert!(sheet.rules.is_empty());
+
+        // Modest nesting still works.
+        let shallow = parse_stylesheet("@media all{@supports (x:y){@layer l{p{color:red}}}}");
+        assert_eq!(shallow.rules.len(), 1);
+        assert_eq!(parse_length("calc(calc(3px))"), Some(Length::Px(3.0)));
+        assert_eq!(
+            parse_color("light-dark(light-dark(red, blue), blue)"),
+            Some(Color::rgb(255, 0, 0))
+        );
+        assert!(
+            parse_selector("a:not(:not(:is(a)))")
+                .unwrap()
+                .matches(&doc, a)
+        );
     }
 
     #[test]
