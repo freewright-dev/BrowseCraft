@@ -244,6 +244,11 @@ pub struct Browser {
     /// A WebView2 navigation we started ourselves is in flight, so its final
     /// URL replaces the history entry instead of adding one.
     web_expect: bool,
+    /// The URL the WebView was showing when we started that navigation.
+    /// Until it commits, late events for this URL belong to the old page.
+    web_leaving: String,
+    /// Our navigation has started in the WebView (so titles are its own).
+    web_committed: bool,
     web_visible: bool,
     /// When the last screenshot was saved, to allow at most one a second.
     last_screenshot: Option<Instant>,
@@ -267,6 +272,13 @@ pub struct Browser {
 pub fn request_in_webview(url: &str) -> bool {
     let lower = url.trim_start().to_ascii_lowercase();
     !(lower.starts_with("about:") || lower.starts_with("view-source:") || lower.starts_with("browsecraft:"))
+}
+
+/// Whether a WebView event for `url` belongs to the page being left
+/// (`leaving`) rather than to the navigation to `target` we are expecting.
+/// A reload of the same URL is ours.
+fn stale_web_event(expecting: bool, leaving: &str, target: &str, url: &str) -> bool {
+    expecting && !leaving.is_empty() && url == leaving && url != target
 }
 
 /// Whether a web page's pop-up may open `url`.
@@ -810,6 +822,8 @@ impl Browser {
             epoch: Instant::now(),
             last_dark: None,
             web_expect: false,
+            web_leaving: String::new(),
+            web_committed: false,
             web_visible: false,
             last_screenshot: None,
             web_bounds: None,
@@ -981,6 +995,7 @@ impl Browser {
         // Every tab shares the one WebView; a parked web tab reloads its URL
         // when it becomes active again.
         self.unload_webview();
+        self.web_leaving = self.web_url.clone();
         let title = self.live_title();
         let state = TabState {
             history: std::mem::take(&mut self.history),
@@ -1023,6 +1038,7 @@ impl Browser {
         if self.web_page {
             let url = self.web_url.clone();
             self.web_expect = true;
+            self.web_committed = false;
             self.loading = true;
             if let Some(wv) = &self.webview {
                 let _ = wv.load_url(&url);
@@ -1151,8 +1167,12 @@ impl Browser {
         if use_webview {
             self.tab = None;
             self.web_page = true;
+            if !self.web_url.is_empty() {
+                self.web_leaving = std::mem::take(&mut self.web_url);
+            }
             self.web_url = target.clone();
             self.web_expect = true;
+            self.web_committed = false;
             self.title.clear();
             self.address.set(&target);
             if let Some(wv) = &self.webview {
@@ -1206,6 +1226,7 @@ impl Browser {
     fn reload(&mut self) {
         if self.web_page {
             self.web_expect = true;
+            self.web_committed = false;
             self.loading = true;
             if let Some(wv) = &self.webview {
                 let _ = wv.reload();
@@ -1328,9 +1349,18 @@ impl Browser {
         }
     }
 
+    /// Whether a WebView event for `url` is a late one from the page we
+    /// navigated away from, rather than from our navigation.
+    fn stale_web_event(&self, url: &str) -> bool {
+        stale_web_event(self.web_expect, &self.web_leaving, &self.web_url, url)
+    }
+
     fn web_started(&mut self, url: String) {
-        if !self.web_page {
+        if !self.web_page || self.stale_web_event(&url) {
             return;
+        }
+        if url != "about:blank" {
+            self.web_committed = true;
         }
         self.loading = true;
         if !self.address_focused() && url != "about:blank" {
@@ -1339,13 +1369,14 @@ impl Browser {
     }
 
     fn web_loaded(&mut self, url: String) {
-        if !self.web_page {
+        if !self.web_page || self.stale_web_event(&url) {
             return;
         }
         self.loading = false;
         if url.is_empty() || url == "about:blank" {
             return;
         }
+        self.web_committed = true;
         if self.web_expect {
             // Our own navigation finished; the final URL (after redirects)
             // replaces the entry we made for it.
@@ -1374,7 +1405,8 @@ impl Browser {
     }
 
     fn web_titled(&mut self, title: String) {
-        if !self.web_page || self.webview_blank() {
+        // Before our navigation starts, a title is still the old page's.
+        if !self.web_page || self.webview_blank() || (self.web_expect && !self.web_committed) {
             return;
         }
         self.title = title.trim().to_string();
@@ -3362,6 +3394,13 @@ mod tests {
         assert!(!request_in_webview("about:blocked:https://ads.example"));
         assert!(!request_in_webview("view-source:https://example.com"));
         assert!(!request_in_webview("browsecraft://history"));
+        let (a, b) = ("https://slow.example/", "https://b.example/");
+        assert!(stale_web_event(true, a, b, a));
+        assert!(!stale_web_event(true, a, b, b));
+        assert!(!stale_web_event(true, a, b, "https://b.example/redirected"));
+        assert!(!stale_web_event(false, a, b, a), "a link followed later");
+        assert!(!stale_web_event(true, a, a, a), "a reload");
+        assert!(!stale_web_event(true, "", b, a));
         assert!(popup_allowed("https://example.com/"));
         assert!(popup_allowed(" HTTP://example.com/"));
         for url in [
