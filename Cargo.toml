@@ -27,3 +27,6 @@ wry = "0.53"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
+
+[dev-dependencies]
+flate2 = "1"

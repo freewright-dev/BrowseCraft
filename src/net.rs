@@ -1,5 +1,6 @@
 //! Fetching resources over http(s), from disk and from `data:` URLs.
 
+use std::io::Read;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -55,12 +56,7 @@ pub fn fetch(url: &Url, form: Option<&str>, accept: &str) -> Result<Response, St
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("")
                 .to_string();
-            let body = resp
-                .body_mut()
-                .with_config()
-                .limit(MAX_BODY)
-                .read_to_vec()
-                .map_err(describe_error)?;
+            let body = read_http_body(resp.body_mut())?;
             Ok(Response {
                 url: final_url,
                 status,
@@ -100,6 +96,23 @@ pub fn fetch(url: &Url, form: Option<&str>, accept: &str) -> Result<Response, St
         }
         scheme => Err(format!("the {scheme}: scheme is not supported")),
     }
+}
+
+fn read_http_body(body: &mut ureq::Body) -> Result<Vec<u8>, String> {
+    // ureq's limit applies BEFORE content decoding. Keep a wire-size cap,
+    // but also bound the decoded stream to prevent gzip decompression bombs.
+    // Read one extra byte to distinguish an exact-limit body from truncation.
+    let mut decoded = Vec::new();
+    body.with_config()
+        .limit(MAX_BODY + 1)
+        .reader()
+        .take(MAX_BODY + 1)
+        .read_to_end(&mut decoded)
+        .map_err(|e| describe_error(e.into()))?;
+    if decoded.len() as u64 > MAX_BODY {
+        return Err("the response is too large".into());
+    }
+    Ok(decoded)
 }
 
 fn describe_error(err: ureq::Error) -> String {
@@ -301,6 +314,68 @@ fn windows_1252(b: u8) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    /// Exercise the real HTTP/content-decoding path without an external server.
+    fn fetch_test_body(body: Vec<u8>, gzip: bool) -> Result<Response, String> {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(&stream);
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let encoding = if gzip { "Content-Encoding: gzip\r\n" } else { "" };
+            write!(stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{encoding}Connection: close\r\n\r\n",
+                body.len()).unwrap();
+            // An oversized response may be rejected before the server finishes.
+            let _ = stream.write_all(&body);
+        });
+        let result = fetch(&url, None, "*/*");
+        server.join().unwrap();
+        result
+    }
+
+    #[test]
+    fn http_decoded_body_limit() {
+        for gzip in [false, true] {
+            for len in [0, 5, MAX_BODY, MAX_BODY + 1] {
+                let body = if gzip {
+                    let mut encoder = flate2::write::GzEncoder::new(
+                        Vec::new(), flate2::Compression::fast());
+                    std::io::copy(&mut std::io::repeat(b'x').take(len), &mut encoder).unwrap();
+                    let compressed = encoder.finish().unwrap();
+                    assert!((compressed.len() as u64) < MAX_BODY);
+                    compressed
+                } else {
+                    vec![b'x'; len as usize]
+                };
+                let result = fetch_test_body(body, gzip);
+                if len > MAX_BODY {
+                    assert_eq!(result.err().as_deref(), Some("the response is too large"),
+                        "gzip={gzip}, length={len}");
+                } else {
+                    let response = result.unwrap_or_else(|e| panic!("gzip={gzip}, length={len}: {e}"));
+                    assert_eq!(response.body.len() as u64, len);
+                    assert!(response.body.iter().all(|&b| b == b'x'));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_gzip_is_rejected() {
+        assert!(fetch_test_body(b"not a gzip stream".to_vec(), true).is_err());
+    }
 
     #[test]
     fn data_urls() {

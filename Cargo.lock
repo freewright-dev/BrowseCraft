@@ -243,6 +243,7 @@ dependencies = [
  "egui-phosphor",
  "egui-wgpu",
  "egui-winit",
+ "flate2",
  "fontdue",
  "image",
  "pollster",
