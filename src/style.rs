@@ -491,7 +491,7 @@ fn compute_element(
         if d.name.starts_with("--") {
             continue;
         }
-        let Some(value) = substitute_vars(&d.value, &vars, 0) else {
+        let Some(value) = substitute_vars(&d.value, &vars, 0, &mut VAR_BUDGET.clone()) else {
             continue;
         };
         for (name, value) in expand_shorthand(&d.name, &value) {
@@ -988,11 +988,22 @@ fn parse_family(v: &str) -> Option<Family> {
     None
 }
 
+/// How much work one declaration's `var()` substitution may do: each
+/// reference costs 1 and each byte of literal text it copies costs 1. Without
+/// a cap, `--v1: var(--v0) var(--v0) …` chains grow exponentially.
+const VAR_BUDGET: usize = 64 * 1024;
+
 /// Replaces `var(--name, fallback)` references. Returns `None` when a
-/// variable is missing and has no fallback, which makes the declaration
-/// invalid.
-fn substitute_vars(value: &str, vars: &HashMap<String, String>, depth: u32) -> Option<String> {
+/// variable is missing and has no fallback, or when `budget` runs out, which
+/// makes the declaration invalid.
+fn substitute_vars(
+    value: &str,
+    vars: &HashMap<String, String>,
+    depth: u32,
+    budget: &mut usize,
+) -> Option<String> {
     if !value.contains("var(") {
+        spend(budget, value.len())?;
         return Some(value.to_string());
     }
     if depth > 8 {
@@ -1001,6 +1012,7 @@ fn substitute_vars(value: &str, vars: &HashMap<String, String>, depth: u32) -> O
     let mut out = String::new();
     let mut rest = value;
     while let Some(start) = rest.find("var(") {
+        spend(budget, start + 1)?;
         out.push_str(&rest[..start]);
         let inner_start = start + 4;
         let mut depth_paren = 1;
@@ -1025,14 +1037,20 @@ fn substitute_vars(value: &str, vars: &HashMap<String, String>, depth: u32) -> O
             None => (inner.trim(), None),
         };
         let resolved = match vars.get(name) {
-            Some(v) => substitute_vars(v, vars, depth + 1)?,
-            None => substitute_vars(fallback?, vars, depth + 1)?,
+            Some(v) => substitute_vars(v, vars, depth + 1, budget)?,
+            None => substitute_vars(fallback?, vars, depth + 1, budget)?,
         };
         out.push_str(&resolved);
         rest = &rest[end + 1..];
     }
+    spend(budget, rest.len())?;
     out.push_str(rest);
     Some(out)
+}
+
+fn spend(budget: &mut usize, n: usize) -> Option<()> {
+    *budget = budget.checked_sub(n)?;
+    Some(())
 }
 
 /// Splits a value into space-separated tokens, keeping functions together.
@@ -1443,6 +1461,33 @@ mod tests {
         let styles = compute_styles(&doc, &sheets, &ctx);
         let node = doc.find_tag(tag).unwrap();
         (*styles[node]).clone()
+    }
+
+    #[test]
+    fn var_expansion_is_bounded() {
+        let mut css = String::from(":root{--v0:xxxxxxxxxx;");
+        for i in 1..=8 {
+            css += &format!("--v{i}:{};", format!("var(--v{}) ", i - 1).repeat(16));
+        }
+        css += "--e0:;";
+        for i in 1..=8 {
+            css += &format!("--e{i}:{};", format!("var(--e{})", i - 1).repeat(16));
+        }
+        css += "} p{color:var(--v8, blue); margin-left:var(--e8) 3px}";
+        let start = std::time::Instant::now();
+        let s = style_of("<p>t</p>", &css, "p");
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        // Both declarations blow the budget and are dropped.
+        assert_eq!(s.color, Color::BLACK);
+        assert_eq!(s.margin[3], Length::Px(0.0));
+
+        let s = style_of(
+            "<p>t</p>",
+            ":root{--a:1px;--b:var(--a) var(--a)} p{margin:var(--b, 9px)}",
+            "p",
+        );
+        assert_eq!(s.margin[0], Length::Px(1.0));
+        assert_eq!(s.margin[1], Length::Px(1.0));
     }
 
     #[test]

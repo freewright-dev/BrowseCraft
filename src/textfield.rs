@@ -5,12 +5,14 @@ use std::ops::Range;
 
 #[derive(Default)]
 pub struct TextField {
+    /// Public because egui edits the address bar's string in place, which
+    /// leaves `cursor` and `anchor` stale; every method clamps them first.
     pub text: String,
     /// Caret position as a byte index.
-    pub cursor: usize,
+    cursor: usize,
     /// The other end of the selection; equal to `cursor` when nothing is
     /// selected.
-    pub anchor: usize,
+    anchor: usize,
 }
 
 impl TextField {
@@ -27,13 +29,26 @@ impl TextField {
         self.anchor = self.cursor;
     }
 
+    /// The caret position as a byte index on a char boundary.
+    pub fn cursor(&self) -> usize {
+        self.text.floor_char_boundary(self.cursor)
+    }
+
+    /// Pulls `cursor` and `anchor` back inside `text` and onto char
+    /// boundaries, in case `text` changed behind our back.
+    fn clamp(&mut self) {
+        self.cursor = self.cursor();
+        self.anchor = self.text.floor_char_boundary(self.anchor);
+    }
+
     pub fn select_all(&mut self) {
         self.anchor = 0;
         self.cursor = self.text.len();
     }
 
     pub fn selection(&self) -> Range<usize> {
-        self.anchor.min(self.cursor)..self.anchor.max(self.cursor)
+        let (cursor, anchor) = (self.cursor(), self.text.floor_char_boundary(self.anchor));
+        anchor.min(cursor)..anchor.max(cursor)
     }
 
     pub fn selected_text(&self) -> &str {
@@ -41,6 +56,7 @@ impl TextField {
     }
 
     fn delete_selection(&mut self) -> bool {
+        self.clamp();
         let sel = self.selection();
         if sel.is_empty() {
             return false;
@@ -52,9 +68,18 @@ impl TextField {
     }
 
     pub fn insert(&mut self, s: &str) {
-        self.delete_selection();
         let s: String = s.chars().filter(|c| !c.is_control()).collect();
-        self.text.insert_str(self.cursor, &s);
+        self.insert_raw(&s);
+    }
+
+    /// Inserts a line break (for `<textarea>`), which `insert` filters out.
+    pub fn newline(&mut self) {
+        self.insert_raw("\n");
+    }
+
+    fn insert_raw(&mut self, s: &str) {
+        self.delete_selection();
+        self.text.insert_str(self.cursor, s);
         self.cursor += s.len();
         self.anchor = self.cursor;
     }
@@ -86,6 +111,7 @@ impl TextField {
     }
 
     pub fn left(&mut self, select: bool, word: bool) {
+        self.clamp();
         let sel = self.selection();
         let target = if !select && !sel.is_empty() {
             sel.start
@@ -98,6 +124,7 @@ impl TextField {
     }
 
     pub fn right(&mut self, select: bool, word: bool) {
+        self.clamp();
         let sel = self.selection();
         let target = if !select && !sel.is_empty() {
             sel.end
@@ -110,7 +137,8 @@ impl TextField {
     }
 
     pub fn move_to(&mut self, pos: usize, select: bool) {
-        self.cursor = pos.min(self.text.len());
+        self.clamp();
+        self.cursor = self.text.floor_char_boundary(pos);
         if !select {
             self.anchor = self.cursor;
         }
@@ -176,5 +204,35 @@ mod tests {
         assert_eq!(f.text, "ä");
         f.backspace(false);
         assert_eq!(f.text, "");
+    }
+
+    /// egui edits `text` directly without moving the caret (issue #14).
+    #[test]
+    fn survives_text_changed_behind_its_back() {
+        let mut f = TextField::new("https://example.com/ä");
+        f.select_all();
+        f.text = "aä".to_string();
+        assert_eq!(f.selected_text(), "aä");
+        assert_eq!(f.cursor(), 3);
+        f.text = "ää".to_string();
+        f.move_to(1, false); // inside the first 'ä'
+        assert_eq!(f.cursor(), 0);
+        f.select_all();
+        f.text = "a".to_string();
+        f.backspace(false);
+        assert_eq!(f.text, "");
+        for edit in [
+            |f: &mut TextField| f.insert("x"),
+            |f: &mut TextField| f.backspace(true),
+            |f: &mut TextField| f.delete(false),
+            |f: &mut TextField| f.left(true, true),
+            |f: &mut TextField| f.right(false, false),
+            |f: &mut TextField| f.newline(),
+        ] {
+            let mut f = TextField::new("hello wörld");
+            f.text = "hé".to_string();
+            edit(&mut f);
+            let _ = f.selected_text();
+        }
     }
 }
