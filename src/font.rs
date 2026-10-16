@@ -8,6 +8,27 @@ use fontdue::{Font, FontSettings, Metrics};
 
 use crate::style::Family;
 
+/// Absolute device-pixel limit, including CSS relative sizes and browser zoom.
+pub const MAX_FONT_PX: f32 = 2048.0;
+// Bound both raster dimensions and area before fontdue allocates its canvas.
+// This also keeps its f32/i32 raster indices well below their precision limits.
+const MAX_GLYPH_SIDE: usize = 4096;
+const MAX_GLYPH_PIXELS: usize = 4 * 1024 * 1024;
+
+fn safe_font_size(size: f32) -> bool {
+    size.is_finite() && size > 0.0 && size <= MAX_FONT_PX
+}
+
+fn safe_glyph_metrics(metrics: &Metrics) -> bool {
+    metrics.width <= MAX_GLYPH_SIDE
+        && metrics.height <= MAX_GLYPH_SIDE
+        && metrics.width.checked_mul(metrics.height).is_some_and(|area| area <= MAX_GLYPH_PIXELS)
+}
+
+fn empty_glyph() -> Rc<Glyph> {
+    Rc::new(Glyph { metrics: Metrics::default(), coverage: Vec::new() })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FontKey {
     pub family: Family,
@@ -267,7 +288,8 @@ impl Fonts {
     }
 
     pub fn advance(&self, key: FontKey, ch: char, size: f32) -> f32 {
-        if ch.is_control()
+        if !safe_font_size(size)
+            || ch.is_control()
             || matches!(
                 ch,
                 '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{ad}' | '\u{fe0f}'
@@ -291,6 +313,9 @@ impl Fonts {
 
     /// Ascent and descent (both positive) of the face's line metrics.
     pub fn vertical_metrics(&self, key: FontKey, size: f32) -> (f32, f32) {
+        if !safe_font_size(size) {
+            return (0.0, 0.0);
+        }
         let font = self
             .face(key)
             .or_else(|| self.face(FontKey::UI))
@@ -302,12 +327,21 @@ impl Fonts {
     }
 
     pub fn glyph(&self, key: FontKey, ch: char, size: f32) -> Rc<Glyph> {
+        // Guard direct callers as well as styled text, before any fontdue call
+        // or cache lookup (NaN/overflowing sizes can alias valid cache keys).
+        if !safe_font_size(size) {
+            return empty_glyph();
+        }
         let face = self.face_for(key, ch);
         let k = (face, ch, size_key(size));
         if let Some(g) = self.glyphs.borrow().get(&k) {
             return g.clone();
         }
-        let (metrics, coverage) = self.font(face).rasterize(ch, size);
+        let font = self.font(face);
+        if !safe_glyph_metrics(&font.metrics(ch, size)) {
+            return empty_glyph();
+        }
+        let (metrics, coverage) = font.rasterize(ch, size);
         let glyph = Rc::new(Glyph { metrics, coverage });
         let mut cache = self.glyphs.borrow_mut();
         // Keep memory bounded on pages that use many sizes.
@@ -322,6 +356,44 @@ impl Fonts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsafe_font_sizes_never_reach_fontdue() {
+        let fonts = Fonts::new().expect("system fonts");
+        for size in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY,
+            MAX_FONT_PX + 1.0, 20_000.0, 50_000.0, 1e6, 3e9, 1e30, f32::MAX]
+        {
+            let glyph = fonts.glyph(FontKey::UI, 'W', size);
+            assert!(glyph.coverage.is_empty(), "size {size}");
+            assert_eq!((glyph.metrics.width, glyph.metrics.height), (0, 0));
+            assert_eq!(fonts.advance(FontKey::UI, 'W', size), 0.0);
+            assert_eq!(fonts.vertical_metrics(FontKey::UI, size), (0.0, 0.0));
+        }
+        assert!(fonts.glyphs.borrow().is_empty());
+        assert!(fonts.advances.borrow().is_empty());
+    }
+
+    #[test]
+    fn raster_budget_checks_dimensions_and_area() {
+        let metrics = |width, height| Metrics { width, height, ..Metrics::default() };
+        assert!(safe_glyph_metrics(&metrics(2048, 2048)));
+        assert!(!safe_glyph_metrics(&metrics(2049, 2048)));
+        assert!(!safe_glyph_metrics(&metrics(MAX_GLYPH_SIDE + 1, 1)));
+        assert!(!safe_glyph_metrics(&metrics(1, MAX_GLYPH_SIDE + 1)));
+        assert!(!safe_glyph_metrics(&metrics(usize::MAX, usize::MAX)));
+    }
+
+    #[test]
+    fn supported_font_sizes_still_render() {
+        let fonts = Fonts::new().expect("system fonts");
+        for size in [16.0, MAX_FONT_PX] {
+            let glyph = fonts.glyph(FontKey::UI, 'W', size);
+            assert!(!glyph.coverage.is_empty());
+            assert!(safe_glyph_metrics(&glyph.metrics));
+            assert_eq!(glyph.coverage.len(), glyph.metrics.width * glyph.metrics.height);
+            assert!(fonts.advance(FontKey::UI, 'W', size) > 0.0);
+        }
+    }
 
     /// Phosphor glyphs the chrome uses. If any of these move or vanish in a
     /// font update, the toolbar/tab icons silently fall back to the UI font.

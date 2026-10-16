@@ -665,8 +665,8 @@ fn apply(style: &mut Style, name: &str, value: &str, r: &Resolver) {
                     _ => None,
                 },
             };
-            if let Some(size) = size.filter(|s| *s >= 0.0) {
-                style.font_size = size;
+            if let Some(size) = size.filter(|s| s.is_finite() && *s >= 0.0) {
+                style.font_size = size.min(crate::font::MAX_FONT_PX);
             }
         }
         "font-weight" => {
@@ -1486,6 +1486,37 @@ mod tests {
         );
         assert_eq!(s.color, Color::rgb(255, 0, 0));
         assert_eq!(s.margin[0], Length::Px(4.0));
+    }
+
+    #[test]
+    fn font_sizes_are_finite_and_bounded() {
+        for value in ["50000px", "1e30px", "1000000%", "1000000em", "calc(50000px + 1px)"] {
+            let s = style_of("<p>W</p>", &format!("p {{ font-size: {value} }}"), "p");
+            assert_eq!(s.font_size, crate::font::MAX_FONT_PX, "{value}");
+        }
+        for value in ["1e999px", "-1px"] {
+            let s = style_of("<p>W</p>", &format!("p {{ font-size: {value} }}"), "p");
+            assert_eq!(s.font_size, 16.0, "{value}");
+        }
+        let s = style_of("<div><p>W</p></div>",
+            "div { font-size: 50000px } p { font-size: larger }", "p");
+        assert_eq!(s.font_size, crate::font::MAX_FONT_PX);
+        assert_eq!(style_of("<p>W</p>", "p { font-size: 0 }", "p").font_size, 0.0);
+        assert_eq!(style_of("<p>W</p>", "p { font: 50000px serif }", "p").font_size,
+            crate::font::MAX_FONT_PX);
+    }
+
+    #[test]
+    fn font_size_limit_applies_after_zoom() {
+        let doc = html::parse("<p>W</p>");
+        let sheets = vec![css::parse_stylesheet("p { font-size: 1000px }")];
+        let ctx = StyleContext {
+            zoom: 3.0,
+            viewport_width: 1000.0,
+            viewport_height: 800.0,
+        };
+        let styles = compute_styles(&doc, &sheets, &ctx);
+        assert_eq!(styles[doc.find_tag("p").unwrap()].font_size, crate::font::MAX_FONT_PX);
     }
 
     #[test]
