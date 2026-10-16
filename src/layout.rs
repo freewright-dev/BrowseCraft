@@ -2505,3 +2505,64 @@ fn roman(n: i32) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{css, html, paint};
+
+    /// Styles, lays out and paints `markup` on a thread with the main thread's
+    /// stack size (set in `build.rs`).
+    fn render_on_main_stack(markup: String) {
+        std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(move || {
+                let Ok(fonts) = crate::font::Fonts::new() else {
+                    return; // no system fonts on this machine
+                };
+                let doc = html::parse(&markup);
+                let sheets = vec![css::parse_stylesheet("")];
+                let ctx = crate::style::StyleContext {
+                    zoom: 1.0,
+                    viewport_width: 800.0,
+                    viewport_height: 600.0,
+                };
+                let styles = crate::style::compute_styles(&doc, &sheets, &ctx);
+                let images = HashMap::new();
+                let form = FormState::default();
+                let input = LayoutInput {
+                    doc: &doc,
+                    styles: &styles,
+                    fonts: &fonts,
+                    images: &images,
+                    form: &form,
+                    zoom: 1.0,
+                    viewport_width: 800.0,
+                    viewport_height: 600.0,
+                };
+                let layout = layout(&input);
+                let mut pixels = vec![0u32; 64 * 64];
+                let mut canvas = paint::Canvas::new(&mut pixels, 64, 64);
+                paint::paint_items(&mut canvas, &layout.items, &fonts, &images, 0.0, 0.0);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn deep_nesting_fits_the_main_thread_stack() {
+        let n = html::MAX_DEPTH * 2;
+        for open in [
+            "<div>",
+            "<span>",
+            "<ul><li>",
+            "<table><tr><td>",
+            "<div style=\"display:flex\">",
+            "<div style=\"display:inline-block\">",
+            "<div style=\"float:left\">",
+        ] {
+            render_on_main_stack(open.repeat(n) + "x");
+        }
+    }
+}
