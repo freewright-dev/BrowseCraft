@@ -140,7 +140,17 @@ impl AdBlocker {
         type_bits: u32,
         doc_host: &str,
     ) -> Decision {
-        let hay = url.to_lowercase();
+        // Match against the parsed URL: its serialization is ASCII (punycode
+        // hosts, percent-encoded paths) and says exactly where the host ends,
+        // even with `user@`, a port or an IDN typed as Unicode.
+        let parsed = url::Url::parse(url).ok();
+        let (hay, host_end) = match &parsed {
+            Some(u) => (
+                u.as_str().to_ascii_lowercase(),
+                Some(u[..url::Position::AfterHost].len()),
+            ),
+            None => (url.to_lowercase(), None),
+        };
         let party = if doc_host.is_empty() {
             Party::Third
         } else {
@@ -152,7 +162,7 @@ impl AdBlocker {
         let mut block_important = false;
 
         let mut consider = |rule: &NetRule| {
-            if rule_hits(rule, &hay, url_host, party, type_bits, doc_host) {
+            if rule_hits(rule, &hay, host_end, url_host, party, type_bits, doc_host) {
                 if rule.options.important && !rule.allow {
                     block_important = true;
                 }
@@ -446,6 +456,7 @@ fn host_suffixes(host: &str) -> impl Iterator<Item = String> + '_ {
 fn rule_hits(
     rule: &NetRule,
     hay: &str,
+    host_end: Option<usize>,
     url_host: &str,
     party: Party,
     type_bits: u32,
@@ -479,17 +490,19 @@ fn rule_hits(
             return false;
         }
     }
-    match_pattern(rule, hay, url_host)
+    match_pattern(rule, hay, host_end, url_host)
 }
 
-fn match_pattern(rule: &NetRule, hay: &str, url_host: &str) -> bool {
+/// `host_end` is the byte offset in `hay` just past the URL's host.
+fn match_pattern(rule: &NetRule, hay: &str, host_end: Option<usize>, url_host: &str) -> bool {
     let p = &rule.pattern;
     if !p.host.is_empty() {
         if url_host != p.host && !url_host.ends_with(&format!(".{}", p.host)) {
             return false;
         }
-        let hs = hay.find("://").map(|i| i + 3).unwrap_or(0);
-        let at = hs + url_host.len();
+        let Some(at) = host_end else {
+            return false;
+        };
         return match_tokens(hay, &p.toks, at, false, p.right_anchor);
     }
     match_tokens(hay, &p.toks, 0, !p.left_anchor, p.right_anchor)
@@ -542,15 +555,14 @@ fn match_tokens(hay: &str, toks: &[Tok], at: usize, scan: bool, right: bool) -> 
     }
     match &toks[0] {
         Tok::Lit(s) => {
-            at + s.len() <= end
-                && &hay[at..at + s.len()] == s.as_str()
+            hay.get(at..at + s.len()) == Some(s.as_str())
                 && match_tokens(hay, &toks[1..], at + s.len(), false, right)
         }
         Tok::Sep => {
             if at == end {
                 return match_tokens(hay, &toks[1..], end, false, right);
             }
-            is_sep(hay.as_bytes()[at] as char)
+            hay.as_bytes().get(at).is_some_and(|&b| is_sep(b as char))
                 && match_tokens(hay, &toks[1..], at + 1, false, right)
         }
         Tok::Any => {
@@ -1057,6 +1069,34 @@ mod tests {
     }
 
     #[test]
+    fn hostname_anchor_uses_the_parsed_host() {
+        let ab = blocker(&["||doubleclick.net^", "||ads.example^$document"]);
+        for url in [
+            // An IDN typed as Unicode: the punycode host is longer than the
+            // raw one, which used to index past the end of the URL.
+            "http://ä.doubleclick.net/",
+            "http://ä.doubleclick.net",
+            "http://ä.doubleclick.net:8080/x",
+            // `user@` used to shift the host offset and skip the match.
+            "https://x@doubleclick.net/",
+            "https://user:pw@sub.doubleclick.net/ad.js",
+            "HTTPS://DOUBLECLICK.NET/X",
+        ] {
+            assert_eq!(decide(&ab, url, TYPE_ALL, "other.com"), Decision::Block, "{url}");
+        }
+        assert_eq!(
+            decide(&ab, "https://doubleclick.network/", TYPE_ALL, "other.com"),
+            Decision::Neutral
+        );
+        assert!(blocked_page_with(&ab, "http://ä.ads.example/"));
+        assert!(blocked_page_with(&ab, "https://u@ads.example/"));
+    }
+
+    fn blocked_page_with(ab: &AdBlocker, url: &str) -> bool {
+        decide(ab, url, TYPE_DOC_PAGE, "") == Decision::Block
+    }
+
+    #[test]
     fn hostname_anchor_blocks_host_and_subdomains() {
         let ab = blocker(&["||example.com^"]);
         assert_eq!(
@@ -1094,17 +1134,22 @@ mod tests {
     #[test]
     fn plain_and_anchors() {
         let ab = blocker(&[
-            "|https://exact.example.com|",
+            "|https://exact.example.com/|",
             "|https://prefix.example.com",
             "suffix.example.com/end|",
             "/ad.js",
         ]);
+        // URLs are matched as `url` serializes them, so an empty path is `/`.
         assert_eq!(
             decide(&ab, "https://exact.example.com", TYPE_ALL, "x.com"),
             Decision::Block
         );
         assert_eq!(
             decide(&ab, "https://exact.example.com/", TYPE_ALL, "x.com"),
+            Decision::Block
+        );
+        assert_eq!(
+            decide(&ab, "https://exact.example.com/x", TYPE_ALL, "x.com"),
             Decision::Neutral
         );
         assert_eq!(
