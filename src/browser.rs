@@ -2925,7 +2925,10 @@ impl Browser {
 
     fn render_egui(&mut self) {
         let page = self.page_rect();
-        let (fw, fh) = (page.w as usize, page.h as usize);
+        // On a window bigger than the GPU's largest texture (several
+        // monitors), rasterise only the part of the page that fits.
+        let max_side = self.egui.as_ref().map_or(usize::MAX, |e| e.max_texture_side());
+        let (fw, fh) = ((page.w as usize).min(max_side), (page.h as usize).min(max_side));
         if fw == 0 || fh == 0 {
             return;
         }

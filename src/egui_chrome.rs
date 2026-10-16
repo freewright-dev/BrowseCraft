@@ -32,7 +32,7 @@ impl EguiChrome {
         let ctx = egui::Context::default();
         install_icon_font(&ctx);
         let viewport_id = egui::ViewportId::ROOT;
-        let state = egui_winit::State::new(
+        let mut state = egui_winit::State::new(
             ctx.clone(),
             viewport_id,
             &*window,
@@ -48,6 +48,9 @@ impl EguiChrome {
         ));
         pollster::block_on(painter.set_window(viewport_id, Some(window.clone()))).ok()?;
         painter.render_state()?;
+        if let Some(max) = painter.max_texture_side() {
+            state.set_max_texture_side(max);
+        }
         Some(EguiChrome {
             ctx,
             state,
@@ -63,6 +66,12 @@ impl EguiChrome {
             window.request_redraw();
         }
         response.consumed
+    }
+
+    /// The largest texture side the GPU accepts. A bigger texture fails wgpu
+    /// validation, which panics.
+    pub fn max_texture_side(&self) -> usize {
+        self.painter.max_texture_side().unwrap_or(2048)
     }
 
     pub fn on_resized(&mut self, w: u32, h: u32) {
