@@ -11,8 +11,15 @@ use crate::paint::{self, Canvas};
 use crate::style::{self, StyleContext};
 
 const MAX_HEIGHT: f32 = 6000.0;
+/// The widest screenshot, in pixels.
+pub const MAX_WIDTH: u32 = 8192;
 
 pub fn screenshot(fonts: &Fonts, url: &str, out: &str, width: u32) -> Result<(), String> {
+    if !(1..=MAX_WIDTH).contains(&width) {
+        return Err(format!(
+            "the width must be between 1 and {MAX_WIDTH} pixels"
+        ));
+    }
     let (page, images) = loader::load_blocking(&Request::Get(url.to_string()));
     let images: HashMap<_, _> = images
         .into_iter()
@@ -38,7 +45,10 @@ pub fn screenshot(fonts: &Fonts, url: &str, out: &str, width: u32) -> Result<(),
     };
     let layout = layout::layout(&input);
     let height = layout.height.clamp(vh, MAX_HEIGHT).ceil() as u32;
-    let mut pixels = vec![0u32; (width * height) as usize];
+    let area = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or("the screenshot is too large")?;
+    let mut pixels = vec![0u32; area];
     let mut canvas = Canvas::new(&mut pixels, width as usize, height as usize);
     let full = layout::Rect {
         x: 0.0,
