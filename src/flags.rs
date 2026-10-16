@@ -6,7 +6,7 @@
 //! as `key=value` lines. The internal `browsecraft://flags` page edits them; a few
 //! (theme, tab side) also have toolbar/panel shortcuts.
 
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
 const FILE_NAME: &str = "flags.txt";
 
@@ -137,7 +137,45 @@ pub fn effective_dark(window_dark: bool) -> bool {
 
 /// Applies form-submitted query pairs to the flags (unknown keys ignored).
 /// Returns whether anything changed.
-pub fn apply_query(pairs: impl Iterator<Item = (String, String)>) -> bool {
+/// The one-time token the flags page's form must send back. Only that form
+/// can change the flags: a link, a pop-up, another page's form or a
+/// back/forward replay of an earlier submission cannot know it.
+static FORM_TOKEN: Mutex<Option<String>> = Mutex::new(None);
+
+/// Makes and remembers a new form token, replacing the previous one.
+fn new_form_token() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    // Each `RandomState` is seeded from the OS's random number generator.
+    let token: String = (0..2)
+        .map(|_| {
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_u8(0);
+            format!("{:016x}", h.finish())
+        })
+        .collect();
+    *FORM_TOKEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(token.clone());
+    token
+}
+
+/// Applies a submission of the flags page's form (the URL query, without
+/// the `?`). Returns whether any flag changed. Without the current token it
+/// does nothing; with it, the token is used up.
+pub fn apply_form(query: &str) -> bool {
+    let pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    {
+        let mut token = FORM_TOKEN.lock().unwrap_or_else(|e| e.into_inner());
+        let sent = pairs.iter().find(|(k, _)| k == "token").map(|(_, v)| v);
+        if token.is_none() || sent != token.as_ref() {
+            return false;
+        }
+        *token = None;
+    }
+    apply_query(pairs.into_iter())
+}
+
+fn apply_query(pairs: impl Iterator<Item = (String, String)>) -> bool {
     let mut flags = get();
     let mut changed = false;
     for (key, value) in pairs {
@@ -187,9 +225,11 @@ pub fn apply_query(pairs: impl Iterator<Item = (String, String)>) -> bool {
     changed
 }
 
-/// The HTML source of the `browsecraft://flags` page, reflecting the current flags.
+/// The HTML source of the `browsecraft://flags` page, reflecting the current
+/// flags. Each call issues a new form token.
 pub fn page_html() -> String {
     let flags = get();
+    let token = new_form_token();
     let checked = |name: &str, value: &str| -> &'static str {
         let on = match name {
             "tabs-position" => matches!(
@@ -219,7 +259,7 @@ pub fn page_html() -> String {
          button{{margin-top:4px;padding:8px 20px;border:0;border-radius:6px;background:#2f6fde;color:white;font-size:14px}}\
          button:focus{{outline:none}}</style>\
          <main><h1>Flags</h1><p>Experiments for BrowseCraft. Changes apply immediately.</p>\
-         <form><fieldset><legend>Tab sidebar</legend>\
+         <form><input type=\"hidden\" name=\"token\" value=\"{9}\"><fieldset><legend>Tab sidebar</legend>\
          <label><input type=\"radio\" name=\"tabs-position\" value=\"left\"{0}> Show tabs on the left</label>\
          <label><input type=\"radio\" name=\"tabs-position\" value=\"right\"{1}> Show tabs on the right</label>\
          <label><input type=\"radio\" name=\"tabs-position\" value=\"hidden\"{2}> Hide the tab sidebar</label>\
@@ -241,6 +281,7 @@ pub fn page_html() -> String {
         checked("chrome", "auto"),
         checked("chrome", "egui"),
         checked("chrome", "engine"),
+        token,
     )
 }
 
@@ -268,6 +309,42 @@ mod tests {
         assert_eq!(after.chrome, Chrome::Egui);
         assert!(!apply_query(vec![].into_iter()));
         assert_eq!(effective_dark(true), true);
+        set(before);
+    }
+
+    /// The token from the hidden field of a freshly rendered flags page.
+    fn rendered_token() -> String {
+        let html = page_html();
+        let marker = "name=\"token\" value=\"";
+        let start = html.find(marker).unwrap() + marker.len();
+        html[start..start + 32].to_string()
+    }
+
+    #[test]
+    fn only_the_flags_form_can_change_flags() {
+        let _guard = SERIAL.lock().unwrap();
+        let before = get();
+        set(Flags::default());
+        let query = |token: &str| format!("token={token}&theme=dark");
+
+        // No token, a guessed token, or a link with no form rendered yet.
+        *FORM_TOKEN.lock().unwrap() = None;
+        assert!(!apply_form("theme=dark"));
+        assert!(!apply_form("token=&theme=dark"));
+        let token = rendered_token();
+        assert!(!apply_form("theme=dark"));
+        assert!(!apply_form(&query(&"0".repeat(32))));
+        assert_eq!(get().theme, Theme::Auto);
+
+        // The real form works once; replaying it (back/forward) does not.
+        assert!(apply_form(&query(&token)));
+        assert_eq!(get().theme, Theme::Dark);
+        set(Flags::default());
+        assert!(!apply_form(&query(&token)));
+        assert_eq!(get().theme, Theme::Auto);
+
+        // Rendering again issues a different token.
+        assert_ne!(rendered_token(), token);
         set(before);
     }
 
