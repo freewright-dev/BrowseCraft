@@ -1189,8 +1189,7 @@ impl Browser {
         self.web_url.clear();
         self.web_expect = false;
         self.pending_restore = restore;
-        let shown = target
-            .strip_prefix("about:blocked:")
+        let shown = loader::blocked_notice_target(&target)
             .unwrap_or(&target)
             .to_string();
         self.address.set(&shown);

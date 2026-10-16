@@ -134,10 +134,24 @@ fn fetch_images(
     });
 }
 
+/// The URL inside `about:blocked:<url>`, if the ad filter really blocks
+/// it. BrowseCraft makes these addresses itself for blocked pages; anyone
+/// else (a link, a typed address) could otherwise put any URL, say a bank's,
+/// in the address bar over the "blocked" notice.
+pub fn blocked_notice_target(raw: &str) -> Option<&str> {
+    let inner = raw.strip_prefix("about:blocked:")?;
+    let lower = inner.to_ascii_lowercase();
+    let web = lower.starts_with("http://") || lower.starts_with("https://");
+    (web && crate::adblock::blocked_page(inner, "")).then_some(inner)
+}
+
 fn load_page(request: &Request) -> Page {
     let raw = request.url();
-    if let Some(inner) = raw.strip_prefix("about:blocked:") {
-        return ad_blocked_page(raw, inner);
+    if raw.starts_with("about:blocked:") {
+        return match blocked_notice_target(raw) {
+            Some(inner) => ad_blocked_page(raw, inner),
+            None => error_page(raw, "This address is not valid."),
+        };
     }
     if let Some(inner) = raw.strip_prefix("view-source:") {
         return view_source(inner);
@@ -724,6 +738,23 @@ mod tests {
             .collect();
         urls.sort();
         urls
+    }
+
+    #[test]
+    fn blocked_notices_only_for_blocked_urls() {
+        // Nothing in the test build's filter blocks a bank.
+        let raw = "about:blocked:https://bank.example/login";
+        assert_eq!(blocked_notice_target(raw), None);
+        let page = load_page(&Request::Get(raw.into()));
+        assert_eq!(page.url, raw);
+        assert!(
+            !page
+                .doc
+                .text_content(Document::ROOT)
+                .contains("was blocked")
+        );
+        assert_eq!(blocked_notice_target("about:blocked:javascript:x"), None);
+        assert_eq!(blocked_notice_target("https://bank.example/"), None);
     }
 
     #[test]
