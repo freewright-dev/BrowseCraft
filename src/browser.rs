@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroU32;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,7 +19,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use softbuffer::{Context, Surface};
 use url::Url;
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalSize, PhysicalPosition};
+use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -245,6 +245,8 @@ pub struct Browser {
     /// URL replaces the history entry instead of adding one.
     web_expect: bool,
     web_visible: bool,
+    /// When the last screenshot was saved, to allow at most one a second.
+    last_screenshot: Option<Instant>,
     web_bounds: Option<(i32, i32, u32, u32)>,
     /// Scroll offset to restore when the next engine page arrives.
     pending_restore: Option<f32>,
@@ -311,15 +313,45 @@ fn screenshot_name(secs: u64) -> String {
 
 /// Where screenshots go: the user's Pictures folder, else the working
 /// directory.
-fn pictures_dir() -> PathBuf {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from);
-    let dir = home.map(|h| h.join("Pictures"));
+/// Where screenshots go: the Pictures folder Windows reports (which follows
+/// OneDrive and folder redirection), else `~/Pictures`.
+fn pictures_dir() -> Result<PathBuf, String> {
+    let dir = crate::capture::pictures_dir().or_else(|| {
+        std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(|home| PathBuf::from(home).join("Pictures"))
+    });
     match dir {
-        Some(dir) if std::fs::create_dir_all(&dir).is_ok() => dir,
-        _ => std::env::current_dir().unwrap_or_default(),
+        Some(dir) if std::fs::create_dir_all(&dir).is_ok() => Ok(dir),
+        _ => Err("no Pictures folder to save to".to_string()),
     }
+}
+
+/// Creates a new screenshot file in `dir`, never replacing one: a second
+/// screenshot in the same second gets `-2`, then `-3`, and so on.
+fn create_screenshot_file(dir: &Path, secs: u64) -> std::io::Result<(PathBuf, std::fs::File)> {
+    let name = screenshot_name(secs);
+    let stem = name.trim_end_matches(".png");
+    for n in 1..1000 {
+        let path = if n == 1 {
+            dir.join(&name)
+        } else {
+            dir.join(format!("{stem}-{n}.png"))
+        };
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "too many screenshots this second",
+    ))
 }
 
 /// Shortens `text` with an ellipsis so it fits in `max_w` pixels.
@@ -779,6 +811,7 @@ impl Browser {
             last_dark: None,
             web_expect: false,
             web_visible: false,
+            last_screenshot: None,
             web_bounds: None,
             pending_restore: None,
             frame_page: (0, 0, 0, 0, 0),
@@ -2807,6 +2840,13 @@ impl Browser {
 
     /// Ctrl+Shift+S: saves the visible page area as a PNG in Pictures.
     fn save_screenshot(&mut self) {
+        if self
+            .last_screenshot
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(1))
+        {
+            return;
+        }
+        self.last_screenshot = Some(Instant::now());
         match self.capture_png() {
             Ok(path) => self.set_notice(format!("Screenshot saved to {}", path.display())),
             Err(e) => self.set_notice(format!("Screenshot failed: {e}")),
@@ -2814,38 +2854,42 @@ impl Browser {
     }
 
     fn capture_png(&self) -> Result<PathBuf, String> {
+        use image::ImageEncoder;
         let (w, h, rgba) = self.capture_page_rgba()?;
-        let dir = pictures_dir();
+        let dir = pictures_dir()?;
         let secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let path = dir.join(screenshot_name(secs));
-        image::save_buffer(&path, &rgba, w, h, image::ExtendedColorType::Rgba8)
-            .map_err(|e| e.to_string())?;
+        let (path, file) = create_screenshot_file(&dir, secs).map_err(|e| e.to_string())?;
+        let written = image::codecs::png::PngEncoder::new(std::io::BufWriter::new(file))
+            .write_image(&rgba, w, h, image::ExtendedColorType::Rgba8);
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&path);
+            return Err(e.to_string());
+        }
         Ok(path)
     }
 
-    /// The page area as RGBA: grabbed from the screen for a WebView2 page
-    /// (the native pane can't be read back any other way) and cropped from
+    /// The page area as RGBA: rendered from the window for a WebView2 page
+    /// (the native pane can't be read back from our frame) and cropped from
     /// the engine frame otherwise.
     fn capture_page_rgba(&self) -> Result<(u32, u32, Vec<u8>), String> {
         if self.web_page && self.web_visible {
             let r = self.webview_rect();
-            let origin = self
-                .gfx
-                .as_ref()
-                .and_then(|g| g.window.inner_position().ok())
-                .unwrap_or(PhysicalPosition::new(0, 0));
             let (w, h) = (r.w.round() as u32, r.h.round() as u32);
-            if let Some(rgba) = crate::capture::screen_region(
-                origin.x + r.x.round() as i32,
-                origin.y + r.y.round() as i32,
-                w,
-                h,
-            ) {
-                return Ok((w, h, rgba));
-            }
-            return Err("this platform can't capture web pages".to_string());
+            let rgba = self.gfx.as_ref().and_then(|g| {
+                crate::capture::window_region(
+                    &g.window,
+                    r.x.round() as i32,
+                    r.y.round() as i32,
+                    w,
+                    h,
+                )
+            });
+            return match rgba {
+                Some(rgba) => Ok((w, h, rgba)),
+                None => Err("this platform can't capture web pages".to_string()),
+            };
         }
         let (fx, fy, fw, fh, stride) = self.frame_page;
         if fw == 0 || fh == 0 || self.frame.len() < stride * (fy + fh) {
@@ -3335,6 +3379,27 @@ mod tests {
         assert_eq!(zoom_step(1.0, false), 0.9);
         assert_eq!(zoom_step(3.0, true), 3.0);
         assert_eq!(zoom_step(0.33, false), 0.33);
+    }
+
+    #[test]
+    fn screenshots_never_overwrite() {
+        let dir = std::env::temp_dir().join(format!("browsecraft-shots-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let names: Vec<_> = (0..3)
+            .map(|_| {
+                let (path, _) = create_screenshot_file(&dir, 0).unwrap();
+                path.file_name().unwrap().to_string_lossy().into_owned()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "browsecraft-19700101-000000.png",
+                "browsecraft-19700101-000000-2.png",
+                "browsecraft-19700101-000000-3.png"
+            ]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
