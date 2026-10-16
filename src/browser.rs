@@ -264,6 +264,12 @@ pub fn request_in_webview(url: &str) -> bool {
     !(lower.starts_with("about:") || lower.starts_with("view-source:") || lower.starts_with("browsecraft:"))
 }
 
+/// Whether a web page's pop-up may open `url`.
+fn popup_allowed(url: &str) -> bool {
+    let lower = url.trim_start().to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
 /// The next (or previous) zoom level from [`ZOOM_STEPS`].
 fn zoom_step(current: f32, up: bool) -> f32 {
     if up {
@@ -1382,7 +1388,11 @@ impl Browser {
                 true
             })
             .with_new_window_req_handler(move |url, _features| {
-                let _ = popup_proxy.send_event(UserMessage::WebOpen(url));
+                // Pop-ups open as a new navigation in the browser, but only
+                // to web pages: never to internal, file or view-source URLs.
+                if popup_allowed(&url) {
+                    let _ = popup_proxy.send_event(UserMessage::WebOpen(url));
+                }
                 NewWindowResponse::Deny
             })
             .with_document_title_changed_handler(move |title| {
@@ -3274,6 +3284,17 @@ mod tests {
         assert!(!request_in_webview("about:blocked:https://ads.example"));
         assert!(!request_in_webview("view-source:https://example.com"));
         assert!(!request_in_webview("browsecraft://history"));
+        assert!(popup_allowed("https://example.com/"));
+        assert!(popup_allowed(" HTTP://example.com/"));
+        for url in [
+            "browsecraft://flags?theme=dark",
+            "file:///C:/",
+            "view-source:file://host/x",
+            "about:blocked:https://bank.example",
+            "javascript:alert(1)",
+        ] {
+            assert!(!popup_allowed(url), "{url}");
+        }
         assert!(!request_in_webview("BROWSECRAFT://flags"));
     }
 

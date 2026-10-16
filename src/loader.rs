@@ -111,14 +111,13 @@ fn load_page(request: &Request) -> Page {
     if let Some(inner) = raw.strip_prefix("view-source:") {
         return view_source(inner);
     }
-    if let Some(query) = raw.strip_prefix("browsecraft://flags") {
+    if let Some(query) = internal_query(raw, "browsecraft://flags") {
         // The flags page submits to itself with the new values in the query.
-        let pairs = url::form_urlencoded::parse(query.strip_prefix('?').unwrap_or("").as_bytes());
-        crate::flags::apply_query(pairs.map(|(k, v)| (k.into_owned(), v.into_owned())));
+        crate::flags::apply_form(query);
         let source = crate::flags::page_html();
         return internal_page(raw, &source);
     }
-    if raw.starts_with("browsecraft://history") {
+    if internal_query(raw, "browsecraft://history").is_some() {
         let source = crate::history::page_html();
         return internal_page(raw, &source);
     }
@@ -187,6 +186,15 @@ fn load_page(request: &Request) -> Page {
         base,
         doc,
         sheets,
+    }
+}
+
+/// The query of `raw` if it is exactly the internal page `page`, optionally
+/// followed by `?query` (so `browsecraft://flagsX` is not the flags page).
+fn internal_query<'a>(raw: &'a str, page: &str) -> Option<&'a str> {
+    match raw.strip_prefix(page)? {
+        "" => Some(""),
+        rest => rest.strip_prefix('?'),
     }
 }
 
