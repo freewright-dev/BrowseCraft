@@ -1917,6 +1917,9 @@ impl Browser {
                     self.address.set(&url);
                     self.focus = Focus::Page;
                 }
+                // With the egui chrome, egui's text box owns the editing;
+                // editing here as well would paste twice (issue #14).
+                _ if self.egui.is_some() => {}
                 _ => {
                     let text = event.text.as_deref();
                     edit_field(&mut self.address, base, text, mods, &mut self.clipboard);
@@ -1929,11 +1932,7 @@ impl Browser {
                         .as_ref()
                         .is_some_and(|t| t.page.doc.tag(node) == "textarea");
                     if multiline {
-                        self.input.insert("");
-                        let at = self.input.cursor;
-                        self.input.text.insert(at, '\n');
-                        self.input.cursor += 1;
-                        self.input.anchor = self.input.cursor;
+                        self.input.newline();
                         self.commit_input(node);
                     } else if let Some(form) = self
                         .tab
@@ -2292,7 +2291,7 @@ impl Browser {
             size,
             &self.address.text,
             false,
-            self.address.cursor,
+            self.address.cursor(),
         );
         let total = self.fonts.measure(FontKey::UI, &self.address.text, size);
         if cx - self.address_scroll > width - 4.0 {
@@ -2473,7 +2472,7 @@ impl Browser {
             }
             self.text_in(canvas, x0, t, &self.address.text, FontKey::UI, size, pal.text);
             if focused {
-                let cx = x0 + caret_x(&self.fonts, FontKey::UI, size, &self.address.text, false, self.address.cursor);
+                let cx = x0 + caret_x(&self.fonts, FontKey::UI, size, &self.address.text, false, self.address.cursor());
                 canvas.fill_rect(
                     Rect { x: cx, y: t.y + 5.0 * s, w: (1.5 * s).max(1.0), h: t.h - 10.0 * s },
                     pal.text,
@@ -2664,7 +2663,7 @@ impl Browser {
             let ex = x0 + caret_x(&self.fonts, c.font, c.size, text, password, sel.end);
             canvas.fill_rect(Rect { x: sx, y: top, w: ex - sx, h: height }, with_alpha(pal.accent, 90));
         }
-        let cx = x0 + caret_x(&self.fonts, c.font, c.size, text, password, self.input.cursor);
+        let cx = x0 + caret_x(&self.fonts, c.font, c.size, text, password, self.input.cursor());
         let thickness = (1.5 * self.scale()).max(1.0);
         canvas.fill_rect(Rect { x: cx, y: top, w: thickness, h: height }, Color::rgb(0x20, 0x20, 0x20));
         canvas.pop_clip();
