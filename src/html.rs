@@ -11,6 +11,10 @@ const VOID: &[&str] = &[
 const RAW_TEXT: &[&str] = &[
     "script", "style", "textarea", "title", "xmp", "iframe", "noembed",
 ];
+/// The most open elements whose children nest further. Deeper start tags are
+/// attached beside the innermost element instead of inside it (as Blink does),
+/// so styling, layout and painting never recurse deeper than this.
+pub const MAX_DEPTH: usize = 512;
 const HEAD_ONLY: &[&str] = &[
     "title", "meta", "link", "style", "script", "base", "noscript",
 ];
@@ -101,15 +105,22 @@ impl<'a> Tokenizer<'a> {
         if let Some(tag) = raw_text {
             return Some(self.raw_text(tag));
         }
+        // Skip comments, doctypes and processing instructions in a loop: by
+        // recursion, a page of `<!---->` would overflow the stack.
+        loop {
+            let rest = self.rest();
+            self.pos += if let Some(after) = rest.strip_prefix("<!--") {
+                4 + after.find("-->").map_or(after.len(), |i| i + 3)
+            } else if rest.starts_with("<!") || rest.starts_with("<?") {
+                rest.find('>').map_or(rest.len(), |i| i + 1)
+            } else {
+                break;
+            };
+            if self.pos >= self.src.len() {
+                return None;
+            }
+        }
         let rest = self.rest();
-        if let Some(after) = rest.strip_prefix("<!--") {
-            self.pos += 4 + after.find("-->").map_or(after.len(), |i| i + 3);
-            return self.next(None);
-        }
-        if rest.starts_with("<!") || rest.starts_with("<?") {
-            self.pos += rest.find('>').map_or(rest.len(), |i| i + 1);
-            return self.next(None);
-        }
         if let Some(after) = rest.strip_prefix("</")
             && after.starts_with(|c: char| c.is_ascii_alphabetic())
         {
@@ -441,7 +452,10 @@ impl Builder {
             _ => {}
         }
 
-        let parent = self.current();
+        let mut parent = self.current();
+        if self.stack.len() >= MAX_DEPTH {
+            parent = self.doc.nodes[parent].parent.unwrap_or(parent);
+        }
         self.skip_newline = matches!(tag.as_str(), "pre" | "textarea" | "listing");
         let is_void = VOID.contains(&tag.as_str());
         let node = self
@@ -637,6 +651,39 @@ mod tests {
             .iter()
             .map(|&c| doc.tag(c).to_string())
             .collect()
+    }
+
+    fn depth(doc: &Document, mut node: NodeId) -> usize {
+        let mut d = 0;
+        while let Some(p) = doc.nodes[node].parent {
+            node = p;
+            d += 1;
+        }
+        d
+    }
+
+    #[test]
+    fn many_comments_do_not_recurse() {
+        let markup = "<!---->".repeat(200_000) + "<!doctype html><?x?><p>x";
+        let doc = parse(&markup);
+        assert_eq!(doc.text_content(doc.find_tag("p").unwrap()), "x");
+    }
+
+    #[test]
+    fn caps_dom_depth() {
+        let n = MAX_DEPTH * 4;
+        let markup = "<div>".repeat(n) + "<p>x</p>" + &"</div>".repeat(n) + "<span>after</span>";
+        let doc = parse(&markup);
+        let deepest = (0..doc.nodes.len())
+            .map(|id| depth(&doc, id))
+            .max()
+            .unwrap();
+        assert!(deepest <= MAX_DEPTH + 3, "{deepest}");
+        let p = doc.find_tag("p").unwrap();
+        assert_eq!(doc.text_content(p), "x");
+        // The end tags still close the right elements.
+        let span = doc.find_tag("span").unwrap();
+        assert_eq!(doc.tag(doc.nodes[span].parent.unwrap()), "body");
     }
 
     #[test]
