@@ -11,7 +11,7 @@
 //! [Phosphor]: https://phosphoricons.com/
 
 /// BrowseCraft's logo, shared by the window icon and built-in new-tab page.
-pub const LOGO_PNG: &[u8] = include_bytes!("../assets/logo.png");
+pub const LOGO_PNG: &[u8] = include_bytes!("../assets/logos/browsecraft.png");
 
 /// egui font family the Phosphor face is registered under.
 pub const FAMILY: &str = "phosphor";

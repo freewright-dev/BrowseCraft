@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/logo.png" alt="BrowseCraft logo" width="160"></p>
+<p align="center"><img src="assets/logos/browsecraft.png" alt="BrowseCraft logo" width="160"></p>
 
 <h1 align="center">BrowseCraft</h1>
 
