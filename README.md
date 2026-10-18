@@ -51,6 +51,15 @@ available, and by the engine otherwise.
 - Painting: backgrounds, borders, rounded corners, anti-aliased text with system fonts and glyph fallback, PNG/JPEG/GIF/WebP images
 - Forms with GET and POST submission; `http(s)`, `file://` (with directory listings) and `data:` URLs
 
+The custom engine also handles headless screenshots and fallback browsing when
+an embedded web view is unavailable. It bounds selector complexity, matching
+work and cascade size, and caches sibling positions to avoid repeated scans.
+Selectors exceeding 64 compound parts (including nested pseudo-selector lists)
+are rejected; matching stops after 100,000 work steps per element, and the
+cascade keeps at most 65,536 declarations per element. Pages exceeding these
+limits may render with reduced styling. See [architecture](docs/architecture.md#style)
+for the limits and [the changelog](CHANGELOG.md#unreleased) for recent fixes.
+
 ## Requirements
 
 BrowseCraft is developed and tested on Windows. Building it needs:

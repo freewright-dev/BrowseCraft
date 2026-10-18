@@ -82,13 +82,50 @@ CI (`.github/workflows/ci.yml`) runs `cargo build --locked` and
 `cargo test --locked` on `windows-latest` for every pull request and every
 push to `main`.
 
-Unit tests live next to the code: HTML parsing (`html.rs`), selectors, values
+Unit tests live next to the code: HTML parsing (`html.rs`), sibling metadata
+and cache invalidation (`dom.rs`), selectors, values
 and media queries (`css.rs`), the cascade (`style.rs`), data URLs and charsets
 (`net.rs`), text editing (`textfield.rs`), address-bar rules (`address.rs`),
 ad blocking (`adblock.rs`), flags and the `flags.txt` store (`flags.rs`),
 glyph coverage (`font.rs`), the history store (`history.rs`), and WebView2
 routing, zoom steps, shortcuts and form submission (`browser.rs`). The
 `flags.rs` tests share a global store and file, so they serialise on a mutex.
+
+### Parser and selector regressions
+
+Run the focused engine suites with:
+
+```sh
+cargo test --locked css::tests
+cargo test --locked html::tests
+cargo test --locked dom::tests
+cargo test --locked style::tests
+```
+
+Coverage for the fixes in [PR #58](https://github.com/pierruno-labs/BrowseCraft/pull/58)
+and [PR #59](https://github.com/pierruno-labs/BrowseCraft/pull/59) includes:
+
+- Nested `:is()`/`:not()` matching: bounded operation counts, distinct cache
+  keys and budget exhaustion that cannot be inverted into a match by `:not()`.
+- Long selector chains: a 50,000-part input is rejected in a subprocess with
+  a 15-second deadline and a 2 MiB worker stack. Accepted flat/nested chains
+  and directly constructed selectors are checked too.
+- Cascade allocation: a rule with 10,000 matching selectors and 10,000
+  declarations contributes 10,000 author cascade entries rather than 100 million.
+  Tests also cover specificity, source order, `!important` and aggregate limits.
+- At-rule parsing: 25,000, 50,000 and 100,000 sibling blocks/statements with
+  counted prelude visits bounded by input size, plus quoted and escaped delimiters.
+- Attribute merging: 25,000 repeated root/body tags preserve distinct
+  attributes, first values and insertion order within a five-second guard.
+- Sibling matching: nine selector passes over 40,000 elements share one
+  two-pass metadata build. Tests include text nodes, distinct tag names,
+  parent boundaries, appends, tag changes and document clones.
+
+Prefer deterministic operation or allocation counts for scaling regressions;
+the broad time guards catch gross slowdowns rather than serve as benchmarks.
+Use `Document::append` for structural additions and `Document::element_mut`
+for tag changes so cached sibling metadata is invalidated. The limits and
+cache design are described in [architecture](architecture.md#parsing-and-sibling-metadata).
 
 ## Common changes
 
