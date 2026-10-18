@@ -135,11 +135,18 @@ Some uBlock Origin features aren't supported: regex filters, `$redirect`,
 `$csp`, `$replace`, scriptlets and procedural filters. Rules that use them are
 skipped rather than applied loosely.
 
+## License
+
+BrowseCraft is licensed under **GPL-3.0-or-later**. See [LICENSE](LICENSE)
+and [third-party notices](THIRD_PARTY_NOTICES.md), including the uBlock Origin
+code adapted by the ad blocker.
+
 ## Documentation
 
 - [Usage](docs/usage.md): address bar rules, toolbar, tabs, settings, shortcuts and forms
 - [Architecture](docs/architecture.md): how the engine's stages fit together
 - [egui chrome](docs/egui.md): the GPU toolbar and sidebar, and how they sit next to WebView2
 - [Development](docs/development.md): building, tests, headless screenshots and common changes
+- [Dependency maintenance](docs/dependencies.md): advisory tracking and license/source policy
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)

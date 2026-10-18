@@ -2,6 +2,7 @@
 name = "browsecraft"
 version = "0.1.0"
 edition = "2024"
+license = "GPL-3.0-or-later"
 
 [profile.release]
 opt-level = "z"
@@ -25,7 +26,7 @@ tempfile = "3"
 ureq = "3"
 url = "2"
 winit = "0.30"
-wry = "0.53"
+wry = "0.55"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"

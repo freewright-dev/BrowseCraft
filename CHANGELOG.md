@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Declared GPL-3.0-or-later licensing with the full license text and uBlock Origin attribution; added an explicit dependency license/source policy.
 - The internal pages moved from `craft://` to `browsecraft://` (`browsecraft://flags`, `browsecraft://history`), and the repository moved to `pierruno-labs/browsecraft`.
 - Replaced the original wry/tao-only browser with a hybrid design: BrowseCraft's own engine and winit window draw the chrome and internal pages, while websites render in an embedded WebView2 pane. The HTML toolbar webview is gone; the toolbar is drawn by the engine or by egui.
 - Searches use Startpage instead of DuckDuckGo.
@@ -41,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Updated rustls to 0.23.46 for four TLS advisories and wry to 0.55.1 to remove the affected fxhash/rand dependency chains. Remaining GTK/font maintenance advisories are tracked in `docs/dependencies.md` (#54).
 - Settings now use atomic replacement in a per-user configuration directory, preventing planted working-directory symlinks from redirecting writes. Save errors are displayed and preserve the in-memory settings; trusted legacy files can be copied manually to the new location (#56).
 - Settings forms in multiple retained tabs keep independent OS-random one-time tokens, with bounded storage, replay rejection and an explanation when a form has expired (#57).
 - Windows screenshot capture rejects overflowing or excessive dimensions before allocation, validates bitmap selection/restoration, and releases native resources on error paths (#55).

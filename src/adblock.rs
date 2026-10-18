@@ -1,5 +1,8 @@
 //! Ported from uBlock Origin's core: a static network-filter engine and
 //! cosmetic (element-hiding) filters, consuming EasyList/uBO filter syntax.
+//! Upstream copyright (C) 2014-present Raymond Hill and contributors.
+//! SPDX-License-Identifier: GPL-3.0-or-later
+//! See LICENSE and THIRD_PARTY_NOTICES.md for license terms and attribution.
 //!
 //! The parts adapted from `uBlock-master/src/js` are: `static-net-filtering.js`
 //! (rule matching, `@@` exception priority, `$` options), the relevant slice of
