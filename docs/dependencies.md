@@ -1,6 +1,6 @@
 # Dependency maintenance
 
-Reviewed 2026-10-18 for [issue #54](https://github.com/pierruno-labs/BrowseCraft/issues/54).
+Reviewed 2026-10-18 for [issue #54](https://github.com/freewright-dev/BrowseCraft/issues/54).
 
 ## Updated dependencies
 

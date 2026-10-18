@@ -120,8 +120,8 @@ cargo test --locked dom::tests
 cargo test --locked style::tests
 ```
 
-Coverage for the fixes in [PR #58](https://github.com/pierruno-labs/BrowseCraft/pull/58)
-and [PR #59](https://github.com/pierruno-labs/BrowseCraft/pull/59) includes:
+Coverage for the fixes in [PR #58](https://github.com/freewright-dev/BrowseCraft/pull/58)
+and [PR #59](https://github.com/freewright-dev/BrowseCraft/pull/59) includes:
 
 - Nested `:is()`/`:not()` matching: bounded operation counts, distinct cache
   keys and budget exhaustion that cannot be inverted into a match by `:not()`.
