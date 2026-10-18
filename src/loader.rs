@@ -794,6 +794,14 @@ fn image_sources(page: &Page) -> Vec<(String, Url)> {
 /// Fetches and decodes one image, taking its pixels out of the page's
 /// `budget`. Returns `None` for images that are too big or over budget.
 fn fetch_image(url: &Url, budget: &AtomicU64, doc_host: &str, control: &Control) -> Option<Image> {
+    // A public, embedded image only: never map internal URL paths to files.
+    if url.as_str() == "browsecraft://assets/logo.png" {
+        return if control.active() {
+            decode_image(crate::icons::LOGO_PNG, budget)
+        } else {
+            None
+        };
+    }
     let resp = fetch_resource(
         url,
         None,
@@ -848,6 +856,23 @@ fn decode_image(bytes: &[u8], budget: &AtomicU64) -> Option<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_tab_loads_its_embedded_logo() {
+        let (page, images) = load_blocking(&Request::Get("about:home".into()));
+        assert!(
+            page.doc
+                .text_content(Document::ROOT)
+                .contains("BrowseCraft")
+        );
+        let (_, logo) = images
+            .iter()
+            .find(|(src, _)| src == "browsecraft://assets/logo.png")
+            .expect("new-tab logo must load without network or runtime asset files");
+        assert!(logo.width > 0 && logo.height > 0);
+        assert!(logo.pixels.iter().any(|pixel| pixel >> 24 == 0));
+        assert!(logo.pixels.iter().any(|pixel| pixel >> 24 == 255));
+    }
 
     #[test]
     fn cancelled_loads_do_not_fetch_or_publish_events() {

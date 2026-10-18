@@ -3250,8 +3250,19 @@ impl ApplicationHandler<UserMessage> for Browser {
         if self.gfx.is_some() {
             return;
         }
+        let window_icon = image::load_from_memory(icons::LOGO_PNG)
+            .map_err(|e| eprintln!("browsecraft: could not decode the window logo: {e}"))
+            .ok()
+            .and_then(|image| {
+                let rgba = image
+                    .resize(64, 64, image::imageops::FilterType::Lanczos3)
+                    .into_rgba8();
+                let (width, height) = rgba.dimensions();
+                winit::window::Icon::from_rgba(rgba.into_raw(), width, height).ok()
+            });
         let attrs = Window::default_attributes()
             .with_title("BrowseCraft")
+            .with_window_icon(window_icon)
             .with_inner_size(LogicalSize::new(1280.0, 800.0))
             .with_min_inner_size(LogicalSize::new(480.0, 320.0));
         let window = match event_loop.create_window(attrs) {

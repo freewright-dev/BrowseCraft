@@ -2,9 +2,9 @@
 <title>New Tab</title>
 <style>
   body { margin: 0; background: #f6f7f9; color: #1f2328; font-family: system-ui, sans-serif }
-  main { max-width: 560px; margin: 0 auto; padding: 120px 24px 48px }
+  main { max-width: 560px; margin: 0 auto; padding: 48px 24px }
+  .logo { display: flex; justify-content: center; margin-bottom: 20px }
   h1 { font-size: 44px; font-weight: 600; margin: 0 0 6px; text-align: center; color: #24292f }
-  .accent { color: #2f6fde }
   .tagline { text-align: center; color: #57606a; margin: 0 0 32px }
   form { display: flex; gap: 8px }
   input[type=search] {
@@ -23,7 +23,8 @@
   footer { text-align: center; color: #8c959f; font-size: 13px; margin-top: 56px }
 </style>
 <main>
-  <h1>Pr<span class="accent">owl</span></h1>
+  <div class="logo"><img src="browsecraft://assets/logo.png" alt="BrowseCraft logo" width="128" height="128"></div>
+  <h1>BrowseCraft</h1>
   <p class="tagline">A tiny browser with its own Rust rendering engine.</p>
   <form action="https://www.startpage.com/sp/search" method="get">
     <input type="search" name="query" placeholder="Search Startpage or type an address above" autofocus>
