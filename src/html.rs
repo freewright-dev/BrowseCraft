@@ -64,12 +64,18 @@ const P_SCOPE: &[&str] = &[
 ];
 
 pub fn parse(source: &str) -> Document {
+    parse_cancellable(source, &|| true).expect("uncancelled parse")
+}
+
+pub fn parse_cancellable(source: &str, live: &dyn Fn() -> bool) -> Option<Document> {
+    if !live() { return None; }
     let mut builder = Builder::new();
     let mut tok = Tokenizer {
         src: source,
         pos: 0,
     };
     while let Some(token) = tok.next(builder.raw_text_tag()) {
+        if !live() { return None; }
         builder.token(token);
     }
     let mut doc = builder.finish();
@@ -77,7 +83,7 @@ pub fn parse(source: &str) -> Document {
     doc.quirks = !start
         .get(..14)
         .is_some_and(|s| s.eq_ignore_ascii_case("<!doctype html"));
-    doc
+    live().then_some(doc)
 }
 
 enum Token {

@@ -90,10 +90,15 @@ const MAX_SELECTOR_PARTS: usize = 64;
 const MAX_MATCH_STEPS: usize = 100_000;
 
 pub fn parse_stylesheet(source: &str) -> Stylesheet {
+    parse_stylesheet_cancellable(source, &|| true).expect("uncancelled parse")
+}
+
+pub fn parse_stylesheet_cancellable(source: &str, live: &dyn Fn() -> bool) -> Option<Stylesheet> {
+    if !live() { return None; }
     let source = strip_comments(source);
     let mut sheet = Stylesheet::default();
-    parse_rules(&source, None, &mut sheet, 0);
-    sheet
+    parse_rules(&source, None, &mut sheet, 0, live);
+    live().then_some(sheet)
 }
 
 fn strip_comments(s: &str) -> String {
@@ -168,8 +173,9 @@ std::thread_local! {
     static PRELUDE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-fn parse_rules(mut s: &str, media: Option<&str>, sheet: &mut Stylesheet, depth: u32) {
+fn parse_rules(mut s: &str, media: Option<&str>, sheet: &mut Stylesheet, depth: u32, live: &dyn Fn() -> bool) {
     loop {
+        if !live() { return; }
         s = s.trim_start();
         if s.is_empty() {
             return;
@@ -206,13 +212,13 @@ fn parse_rules(mut s: &str, media: Option<&str>, sheet: &mut Stylesheet, depth: 
                         Some(outer) => format!("{outer}&&{condition}"),
                         None => condition.to_string(),
                     };
-                    parse_rules(body, Some(&combined), sheet, depth + 1);
+                    parse_rules(body, Some(&combined), sheet, depth + 1, live);
                 }
                 "supports" if !condition.trim_start().starts_with("not") => {
-                    parse_rules(body, media, sheet, depth + 1)
+                    parse_rules(body, media, sheet, depth + 1, live)
                 }
                 "layer" | "document" | "-moz-document" | "container" | "scope" => {
-                    parse_rules(body, media, sheet, depth + 1)
+                    parse_rules(body, media, sheet, depth + 1, live)
                 }
                 _ => {}
             }
