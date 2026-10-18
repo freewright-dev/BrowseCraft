@@ -2,7 +2,7 @@
 
 <h1 align="center">BrowseCraft</h1>
 
-<p align="center">Part of <a href="https://github.com/openfield-labs">Openfield Labs</a></p>
+<p align="center">Part of <a href="https://github.com/freewright-dev">Freewright</a></p>
 
 An experimental open-source desktop browser written in Rust, with tabs,
 a built-in ad blocker and a custom HTML/CSS renderer.
@@ -35,7 +35,7 @@ available, and by the engine otherwise.
 
 ## Engine direction: Servo
 
-[The architecture decision](https://github.com/openfield-labs/BrowseCraft/issues/65#issuecomment-6251509599)
+[The architecture decision](https://github.com/freewright-dev/BrowseCraft/issues/65#issuecomment-6251509599)
 selects **Servo** as the future independent website engine. **Servo is not yet
 integrated or available as a selectable backend.** The plan is to retain Rust
 and egui/winit for the application and reuse Servo's page engine rather than
@@ -44,7 +44,7 @@ build a second general-purpose DOM, layout and JavaScript stack.
 Existing native web views stay in place until the integration passes explicit
 compatibility, packaging and security gates. Windows renderer containment is
 an unresolved release blocker; this decision is not a production-readiness
-claim. Track the work in [the engine roadmap](https://github.com/openfield-labs/BrowseCraft/issues/75).
+claim. Track the work in [the engine roadmap](https://github.com/freewright-dev/BrowseCraft/issues/75).
 
 ## Features
 
