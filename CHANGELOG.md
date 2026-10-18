@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Declared GPL-3.0-or-later licensing with the full license text and uBlock Origin attribution; added an explicit dependency license/source policy.
 - The internal pages moved from `craft://` to `browsecraft://` (`browsecraft://flags`, `browsecraft://history`), and the repository moved to `pierruno-labs/browsecraft`.
 - Replaced the original wry/tao-only browser with a hybrid design: BrowseCraft's own engine and winit window draw the chrome and internal pages, while websites render in an embedded WebView2 pane. The HTML toolbar webview is gone; the toolbar is drawn by the engine or by egui.
 - Searches use Startpage instead of DuckDuckGo.
@@ -41,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Updated rustls to 0.23.46 for four TLS advisories and wry to 0.55.1 to remove the affected fxhash/rand dependency chains. Remaining GTK/font maintenance advisories are tracked in `docs/dependencies.md` (#54).
 - Nested `:is()`/`:not()` selector matching now shares cached results and a work budget, preventing the reported CPU-exhaustion path in the custom engine ([#48](https://github.com/pierruno-labs/BrowseCraft/issues/48), [PR #58](https://github.com/pierruno-labs/BrowseCraft/pull/58)).
 - Matching selector lists apply each rule's declarations once using the greatest matching specificity and rule source order, removing multiplicative cascade allocations. An aggregate per-element declaration limit bounds cascade size ([#49](https://github.com/pierruno-labs/BrowseCraft/issues/49), [PR #58](https://github.com/pierruno-labs/BrowseCraft/pull/58)).
 - Long sibling-selector chains are rejected by a shared 64-part selector-tree limit; runtime recursion is also bounded to prevent stack overflow, including combinations with nested pseudo-selectors ([#50](https://github.com/pierruno-labs/BrowseCraft/issues/50), [PR #58](https://github.com/pierruno-labs/BrowseCraft/pull/58)).

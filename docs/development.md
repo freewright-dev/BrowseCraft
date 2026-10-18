@@ -129,6 +129,10 @@ cache design are described in [architecture](architecture.md#parsing-and-sibling
 
 ## Common changes
 
+For dependency upgrades, run `cargo audit` and `cargo deny check` as well as
+the build/tests. See [dependency maintenance](dependencies.md) for the current
+target-specific advisories and license/source policy.
+
 - **Default styles:** `src/ua.css`.
 - **A new CSS property:** add it to `Style` and `apply()` in `style.rs` (and to `expand_shorthand()` if it is a shorthand), then use it in `layout.rs`.
 - **Home page:** `src/home.html`. **Search engine:** `SEARCH_URL` in `src/address.rs`.
