@@ -180,10 +180,14 @@ webview rectangles.
 ## Flags and `browsecraft://`
 
 `flags.rs` holds user settings (`tabs-position`, `theme`, `chrome`) in a
-`RwLock`, persisted as `key=value` lines in `flags.txt` in the working
-directory. `browsecraft://flags` is an engine-internal page: `loader.rs` parses its
-query string with `flags::apply_query`, and the radio buttons submit
-`browsecraft://flags?key=value`. `browsecraft://` URLs are routed to the engine by
+`RwLock`, persisted as `key=value` lines in the per-user configuration directory.
+An exclusive temporary file is synced, then atomically replaces `flags.txt`;
+memory changes only after a successful save. `browsecraft://flags` is an
+engine-internal page: `loader.rs` passes its query to `flags::apply_form`.
+Each form owns a 128-bit OS-random one-time token. Up to 128 forms may remain
+outstanding; issuing a new token preserves other tabs, evicting only the oldest
+entry when full. Submitting consumes only that form's token, and replayed or
+evicted forms show an expiration message. `browsecraft://` URLs are routed to the engine by
 `request_in_webview`. The theme toggle (toolbar sun/moon) flips `theme` between
 Light and Dark; `Auto` follows the OS.
 
