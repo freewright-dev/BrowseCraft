@@ -146,6 +146,12 @@ underneath.
 
 ## Painting
 
+Windows screenshot capture validates signed crop conversions, client bounds,
+row offsets and checked byte counts before acquiring GDI resources. Both the
+full-client and cropped RGBA buffers are limited to 128 MiB each and allocated
+fallibly. Bitmap selection/restoration is checked before `GetDIBits`; resource
+guards release the memory DC before its bitmap on every exit path.
+
 `paint::paint_items` draws only the items that intersect the viewport into a
 `u32` buffer, using alpha blending, anti-aliased rounded rectangles and cached
 glyph bitmaps. On the engine chrome path the browser draws its toolbar and
