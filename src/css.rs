@@ -131,6 +131,43 @@ fn block_end(s: &str) -> usize {
     s.len()
 }
 
+/// Find the first top-level at-rule delimiter in one forward scan. Looking
+/// for '{' and ';' independently rescans the entire remaining stylesheet when
+/// one delimiter is absent. Quoted/escaped text and function arguments cannot
+/// terminate a prelude (notably semicolons in data URLs).
+fn prelude_delimiter(s: &str) -> Option<(usize, char)> {
+    let mut quote = None;
+    let mut escaped = false;
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        #[cfg(test)]
+        PRELUDE_VISITS.with(|visits| visits.set(visits.get() + 1));
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '(' | '[') => depth += 1,
+            (None, ')' | ']') => depth = depth.saturating_sub(1),
+            (None, '{' | ';') if depth == 0 => return Some((i, c)),
+            _ => {}
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static PRELUDE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn parse_rules(mut s: &str, media: Option<&str>, sheet: &mut Stylesheet, depth: u32) {
     loop {
         s = s.trim_start();
@@ -142,19 +179,20 @@ fn parse_rules(mut s: &str, media: Option<&str>, sheet: &mut Stylesheet, depth: 
             continue;
         }
         if s.starts_with('@') {
-            let brace = s.find('{');
-            let semi = s.find(';');
-            if semi.is_some_and(|semi| brace.is_none_or(|b| semi < b)) {
-                let statement = &s[..semi.unwrap()];
+            let Some((delimiter, kind)) = prelude_delimiter(s) else {
+                return;
+            };
+            if kind == ';' {
+                let statement = &s[..delimiter];
                 if let Some(url) = statement.strip_prefix("@import")
                     && let Some(url) = import_url(url)
                 {
                     sheet.imports.push(url);
                 }
-                s = &s[semi.unwrap() + 1..];
+                s = &s[delimiter + 1..];
                 continue;
             }
-            let Some(brace) = brace else { return };
+            let brace = delimiter;
             let prelude = s[1..brace].trim();
             let body_len = block_end(&s[brace + 1..]);
             let body = &s[brace + 1..brace + 1 + body_len];
@@ -710,12 +748,12 @@ fn pseudo_matches<'a>(
         Pseudo::OnlyChild => {
             doc.previous_elements(node).next().is_none() && doc.next_elements(node).next().is_none()
         }
-        Pseudo::FirstOfType => !doc.previous_elements(node).any(|s| doc.tag(s) == tag),
-        Pseudo::LastOfType => !doc.next_elements(node).any(|s| doc.tag(s) == tag),
+        Pseudo::FirstOfType => doc.element_type_index(node) == 1,
+        Pseudo::LastOfType => doc.is_last_of_type(node),
         Pseudo::NthChild(a, b) => {
             // i64 so that `index - b` and `% a` cannot overflow i32 (e.g.
             // `-n-2147483647` would otherwise compute `i32::MIN % -1`).
-            let index = doc.previous_elements(node).count() as i64 + 1;
+            let index = doc.element_index(node) as i64;
             let (a, b) = (i64::from(*a), i64::from(*b));
             match a {
                 0 => index == b,
@@ -1239,6 +1277,52 @@ mod tests {
         assert!(!media_matches("print", 700.0));
         assert!(media_matches("screen and (min-width: 40em)", 700.0));
         assert!(media_matches("(width >= 600px)", 700.0));
+    }
+
+    #[test]
+    fn sibling_at_rules_scan_only_their_own_preludes() {
+        // Exercise both missing-delimiter distributions: blocks with no ';',
+        // and statements with no '{'. The final rule must still be parsed.
+        for count in [25_000, 50_000, 100_000] {
+            for rule in ["@media all{}", "@unknown value;"] {
+                let source = rule.repeat(count) + "p{color:red}";
+                PRELUDE_VISITS.with(|visits| visits.set(0));
+                let sheet = parse_stylesheet(&source);
+                assert_eq!(sheet.rules.len(), 1);
+                assert_eq!(sheet.rules[0].declarations[0].value, "red");
+                let visited = PRELUDE_VISITS.with(|visits| visits.get());
+                assert!(visited >= count);
+                assert!(
+                    visited <= source.len(),
+                    "{count} rules scanned {visited} chars"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn at_rule_delimiters_respect_quotes_escapes_and_arguments() {
+        let source = r#"@import "a;{b}.css";
+            @import url(data:text/css,p%7Bcolor:red%7D);
+            @unknown escaped\;name;
+            @unknown "escaped\";{still quoted}";
+            @supports (x: "é;{quoted}") {p{color:red}}
+            @media screen { @supports (x: url(a;b)) {i{color:blue}} }
+            @unknown unfinished"#;
+        let sheet = parse_stylesheet(source);
+        assert_eq!(
+            sheet.imports,
+            ["a;{b}.css", "data:text/css,p%7Bcolor:red%7D"]
+        );
+        assert_eq!(sheet.rules.len(), 2);
+        assert_eq!(sheet.rules[0].declarations[0].value, "red");
+        assert_eq!(sheet.rules[1].declarations[0].value, "blue");
+        assert_eq!(sheet.rules[1].media.as_deref(), Some("screen"));
+        assert!(
+            parse_stylesheet("@unknown \"unterminated;{p{color:red}")
+                .rules
+                .is_empty()
+        );
     }
 
     #[test]
