@@ -1,7 +1,7 @@
 //! CSS parsing: stylesheets, selectors, declarations and the value types the
 //! style system understands.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use crate::dom::{Document, NodeId};
 
@@ -82,6 +82,12 @@ pub enum Pseudo {
 /// may go. Deeper input is dropped as invalid rather than recursing until the
 /// stack overflows.
 const MAX_NESTING: u32 = 32;
+
+/// Bound successful combinator recursion as well as nested pseudo selectors.
+/// 64 compound parts across the entire selector tree leaves ample room for
+/// ordinary selectors while fitting comfortably on a default worker stack.
+const MAX_SELECTOR_PARTS: usize = 64;
+const MAX_MATCH_STEPS: usize = 100_000;
 
 pub fn parse_stylesheet(source: &str) -> Stylesheet {
     let source = strip_comments(source);
@@ -265,11 +271,15 @@ pub fn parse_declarations(s: &str) -> Vec<Declaration> {
 }
 
 pub fn parse_selector(s: &str) -> Option<Selector> {
-    selector_at(s, 0)
+    // The extra slot is a sticky exhaustion sentinel: a forgiving pseudo list
+    // must not turn an over-budget child into an empty, matching :not().
+    let mut remaining = MAX_SELECTOR_PARTS + 1;
+    let selector = selector_at(s, 0, &mut remaining)?;
+    (remaining > 0).then_some(selector)
 }
 
 /// `parse_selector` for a selector nested `depth` pseudo-classes deep.
-fn selector_at(s: &str, depth: u32) -> Option<Selector> {
+fn selector_at(s: &str, depth: u32, remaining: &mut usize) -> Option<Selector> {
     let mut parts: Vec<(Compound, Combinator)> = Vec::new();
     let mut pending = Combinator::None;
     let mut rest = s.trim();
@@ -277,7 +287,11 @@ fn selector_at(s: &str, depth: u32) -> Option<Selector> {
         return None;
     }
     while !rest.is_empty() {
-        let (compound, after) = parse_compound(rest, depth)?;
+        *remaining = remaining.saturating_sub(1);
+        if *remaining == 0 {
+            return None;
+        }
+        let (compound, after) = parse_compound(rest, depth, remaining)?;
         parts.push((compound, pending));
         let trimmed = after.trim_start();
         let had_space = trimmed.len() != after.len();
@@ -342,7 +356,11 @@ fn ident_end(s: &str) -> usize {
         .unwrap_or(s.len())
 }
 
-fn parse_compound(s: &str, depth: u32) -> Option<(Compound, &str)> {
+fn parse_compound<'a>(
+    s: &'a str,
+    depth: u32,
+    remaining: &mut usize,
+) -> Option<(Compound, &'a str)> {
     let mut c = Compound::default();
     let mut rest = s;
     let start_len = s.len();
@@ -393,7 +411,7 @@ fn parse_compound(s: &str, depth: u32) -> Option<(Compound, &str)> {
                 c.pseudos.push(if element {
                     Pseudo::Never
                 } else {
-                    parse_pseudo(&name, arg, depth)
+                    parse_pseudo(&name, arg, depth, remaining)
                 });
             }
             _ => break,
@@ -450,12 +468,12 @@ fn parse_attr_selector(s: &str) -> Option<AttrSelector> {
     })
 }
 
-fn parse_pseudo(name: &str, arg: Option<&str>, depth: u32) -> Pseudo {
-    let list = |arg: Option<&str>| -> Vec<Selector> {
+fn parse_pseudo(name: &str, arg: Option<&str>, depth: u32, remaining: &mut usize) -> Pseudo {
+    let mut list = |arg: Option<&str>| -> Vec<Selector> {
         arg.map(|a| {
             split_top_level(a, ',')
                 .into_iter()
-                .filter_map(|s| selector_at(s.trim(), depth + 1))
+                .filter_map(|s| selector_at(s.trim(), depth + 1, remaining))
                 .collect()
         })
         .unwrap_or_default()
@@ -508,8 +526,20 @@ fn parse_nth(s: &str) -> Option<(i32, i32)> {
 }
 
 impl Selector {
+    // Production styling shares a context across candidates for an element.
+    #[cfg(test)]
     pub fn matches(&self, doc: &Document, node: NodeId) -> bool {
-        matches_from(&self.parts, doc, node, &mut HashSet::new())
+        self.matches_with_context(doc, node, &mut MatchContext::new())
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn matches_with_context<'a>(
+        &'a self,
+        doc: &'a Document,
+        node: NodeId,
+        ctx: &mut MatchContext<'a>,
+    ) -> Result<bool, ()> {
+        matches_from(&self.parts, doc, node, ctx, 0)
     }
 
     /// The most selective key of the subject, for rule bucketing.
@@ -535,63 +565,113 @@ pub enum SelectorKey {
     Universal,
 }
 
-/// Matches `parts` (subject first) against `node`.
-///
-/// The result depends only on how many parts are left and on the node, so
-/// `failed` remembers `(parts.len(), node)` pairs that did not match. Without
-/// it, `a b c …` descendant or `~` chains backtrack exponentially in depth.
-fn matches_from(
-    parts: &[(Compound, Combinator)],
-    doc: &Document,
-    node: NodeId,
-    failed: &mut HashSet<(usize, NodeId)>,
-) -> bool {
-    let Some(((compound, _), rest)) = parts.split_first() else {
-        return true;
-    };
-    if failed.contains(&(parts.len(), node)) {
-        return false;
-    }
-    let matched = compound_matches(compound, doc, node)
-        && match rest.first().map(|(_, c)| c) {
-            None | Some(Combinator::None) => true,
-            Some(Combinator::Child) => doc
-                .parent_element(node)
-                .is_some_and(|p| matches_from(rest, doc, p, failed)),
-            Some(Combinator::Descendant) => doc
-                .ancestors(node)
-                .filter(|&a| doc.element(a).is_some())
-                .any(|a| matches_from(rest, doc, a, failed)),
-            Some(Combinator::NextSibling) => doc
-                .previous_elements(node)
-                .next()
-                .is_some_and(|s| matches_from(rest, doc, s, failed)),
-            Some(Combinator::LaterSibling) => doc
-                .previous_elements(node)
-                .any(|s| matches_from(rest, doc, s, failed)),
-        };
-    if !matched {
-        failed.insert((parts.len(), node));
-    }
-    matched
+/// One context spans pseudo boundaries and (during styling) all candidates for
+/// an element. Both successful and failed states are memoized. Slice addresses
+/// identify selector suffixes, not merely their lengths; the lifetime keeps
+/// those selectors and the document alive while cached addresses are in use.
+pub(crate) struct MatchContext<'a> {
+    results: HashMap<(usize, usize, NodeId), bool>,
+    remaining: usize,
+    lifetime: std::marker::PhantomData<(&'a Selector, &'a Document)>,
 }
 
-fn compound_matches(c: &Compound, doc: &Document, node: NodeId) -> bool {
+impl MatchContext<'_> {
+    pub(crate) fn new() -> Self {
+        Self {
+            results: HashMap::new(),
+            remaining: MAX_MATCH_STEPS,
+            lifetime: std::marker::PhantomData,
+        }
+    }
+
+    fn step(&mut self) -> Result<(), ()> {
+        self.remaining = self.remaining.checked_sub(1).ok_or(())?;
+        Ok(())
+    }
+}
+
+fn matches_from<'a>(
+    parts: &'a [(Compound, Combinator)],
+    doc: &'a Document,
+    node: NodeId,
+    ctx: &mut MatchContext<'a>,
+    depth: usize,
+) -> Result<bool, ()> {
+    ctx.step()?;
+    // Also protect callers that construct Selectors directly rather than
+    // passing through the parser. Exhaustion is an error, never negatable.
+    if depth >= MAX_SELECTOR_PARTS {
+        return Err(());
+    }
+    let Some(((compound, _), rest)) = parts.split_first() else {
+        return Ok(true);
+    };
+    let key = (parts.as_ptr() as usize, parts.len(), node);
+    if let Some(&matched) = ctx.results.get(&key) {
+        return Ok(matched);
+    }
+    let matched = compound_matches(compound, doc, node, ctx, depth + 1)?
+        && match rest.first().map(|(_, c)| c) {
+            None | Some(Combinator::None) => true,
+            Some(Combinator::Child) => match doc.parent_element(node) {
+                Some(p) => matches_from(rest, doc, p, ctx, depth + 1)?,
+                None => false,
+            },
+            Some(Combinator::Descendant) => {
+                let mut found = false;
+                for ancestor in doc.ancestors(node).filter(|&a| doc.element(a).is_some()) {
+                    if matches_from(rest, doc, ancestor, ctx, depth + 1)? {
+                        found = true;
+                        break;
+                    }
+                }
+                found
+            }
+            Some(Combinator::NextSibling) => match doc.previous_elements(node).next() {
+                Some(s) => matches_from(rest, doc, s, ctx, depth + 1)?,
+                None => false,
+            },
+            Some(Combinator::LaterSibling) => {
+                let mut found = false;
+                for sibling in doc.previous_elements(node) {
+                    if matches_from(rest, doc, sibling, ctx, depth + 1)? {
+                        found = true;
+                        break;
+                    }
+                }
+                found
+            }
+        };
+    ctx.results.insert(key, matched);
+    Ok(matched)
+}
+
+fn compound_matches<'a>(
+    c: &'a Compound,
+    doc: &'a Document,
+    node: NodeId,
+    ctx: &mut MatchContext<'a>,
+    depth: usize,
+) -> Result<bool, ()> {
     let Some(el) = doc.element(node) else {
-        return false;
+        return Ok(false);
     };
     if c.tag.as_ref().is_some_and(|t| *t != el.tag) {
-        return false;
+        return Ok(false);
     }
     if c.id.as_ref().is_some_and(|id| el.id() != Some(id)) {
-        return false;
+        return Ok(false);
     }
-    if !c.classes.iter().all(|class| el.has_class(class)) {
-        return false;
+    for class in &c.classes {
+        ctx.step()?;
+        if !el.has_class(class) {
+            return Ok(false);
+        }
     }
     for a in &c.attrs {
+        ctx.step()?;
         let Some(value) = el.attr(&a.name) else {
-            return false;
+            return Ok(false);
         };
         let ok = match &a.op {
             None => true,
@@ -604,15 +684,27 @@ fn compound_matches(c: &Compound, doc: &Document, node: NodeId) -> bool {
             Some(_) => false,
         };
         if !ok {
-            return false;
+            return Ok(false);
         }
     }
-    c.pseudos.iter().all(|p| pseudo_matches(p, doc, node))
+    for p in &c.pseudos {
+        ctx.step()?;
+        if !pseudo_matches(p, doc, node, ctx, depth)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
-fn pseudo_matches(p: &Pseudo, doc: &Document, node: NodeId) -> bool {
+fn pseudo_matches<'a>(
+    p: &'a Pseudo,
+    doc: &'a Document,
+    node: NodeId,
+    ctx: &mut MatchContext<'a>,
+    depth: usize,
+) -> Result<bool, ()> {
     let tag = doc.tag(node);
-    match p {
+    Ok(match p {
         Pseudo::FirstChild => doc.previous_elements(node).next().is_none(),
         Pseudo::LastChild => doc.next_elements(node).next().is_none(),
         Pseudo::OnlyChild => {
@@ -633,10 +725,22 @@ fn pseudo_matches(p: &Pseudo, doc: &Document, node: NodeId) -> bool {
         Pseudo::Root => tag == "html",
         Pseudo::Link => tag == "a" && doc.element(node).is_some_and(|e| e.attr("href").is_some()),
         Pseudo::Empty => doc.nodes[node].children.is_empty(),
-        Pseudo::Not(list) => !list.iter().any(|s| s.matches(doc, node)),
-        Pseudo::Is(list) => list.iter().any(|s| s.matches(doc, node)),
+        Pseudo::Not(list) | Pseudo::Is(list) => {
+            let mut found = false;
+            for selector in list {
+                if matches_from(&selector.parts, doc, node, ctx, depth)? {
+                    found = true;
+                    break;
+                }
+            }
+            if matches!(p, Pseudo::Not(_)) {
+                !found
+            } else {
+                found
+            }
+        }
         Pseudo::Never => false,
-    }
+    })
 }
 
 /// Evaluates a media query list against the viewport width in CSS pixels.
@@ -1245,6 +1349,140 @@ mod tests {
         assert!(!parse_selector(&sel).unwrap().matches(&doc, i));
         let sel = format!("{} ~ i", ["b"; 12].join(" ~ "));
         assert!(parse_selector(&sel).unwrap().matches(&doc, i));
+    }
+
+    #[test]
+    fn nested_pseudos_share_memoized_results() {
+        let doc = html::parse(&"<div>".repeat(64));
+        let node = (0..doc.nodes.len())
+            .rfind(|&n| doc.tag(n) == "div")
+            .unwrap();
+        for (base, expected) in [(".missing", false), ("div", true)] {
+            for double_not in [false, true] {
+                let mut source = base.to_string();
+                for _ in 0..7 {
+                    source = if double_not {
+                        format!(":not(:not({source})) div")
+                    } else {
+                        format!(":is({source}) div")
+                    };
+                }
+                let selector = parse_selector(&source).unwrap();
+                let mut ctx = MatchContext::new();
+                assert_eq!(
+                    selector.matches_with_context(&doc, node, &mut ctx),
+                    Ok(expected)
+                );
+                // Count work, not elapsed time: the old false case revisited
+                // inner states combinatorially even for this tiny selector.
+                assert!(MAX_MATCH_STEPS - ctx.remaining < 40_000);
+                assert!(ctx.results.len() < 2500);
+            }
+        }
+    }
+
+    #[test]
+    fn memo_keys_distinguish_nested_selectors_and_nodes() {
+        let doc = html::parse("<div><p></p></div>");
+        let node = doc.find_tag("p").unwrap();
+        for (source, expected) in [
+            ("p:is(.missing, p)", true),
+            ("p:not(.missing):is(p)", true),
+            ("p:is(p):not(p)", false),
+            (":is(.missing, :not(.missing))", true),
+            (":is(.missing) :is(p)", false),
+            (":is(div) :is(p)", true),
+        ] {
+            assert_eq!(
+                parse_selector(source).unwrap().matches(&doc, node),
+                expected,
+                "{source}"
+            );
+        }
+        let selector = parse_selector("p").unwrap();
+        let mut ctx = MatchContext::new();
+        assert_eq!(
+            selector.matches_with_context(&doc, node, &mut ctx),
+            Ok(true)
+        );
+        assert_eq!(
+            selector.matches_with_context(&doc, doc.find_tag("div").unwrap(), &mut ctx),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn match_budget_exhaustion_is_not_negated_or_cached() {
+        let doc = html::parse("<p class=a></p>");
+        let node = doc.find_tag("p").unwrap();
+        for source in ["p:not(.missing)", "p:is(:not(.missing))", "p:not(:not(p))"] {
+            let selector = parse_selector(source).unwrap();
+            let mut ctx = MatchContext::new();
+            ctx.remaining = 2;
+            assert_eq!(selector.matches_with_context(&doc, node, &mut ctx), Err(()));
+            assert!(ctx.results.is_empty());
+            assert_eq!(ctx.remaining, 0);
+        }
+        // Exercise the public entry point's actual budget, too.
+        let selector =
+            parse_selector(&format!("p:not({}.missing)", ".a".repeat(MAX_MATCH_STEPS))).unwrap();
+        assert!(!selector.matches(&doc, node));
+    }
+
+    #[test]
+    fn selector_chain_subprocess() {
+        const CHILD: &str = "BROWSECRAFT_SELECTOR_CHAIN_TEST";
+        if std::env::var_os(CHILD).is_some() {
+            std::thread::Builder::new()
+                .stack_size(2 << 20)
+                .spawn(|| {
+                    let doc = html::parse(&"<i></i>".repeat(50_000));
+                    let last = (0..doc.nodes.len()).rfind(|&n| doc.tag(n) == "i").unwrap();
+                    assert!(parse_selector(&vec!["i"; 50_000].join("+")).is_none());
+                    let accepted = vec!["i"; MAX_SELECTOR_PARTS].join("+");
+                    assert!(parse_selector(&accepted).unwrap().matches(&doc, last));
+                    let nested = format!(
+                        "{}+:is({})",
+                        vec!["i"; 31].join("+"),
+                        vec!["i"; 32].join("+")
+                    );
+                    assert!(parse_selector(&nested).unwrap().matches(&doc, last));
+                    for pseudo in ["is", "not"] {
+                        assert!(parse_selector(&format!("i:{pseudo}({accepted})")).is_none());
+                    }
+                    // The public representation can bypass the parser; runtime
+                    // depth must still be bounded on long successful chains.
+                    let mut direct = parse_selector("i+i").unwrap();
+                    direct.parts.resize(50_000, direct.parts[1].clone());
+                    assert!(!direct.matches(&doc, last));
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            return;
+        }
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "css::tests::selector_chain_subprocess",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .spawn()
+            .unwrap();
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "selector child exited with {status}");
+                break;
+            }
+            if start.elapsed() > std::time::Duration::from_secs(15) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("selector child exceeded its deadline");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]

@@ -73,11 +73,25 @@ events from an outdated load are dropped.
 
 `style::compute_styles` gives every node an `Rc<Style>`. Rules are bucketed by
 the subject's id, class or tag, so each element only tests likely selectors.
+Each rule contributes its declarations once, using the greatest specificity
+among its matching selectors and the rule's source order.
 Declarations are sorted by importance, origin (UA, HTML hints, author, inline),
 specificity and order. Custom properties resolve first so `var()` can be
 substituted, then shorthands expand into longhands. Lengths come out in
 **device pixels** (CSS px × scale factor × zoom); percentages stay for layout
 to resolve.
+
+Selector parsing permits at most 64 compound parts across an entire selector
+tree, including nested pseudo-selector lists. Matching also caps recursion at
+64 parts and shares memoized successes/failures across `:is()`/`:not()` calls,
+keyed by selector suffix identity and DOM node. A 100,000-step budget covers
+state visits and class/attribute/pseudo checks, shared by all candidate
+selectors for one element (or one standalone test-helper match).
+Exhaustion propagates as an error, so `:not()` cannot invert it into a match;
+styling stops evaluating further candidates for that element. The cascade
+retains at most 65,536 declarations per element, gathered in rule source order,
+then HTML hints and inline styles; excess declarations are ignored before
+sorting and value expansion. These limits apply to the custom engine.
 
 Styles depend on the viewport only through media queries and viewport units,
 so the browser restyles only when the set of matching `@media` queries or the

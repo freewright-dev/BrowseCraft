@@ -393,6 +393,13 @@ const ORIGIN_HINT: u8 = 1;
 const ORIGIN_AUTHOR: u8 = 2;
 const ORIGIN_INLINE: u8 = 3;
 
+/// Aggregate cap across matching rules, hints and inline styles for one
+/// element. Excess declarations are ignored in source order, before sorting
+/// or expanding values, so even many distinct rules cannot grow the cascade
+/// without bound.
+const MAX_CASCADE_DECLARATIONS: usize = 65_536;
+type CascadeEntry<'a> = (bool, u8, (u16, u16, u16), u32, &'a Declaration);
+
 /// Rules from every stylesheet that applies at the current viewport width,
 /// bucketed by the most selective part of their subject.
 struct RuleIndex<'a> {
@@ -416,8 +423,9 @@ impl<'a> RuleIndex<'a> {
                 {
                     continue;
                 }
+                // Rule identity/source order is shared by its selector list.
+                order += 1;
                 for selector in &rule.selectors {
-                    order += 1;
                     buckets.entry(selector.key()).or_default().push(Entry {
                         selector,
                         declarations: &rule.declarations,
@@ -446,13 +454,39 @@ impl<'a> RuleIndex<'a> {
                 .into_iter()
                 .map(|c| SelectorKey::Class(c.to_string())),
         );
-        let mut out = Vec::new();
-        for key in &keys {
+        let mut out: HashMap<u32, &Entry<'a>> = HashMap::new();
+        let mut ctx = css::MatchContext::new();
+        'buckets: for key in &keys {
             if let Some(entries) = self.buckets.get(key) {
-                out.extend(entries.iter().filter(|e| e.selector.matches(doc, node)));
+                for e in entries {
+                    match e.selector.matches_with_context(doc, node, &mut ctx) {
+                        Ok(true) => {
+                            let best = out.entry(e.order).or_insert(e);
+                            if e.selector.specificity > best.selector.specificity {
+                                *best = e;
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(()) => break 'buckets,
+                    }
+                }
             }
         }
+        let mut out: Vec<_> = out.into_values().collect();
+        out.sort_unstable_by_key(|e| e.order);
         out
+    }
+
+    fn cascade(&self, doc: &Document, node: NodeId) -> Vec<CascadeEntry<'a>> {
+        self.matching(doc, node)
+            .into_iter()
+            .flat_map(|e| {
+                e.declarations
+                    .iter()
+                    .map(move |d| (d.important, e.origin, e.selector.specificity, e.order, d))
+            })
+            .take(MAX_CASCADE_DECLARATIONS)
+            .collect()
     }
 }
 
@@ -510,21 +544,16 @@ fn compute_element(
     root_font: f32,
 ) -> Style {
     let el = doc.element(node).expect("element");
-    let mut entries: Vec<(bool, u8, (u16, u16, u16), u32, &Declaration)> = Vec::new();
-    for e in index.matching(doc, node) {
-        for d in e.declarations {
-            entries.push((d.important, e.origin, e.selector.specificity, e.order, d));
-        }
-    }
+    let mut entries = index.cascade(doc, node);
     let hints = presentational_hints(doc, node);
-    for d in &hints {
+    for d in hints.iter().take(MAX_CASCADE_DECLARATIONS - entries.len()) {
         entries.push((false, ORIGIN_HINT, (0, 0, 0), 0, d));
     }
     let inline = el
         .attr("style")
         .map(css::parse_declarations)
         .unwrap_or_default();
-    for d in &inline {
+    for d in inline.iter().take(MAX_CASCADE_DECLARATIONS - entries.len()) {
         entries.push((d.important, ORIGIN_INLINE, (0, 0, 0), u32::MAX, d));
     }
     entries.sort_by_key(|a| (a.0, a.1, a.2, a.3));
@@ -1600,6 +1629,79 @@ mod tests {
         assert_eq!(s.color, Color::rgb(0, 128, 0));
         assert_eq!(s.margin[3], Length::Px(9.0));
         assert_eq!(s.margin[0], Length::Px(16.0));
+    }
+
+    #[test]
+    fn selector_lists_expand_each_rule_once() {
+        let doc = html::parse("<p id=x class=c>t</p>");
+        let p = doc.find_tag("p").unwrap();
+        for n in [1000, 4000, 10_000] {
+            let source = format!("{}{{{}}}", vec!["p"; n].join(","), "width:1px;".repeat(n));
+            let sheets = [css::parse_stylesheet(&source)];
+            let index = RuleIndex::new(&sheets, 800.0, doc.quirks);
+            let cascade = index.cascade(&doc, p);
+            assert_eq!(cascade.iter().filter(|e| e.1 == ORIGIN_AUTHOR).count(), n);
+        }
+
+        let sheets = [css::parse_stylesheet("p, .c, #x { width:1px; width:2px }")];
+        let index = RuleIndex::new(&sheets, 800.0, doc.quirks);
+        let cascade = index.cascade(&doc, p);
+        let author: Vec<_> = cascade.iter().filter(|e| e.1 == ORIGIN_AUTHOR).collect();
+        assert_eq!(author.len(), 2);
+        assert!(author.iter().all(|e| e.2 == (1, 0, 0)));
+    }
+
+    #[test]
+    fn selector_lists_preserve_specificity_source_order_and_important() {
+        for source in [
+            ".c {color:blue} p, #x {color:red}",
+            "#x, p {color:red} .c {color:blue}",
+            "#x {color:blue} p, #x {color:red}",
+            "p, #x {color:blue} #x {color:red}",
+            "#absent, p {color:blue} .c {color:red}",
+            "p, #x {color:blue} .c {color:red !important}",
+            "p, #x {color:blue; color:red}",
+        ] {
+            let s = style_of("<p id=x class=c>t</p>", source, "p");
+            assert_eq!(s.color, Color::rgb(255, 0, 0), "{source}");
+        }
+        let doc = html::parse("<p>t</p>");
+        let sheets = [
+            css::parse_stylesheet("p,p{color:blue}"),
+            css::parse_stylesheet("p{color:red}"),
+        ];
+        let styles = compute_styles(
+            &doc,
+            &sheets,
+            &StyleContext {
+                zoom: 1.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+            },
+        );
+        assert_eq!(
+            styles[doc.find_tag("p").unwrap()].color,
+            Color::rgb(255, 0, 0)
+        );
+    }
+
+    #[test]
+    fn cascade_budget_spans_distinct_rules() {
+        let doc = html::parse("<p>t</p>");
+        let source = format!(
+            "p{{{}}}p{{{}}}",
+            "width:1px;".repeat(40_000),
+            "height:2px;".repeat(40_000)
+        );
+        let sheets = [css::parse_stylesheet(&source)];
+        let index = RuleIndex::new(&sheets, 800.0, doc.quirks);
+        let cascade = index.cascade(&doc, doc.find_tag("p").unwrap());
+        assert_eq!(cascade.len(), MAX_CASCADE_DECLARATIONS);
+        assert_eq!(
+            cascade.iter().filter(|e| e.4.name == "width").count(),
+            40_000
+        );
+        assert!(cascade.iter().filter(|e| e.4.name == "height").count() < 40_000);
     }
 
     #[test]
