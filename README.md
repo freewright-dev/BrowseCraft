@@ -39,7 +39,8 @@ available, and by the engine otherwise.
 **Ad blocking**
 
 - A network and element-hiding filter engine ported from uBlock Origin's core, reading EasyList/uBO filter syntax
-- Blocks navigations, popups and subresources, and hides matching elements on both WebView2 and engine pages
+- Blocks navigations and popups; checks engine redirect destinations and native Windows WebView2 subresources before requests reach the network
+- Hides matching elements on both renderers; macOS JavaScript network hooks remain best effort
 - Ships with a starter list; drop more lists into `filters/`
 
 **Rendering engine**

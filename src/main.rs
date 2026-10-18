@@ -25,6 +25,10 @@ mod net;
 mod paint;
 mod style;
 mod textfield;
+#[cfg(test)]
+mod test_http;
+#[cfg(windows)]
+mod webview_network;
 
 use winit::event_loop::EventLoop;
 
