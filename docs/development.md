@@ -57,8 +57,14 @@ and restart; `build.bat` copies the folder into `dist\`.
 
 ## Flags
 
-Settings from `browsecraft://flags` are saved as `key=value` lines in `flags.txt` in
-the working directory (ignored by git).
+Settings from `browsecraft://flags` are saved in the per-user configuration
+folder listed in [the README](../README.md#settings). A same-directory,
+exclusively created temporary file is synced and atomically replaces
+`flags.txt`; destination symlinks/hard links do not redirect writes to their
+targets. Tests use isolated temporary directories rather than user settings.
+Save failures leave in-memory flags unchanged and are shown by the settings
+page or the toolbar notice. Working-directory settings are not migrated
+automatically; users can copy a trusted legacy file while the browser is closed.
 
 ## Headless screenshots
 
@@ -73,6 +79,18 @@ the page and all its images, then renders the full page (up to
 paint code as the window, so it's the quickest way to check a rendering change.
 
 ## Tests
+
+The fetch-input regression also requires Node.js 18 or newer (`node` on PATH).
+Native Windows network interception can be checked separately on a desktop
+with WebView2 installed:
+
+```sh
+cargo test --locked webview_network::tests -- --ignored --nocapture
+```
+
+This loopback-only integration test checks static resources, fetch input
+types (including a cross-frame Request) and redirected resources. It is
+ignored in the ordinary unit suite because it creates a native WebView2 window.
 
 ```sh
 cargo test

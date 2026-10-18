@@ -39,7 +39,8 @@ available, and by the engine otherwise.
 **Ad blocking**
 
 - A network and element-hiding filter engine ported from uBlock Origin's core, reading EasyList/uBO filter syntax
-- Blocks navigations, popups and subresources, and hides matching elements on both WebView2 and engine pages
+- Blocks navigations and popups; checks engine redirect destinations and native Windows WebView2 subresources before requests reach the network
+- Hides matching elements on both renderers; macOS JavaScript network hooks remain best effort
 - Ships with a starter list; drop more lists into `filters/`
 
 **Rendering engine**
@@ -117,7 +118,12 @@ Open `browsecraft://flags` to change:
 - **Theme:** auto (follows the OS), light or dark
 - **Chrome backend:** `auto`, `egui` (GPU) or `engine` (software). This one takes effect after a restart.
 
-Settings are saved as `key=value` lines in `flags.txt` in the working directory.
+Settings are saved atomically as `key=value` lines in the per-user configuration
+folder: `%APPDATA%\BrowseCraft\flags.txt` on Windows,
+`~/Library/Application Support/BrowseCraft/flags.txt` on macOS, or
+`$XDG_CONFIG_HOME/BrowseCraft/flags.txt` on Linux (`~/.config` by default).
+Old working-directory settings are no longer read. To retain them, close the
+browser and copy your existing `flags.txt` to the new location once.
 
 ## Ad-block filter lists
 
