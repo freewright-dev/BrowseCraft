@@ -1,20 +1,30 @@
-<p align="center"><img src="assets/logo.png" alt="" width="160"></p>
+<p align="center"><img src="assets/logo.png" alt="BrowseCraft logo" width="160"></p>
 
 <h1 align="center">BrowseCraft</h1>
 
-<p align="center">Part of <a href="https://github.com/pierruno-labs">Pierruno Labs</a></p>
+<p align="center">Part of <a href="https://github.com/openfield-labs">Openfield Labs</a></p>
 
-A small web browser written in Rust, with tabs, a built-in ad blocker and
-**its own rendering engine**.
+An experimental open-source desktop browser written in Rust, with tabs,
+a built-in ad blocker and a custom HTML/CSS renderer.
 
-BrowseCraft uses two renderers side by side:
+## Current implementation
+
+BrowseCraft currently uses a **hybrid rendering architecture**, not Servo:
 
 - **BrowseCraft's engine** draws the browser's own pages: the new-tab page
   (`about:home`), `view-source:` and the `browsecraft://` pages (`browsecraft://flags`,
   `browsecraft://history`). It parses HTML and CSS, runs the cascade, lays out the
-  page and rasterizes it in software.
-- **WebView2** (through `wry`) shows regular websites, so JavaScript-heavy
-  sites work as they would in Edge.
+  page and rasterizes it in software. It also handles all headless screenshots
+  and fallback browsing. It does not execute JavaScript.
+- **Native web views**, embedded through `wry`, show regular websites using
+  WebView2 on Windows and WKWebView on macOS. On Linux, or when the native web
+  view cannot be initialized, pages use the custom engine with its limited
+  standards support.
+
+Windows browsing therefore still depends on Edge's Chromium-based WebView2;
+the current application is not yet independent of native browser engines.
+
+The custom engine's pipeline is:
 
 ```
 URL ─► net ─► html ─► DOM ─► css + style (cascade) ─► layout ─► display list ─► paint ─► window
@@ -22,6 +32,19 @@ URL ─► net ─► html ─► DOM ─► css + style (cascade) ─► layout
 
 The toolbar and tab sidebar are drawn with egui on the GPU when one is
 available, and by the engine otherwise.
+
+## Engine direction: Servo
+
+[The architecture decision](https://github.com/openfield-labs/BrowseCraft/issues/65#issuecomment-6251509599)
+selects **Servo** as the future independent website engine. **Servo is not yet
+integrated or available as a selectable backend.** The plan is to retain Rust
+and egui/winit for the application and reuse Servo's page engine rather than
+build a second general-purpose DOM, layout and JavaScript stack.
+
+Existing native web views stay in place until the integration passes explicit
+compatibility, packaging and security gates. Windows renderer containment is
+an unresolved release blocker; this decision is not a production-readiness
+claim. Track the work in [the engine roadmap](https://github.com/openfield-labs/BrowseCraft/issues/75).
 
 ## Features
 
@@ -31,7 +54,7 @@ available, and by the engine otherwise.
 - Back, forward, reload/stop, home (Startpage) and an address bar that tells URLs from searches (searches also go to Startpage)
 - Browsing history at `browsecraft://history`
 - Light, dark or automatic theme, toggled from the toolbar
-- Settings page at `browsecraft://flags`, saved to `flags.txt`
+- Settings page at `browsecraft://flags`, saved in the per-user configuration folder (see [Settings](#settings))
 - Zoom, view source, link previews on hover and HiDPI support
 - Screenshots of the visible page (`Ctrl+Shift+S`), plus a headless `--screenshot` mode
 - A shortcut cheatsheet on `Shift+K`
@@ -85,7 +108,8 @@ build.bat clean      :: remove target\ and dist\
 Or use Cargo directly:
 
 ```sh
-cargo run --release                  # opens the start page
+cargo run --release                  # opens Startpage
+cargo run --release -- about:home     # opens the built-in new-tab page
 cargo run --release -- example.com   # opens a URL or search
 cargo run --release -- --screenshot page.png news.ycombinator.com 1200
 cargo test
