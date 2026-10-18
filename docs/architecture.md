@@ -69,6 +69,25 @@ it, and fetches every `<link rel=stylesheet>` in parallel, along with nested
 and each one triggers a relayout. Every load has a generation number, so
 events from an outdated load are dropped.
 
+## Parsing and sibling metadata
+
+CSS at-rule preludes use one forward scan to the first top-level `{` or `;`,
+respecting quotes, escapes and function/bracket nesting. A run of sibling
+at-rules therefore does not repeatedly scan the remaining stylesheet for a
+delimiter that is absent.
+
+The HTML builder retains separate attribute-name sets for the root and body
+throughout parsing. Repeated `<html>`/`<body>` tags add only unseen attributes,
+preserving the first value and insertion order without rescanning old names.
+
+`Document` lazily caches element sibling links, one-based element and same-tag
+indices, and last-of-type flags. Building this metadata visits each parent's
+children twice; subsequent first/last/nth-child and first/last-of-type checks
+use constant-time lookups. Sibling iterators skip text nodes via cached links.
+`append` and `element_mut` invalidate the cache, so structural additions and
+tag changes must use those methods. The cache is shared across matching calls
+and restyles of an unchanged document.
+
 ## Style
 
 `style::compute_styles` gives every node an `Rc<Style>`. Rules are bucketed by
