@@ -1299,7 +1299,7 @@ impl Browser {
         } else {
             flags::Theme::Dark
         };
-        flags::set(f);
+        if let Err(error) = flags::set(f) { self.set_notice(&error); }
         self.request_redraw();
     }
 

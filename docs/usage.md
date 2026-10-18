@@ -72,7 +72,8 @@ right or hidden) is set on `browsecraft://flags`.
 `browsecraft://flags` is an engine-rendered settings page. It controls the tab
 sidebar position, the theme (auto, light or dark) and the chrome backend
 (`auto`, `egui` or `engine`). Pick the options and press **Apply**; choices are
-stored in `flags.txt` in the working directory and take effect immediately.
+stored in the [per-user settings folder](../README.md#settings) and take effect
+after a successful save. Save errors are shown on the page or in the status notice.
 `auto` follows the OS for the theme, and for chrome it uses the GPU (egui) path
 when one is available, falling back to the engine otherwise. The chrome choice
 is made at startup, so restart to apply a change to it.
