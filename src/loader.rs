@@ -1,9 +1,10 @@
 //! Loads a page on a background thread: the document, its stylesheets, then
 //! its images, reporting each stage back to the UI thread.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use url::Url;
 
@@ -25,6 +26,119 @@ const MAX_SHEETS: usize = 256;
 /// Stylesheet requests per page, `@import`s included.
 const MAX_SHEET_FETCHES: usize = 128;
 const SHEET_WORKERS: usize = 6;
+const MAX_ACTIVE_LOADS: usize = 2;
+const MAX_QUEUED_LOADS: usize = 16;
+const LOAD_TIMEOUT: Duration = Duration::from_secs(60);
+
+struct Control<'a> {
+    live: &'a (dyn Fn() -> bool + Sync),
+    deadline: Option<Instant>,
+}
+
+impl Control<'_> {
+    fn active(&self) -> bool {
+        (self.live)() && self.deadline.is_none_or(|end| Instant::now() < end)
+    }
+}
+
+struct Job {
+    request: Request,
+    generation: u64,
+    current: Arc<AtomicU64>,
+    send: Arc<dyn Fn(u64, LoadEvent) + Send + Sync>,
+    deadline: Instant,
+}
+
+impl Job {
+    fn live(&self) -> bool {
+        self.current.load(Ordering::SeqCst) == self.generation
+    }
+
+    fn run(self) {
+        let control = Control {
+            live: &|| self.live(),
+            deadline: Some(self.deadline),
+        };
+        if !control.active() {
+            if self.live() {
+                (self.send)(self.generation, LoadEvent::Finished);
+            }
+            return;
+        }
+        let page = load_page_checked(&self.request, &control);
+        if control.active() {
+            let images = image_sources(&page);
+            let host = document_host(&page);
+            if control.active() {
+                (self.send)(self.generation, LoadEvent::Page(page));
+            }
+            fetch_images(
+                images,
+                MAX_PAGE_IMAGE_PIXELS,
+                &host,
+                &control,
+                |src, image| {
+                    if control.active() {
+                        (self.send)(self.generation, LoadEvent::Image { src, image });
+                    }
+                },
+            );
+        }
+        if self.live() {
+            (self.send)(self.generation, LoadEvent::Finished);
+        }
+    }
+}
+
+#[derive(Default)]
+struct LoadQueue {
+    jobs: Mutex<VecDeque<Job>>,
+    ready: Condvar,
+}
+
+impl LoadQueue {
+    fn start() -> Result<Arc<Self>, String> {
+        let queue = Arc::new(Self::default());
+        let mut workers = 0;
+        for i in 0..MAX_ACTIVE_LOADS {
+            let q = queue.clone();
+            if std::thread::Builder::new()
+                .name(format!("page-loader-{i}"))
+                .spawn(move || {
+                    loop {
+                        let job = {
+                            let mut jobs = q.jobs.lock().unwrap_or_else(|e| e.into_inner());
+                            while jobs.is_empty() {
+                                jobs = q.ready.wait(jobs).unwrap_or_else(|e| e.into_inner());
+                            }
+                            jobs.pop_front().unwrap()
+                        };
+                        job.run();
+                    }
+                })
+                .is_ok()
+            {
+                workers += 1;
+            }
+        }
+        if workers == 0 {
+            Err("Could not start a page loader.".into())
+        } else {
+            Ok(queue)
+        }
+    }
+
+    fn enqueue(&self, job: Job) -> Result<(), String> {
+        let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        jobs.retain(Job::live);
+        if jobs.len() >= MAX_QUEUED_LOADS {
+            return Err("Too many queued page loads.".into());
+        }
+        jobs.push_back(job);
+        self.ready.notify_one();
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum Request {
@@ -65,33 +179,49 @@ pub fn spawn(
     current: Arc<AtomicU64>,
     send: impl Fn(u64, LoadEvent) + Send + Sync + 'static,
 ) {
-    std::thread::spawn(move || {
-        let live = || current.load(Ordering::SeqCst) == generation;
-        let page = load_page(&request);
-        let images = image_sources(&page);
-        send(generation, LoadEvent::Page(page));
-
-        fetch_images(images, MAX_PAGE_IMAGE_PIXELS, &live, |src, image| {
-            if live() {
-                send(generation, LoadEvent::Image { src, image });
-            }
-        });
-        if live() {
+    static QUEUE: OnceLock<Result<Arc<LoadQueue>, String>> = OnceLock::new();
+    let send: Arc<dyn Fn(u64, LoadEvent) + Send + Sync> = Arc::new(send);
+    let url = request.url().to_string();
+    let job = Job {
+        request,
+        generation,
+        current: current.clone(),
+        send: send.clone(),
+        deadline: Instant::now() + LOAD_TIMEOUT,
+    };
+    let result = QUEUE
+        .get_or_init(LoadQueue::start)
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|queue| queue.enqueue(job));
+    if let Err(error) = result {
+        if current.load(Ordering::SeqCst) == generation {
+            send(generation, LoadEvent::Page(error_page(&url, &error)));
             send(generation, LoadEvent::Finished);
         }
-    });
+    }
 }
 
 /// Loads a page and all its images on the calling thread.
 pub fn load_blocking(request: &Request) -> (Page, Vec<(String, Image)>) {
-    let page = load_page(request);
+    let control = Control {
+        live: &|| true,
+        deadline: Some(Instant::now() + LOAD_TIMEOUT),
+    };
+    let page = load_page_checked(request, &control);
     let sources = image_sources(&page);
     let images = Mutex::new(Vec::new());
-    fetch_images(sources, MAX_PAGE_IMAGE_PIXELS, &|| true, |src, image| {
-        if let Ok(mut images) = images.lock() {
-            images.push((src, image));
-        }
-    });
+    fetch_images(
+        sources,
+        MAX_PAGE_IMAGE_PIXELS,
+        &document_host(&page),
+        &control,
+        |src, image| {
+            if let Ok(mut images) = images.lock() {
+                images.push((src, image));
+            }
+        },
+    );
     (page, images.into_inner().unwrap_or_default())
 }
 
@@ -117,17 +247,21 @@ fn run_workers(workers: usize, work: impl Fn() + Sync) {
 fn fetch_images(
     sources: Vec<(String, Url)>,
     budget: u64,
-    live: &(impl Fn() -> bool + Sync),
+    doc_host: &str,
+    control: &Control,
     done: impl Fn(String, Image) + Sync,
 ) {
+    if !control.active() {
+        return;
+    }
     let queue = Mutex::new(sources);
     let budget = AtomicU64::new(budget);
     run_workers(IMAGE_WORKERS, || {
-        while live() {
+        while control.active() {
             let Some((src, url)) = queue.lock().ok().and_then(|mut q| q.pop()) else {
                 break;
             };
-            if let Some(image) = fetch_image(&url, &budget) {
+            if let Some(image) = fetch_image(&url, &budget, doc_host, control) {
                 done(src, image);
             }
         }
@@ -145,8 +279,47 @@ pub fn blocked_notice_target(raw: &str) -> Option<&str> {
     (web && crate::adblock::blocked_page(inner, "")).then_some(inner)
 }
 
+#[cfg(test)]
 fn load_page(request: &Request) -> Page {
+    load_page_checked(
+        request,
+        &Control {
+            live: &|| true,
+            deadline: None,
+        },
+    )
+}
+
+fn fetch_resource(
+    url: &Url,
+    form: Option<&str>,
+    accept: &str,
+    kind: u32,
+    host: &str,
+    control: &Control,
+) -> Result<net::Response, String> {
+    net::fetch_checked(
+        url,
+        form,
+        accept,
+        &|target| {
+            if !control.active() {
+                return Err("Page load cancelled or timed out".into());
+            }
+            if crate::adblock::blocked_subresource(target.as_str(), kind, host) {
+                return Err("Blocked by BrowseCraft".into());
+            }
+            Ok(())
+        },
+        control.deadline,
+    )
+}
+
+fn load_page_checked(request: &Request, control: &Control) -> Page {
     let raw = request.url();
+    if !control.active() {
+        return error_page(raw, "Loading stopped.");
+    }
     if raw.starts_with("about:blocked:") {
         return match blocked_notice_target(raw) {
             Some(inner) => ad_blocked_page(raw, inner),
@@ -154,7 +327,7 @@ fn load_page(request: &Request) -> Page {
         };
     }
     if let Some(inner) = raw.strip_prefix("view-source:") {
-        return view_source(inner);
+        return view_source(inner, control);
     }
     if let Some(query) = internal_query(raw, "browsecraft://flags") {
         // The flags page submits to itself with the new values in the query.
@@ -179,11 +352,21 @@ fn load_page(request: &Request) -> Page {
         Request::Post(_, body) => Some(body.as_str()),
         Request::Get(_) => None,
     };
-    let resp = match net::fetch(&url, form, ACCEPT_HTML) {
+    let resp = match fetch_resource(
+        &url,
+        form,
+        ACCEPT_HTML,
+        crate::adblock::TYPE_MAIN_FRAME,
+        "",
+        control,
+    ) {
         Ok(resp) => resp,
         Err(e) => return error_page(raw, &format!("BrowseCraft could not load this page: {e}.")),
     };
 
+    if !control.active() {
+        return error_page(raw, "Loading stopped.");
+    }
     let mime = resp
         .content_type
         .split(';')
@@ -218,10 +401,20 @@ fn load_page(request: &Request) -> Page {
         );
     };
 
-    let doc = html::parse(&source);
+    let Some(doc) = html::parse_cancellable(&source, &|| control.active()) else {
+        return error_page(raw, "Loading stopped.");
+    };
     let base = document_base(&doc, &resp.url);
-    let mut sheets = load_stylesheets(&doc, &base);
-    let host = base.host_str().map(str::to_lowercase).unwrap_or_default();
+    let mut sheets =
+        load_stylesheets_checked(&doc, &base, resp.url.host_str().unwrap_or(""), control);
+    if !control.active() {
+        return error_page(raw, "Loading stopped.");
+    }
+    let host = resp
+        .url
+        .host_str()
+        .map(str::to_lowercase)
+        .unwrap_or_default();
     let cosmetics = crate::adblock::instance().engine_cosmetic_css(&host);
     if !cosmetics.is_empty() {
         sheets.push(css::parse_stylesheet(&cosmetics));
@@ -286,7 +479,7 @@ fn ad_blocked_page(raw: &str, url: &str) -> Page {
     page
 }
 
-fn view_source(inner: &str) -> Page {
+fn view_source(inner: &str, control: &Control) -> Page {
     // The source of a blocked page is not fetched either.
     let lower = inner.to_ascii_lowercase();
     if (lower.starts_with("http://") || lower.starts_with("https://"))
@@ -298,7 +491,16 @@ fn view_source(inner: &str) -> Page {
     }
     let source = Url::parse(inner)
         .map_err(|e| e.to_string())
-        .and_then(|url| net::fetch(&url, None, ACCEPT_HTML))
+        .and_then(|url| {
+            fetch_resource(
+                &url,
+                None,
+                ACCEPT_HTML,
+                crate::adblock::TYPE_MAIN_FRAME,
+                "",
+                control,
+            )
+        })
         .map(|resp| net::decode_text(&resp.body, &resp.content_type));
     let body = match source {
         Ok(text) => text,
@@ -396,8 +598,29 @@ fn inline_sheets(doc: &Document) -> Vec<Stylesheet> {
 
 /// Fetches and parses every stylesheet, in document order, fetching linked
 /// sheets in parallel.
+#[cfg(test)]
 fn load_stylesheets(doc: &Document, base: &Url) -> Vec<Stylesheet> {
-    let host = base.host_str().map(str::to_lowercase).unwrap_or_default();
+    load_stylesheets_checked(
+        doc,
+        base,
+        base.host_str().unwrap_or(""),
+        &Control {
+            live: &|| true,
+            deadline: None,
+        },
+    )
+}
+
+fn load_stylesheets_checked(
+    doc: &Document,
+    base: &Url,
+    doc_host: &str,
+    control: &Control,
+) -> Vec<Stylesheet> {
+    if !control.active() {
+        return Vec::new();
+    }
+    let host = doc_host.to_ascii_lowercase();
     let mut sources = sheet_sources(doc, Some(base));
     // The same stylesheet linked twice loads once.
     let mut linked = HashSet::new();
@@ -411,7 +634,7 @@ fn load_stylesheets(doc: &Document, base: &Url) -> Vec<Stylesheet> {
     let next = AtomicUsize::new(0);
     let results: Vec<Mutex<Vec<Stylesheet>>> = sources.iter().map(|_| Mutex::default()).collect();
     run_workers(SHEET_WORKERS.min(sources.len()), || {
-        loop {
+        while control.active() {
             let i = next.fetch_add(1, Ordering::SeqCst);
             let Some(source) = sources.get(i) else {
                 break;
@@ -420,10 +643,14 @@ fn load_stylesheets(doc: &Document, base: &Url) -> Vec<Stylesheet> {
                 doc_host: &host,
                 fetches: &fetches,
                 seen: HashSet::new(),
+                control,
             };
             let sheets = match source {
                 SheetSource::Inline(text, media) => {
-                    let sheet = css::parse_stylesheet(text);
+                    let Some(sheet) = css::parse_stylesheet_cancellable(text, &|| control.active())
+                    else {
+                        break;
+                    };
                     with_imports(sheet, base, media.as_deref(), 0, &mut ctx)
                 }
                 SheetSource::Link(url, media) => fetch_sheet(url, media.as_deref(), 0, &mut ctx),
@@ -442,6 +669,7 @@ fn load_stylesheets(doc: &Document, base: &Url) -> Vec<Stylesheet> {
 
 /// What one `<style>` or `<link>` and its `@import`s may still fetch.
 struct SheetContext<'a> {
+    control: &'a Control<'a>,
     doc_host: &'a str,
     /// Stylesheet requests left for the whole page.
     fetches: &'a AtomicUsize,
@@ -452,7 +680,8 @@ struct SheetContext<'a> {
 
 impl SheetContext<'_> {
     fn claim(&mut self, url: &Url) -> bool {
-        self.seen.insert(url.clone())
+        self.control.active()
+            && self.seen.insert(url.clone())
             && self
                 .fetches
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
@@ -474,10 +703,21 @@ fn fetch_sheet(
     {
         return Vec::new();
     }
-    match net::fetch(url, None, "text/css,*/*;q=0.1") {
+    match fetch_resource(
+        url,
+        None,
+        "text/css,*/*;q=0.1",
+        crate::adblock::TYPE_STYLESHEET,
+        ctx.doc_host,
+        ctx.control,
+    ) {
         Ok(resp) if resp.status < 400 => {
             let text = net::decode_text(&resp.body, &resp.content_type);
-            with_imports(css::parse_stylesheet(&text), &resp.url, media, depth, ctx)
+            let Some(sheet) = css::parse_stylesheet_cancellable(&text, &|| ctx.control.active())
+            else {
+                return Vec::new();
+            };
+            with_imports(sheet, &resp.url, media, depth, ctx)
         }
         _ => Vec::new(),
     }
@@ -494,6 +734,9 @@ fn with_imports(
     let mut out = Vec::new();
     if depth < 3 {
         for import in &sheet.imports {
+            if !ctx.control.active() {
+                return Vec::new();
+            }
             if let Ok(url) = base.join(import)
                 && may_fetch(base, &url)
             {
@@ -507,13 +750,16 @@ fn with_imports(
 
 /// Image sources to fetch, as (src attribute, resolved URL). Sources the ad
 /// filter blocks are omitted.
+fn document_host(page: &Page) -> String {
+    Url::parse(&page.url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .unwrap_or_default()
+}
+
 fn image_sources(page: &Page) -> Vec<(String, Url)> {
     let doc = &page.doc;
-    let host = page
-        .base
-        .host_str()
-        .map(str::to_lowercase)
-        .unwrap_or_default();
+    let host = document_host(page);
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for node in doc.descendants(Document::ROOT) {
@@ -547,14 +793,17 @@ fn image_sources(page: &Page) -> Vec<(String, Url)> {
 
 /// Fetches and decodes one image, taking its pixels out of the page's
 /// `budget`. Returns `None` for images that are too big or over budget.
-fn fetch_image(url: &Url, budget: &AtomicU64) -> Option<Image> {
-    let resp = net::fetch(
+fn fetch_image(url: &Url, budget: &AtomicU64, doc_host: &str, control: &Control) -> Option<Image> {
+    let resp = fetch_resource(
         url,
         None,
         "image/webp,image/png,image/jpeg,image/gif,*/*;q=0.5",
+        crate::adblock::TYPE_IMAGE,
+        doc_host,
+        control,
     )
     .ok()?;
-    if resp.status >= 400 {
+    if resp.status >= 400 || !control.active() {
         return None;
     }
     decode_image(&resp.body, budget)
@@ -599,6 +848,101 @@ fn decode_image(bytes: &[u8], budget: &AtomicU64) -> Option<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_loads_do_not_fetch_or_publish_events() {
+        use crate::test_http::{Server, ok};
+        let server = Server::new(|_| ok("<p>not fetched</p>"));
+        let events = Arc::new(AtomicUsize::new(0));
+        let sent = events.clone();
+        let job = Job {
+            request: Request::Get(server.url.to_string()),
+            generation: 0,
+            current: Arc::new(AtomicU64::new(1)),
+            deadline: Instant::now() + LOAD_TIMEOUT,
+            send: Arc::new(move |_, _| {
+                sent.fetch_add(1, Ordering::SeqCst);
+            }),
+        };
+        job.run();
+        assert_eq!(events.load(Ordering::SeqCst), 0);
+        assert!(server.requests.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cancellation_stops_stylesheets_imports_and_stale_page_events() {
+        use crate::test_http::{Server, ok};
+        let current = Arc::new(AtomicU64::new(0));
+        let cancel = current.clone();
+        let server = Server::new(move |r| {
+            if r.path == "/" {
+                let html: String = (0..12)
+                    .map(|i| format!("<link rel=stylesheet href='/{i}.css'>"))
+                    .collect();
+                ok(&html).replace(
+                    "Content-Length:",
+                    "Content-Type: text/html\r\nContent-Length:",
+                )
+            } else {
+                cancel.store(1, Ordering::SeqCst);
+                ok("@import '/must-not-fetch.css'; p{color:red}")
+            }
+        });
+        let events = Arc::new(AtomicUsize::new(0));
+        let sent = events.clone();
+        Job {
+            request: Request::Get(server.url.to_string()),
+            generation: 0,
+            current,
+            deadline: Instant::now() + LOAD_TIMEOUT,
+            send: Arc::new(move |_, _| {
+                sent.fetch_add(1, Ordering::SeqCst);
+            }),
+        }
+        .run();
+        let seen = server.requests.lock().unwrap();
+        assert!(seen.len() <= 1 + SHEET_WORKERS, "{seen:?}");
+        assert!(!seen.iter().any(|r| r.path == "/must-not-fetch.css"));
+        assert_eq!(events.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn repeated_navigation_coalesces_queued_work_and_caps_distinct_loads() {
+        let queue = LoadQueue::default();
+        let current = Arc::new(AtomicU64::new(0));
+        let job = |current, generation| Job {
+            request: Request::Get("about:blank".into()),
+            current,
+            generation,
+            send: Arc::new(|_, _| {}),
+            deadline: Instant::now() + LOAD_TIMEOUT,
+        };
+        for generation in 0..1000 {
+            current.store(generation, Ordering::SeqCst);
+            queue.enqueue(job(current.clone(), generation)).unwrap();
+            assert_eq!(queue.jobs.lock().unwrap().len(), 1);
+        }
+        for _ in 1..MAX_QUEUED_LOADS {
+            queue.enqueue(job(Arc::new(AtomicU64::new(0)), 0)).unwrap();
+        }
+        assert!(queue.enqueue(job(Arc::new(AtomicU64::new(0)), 0)).is_err());
+        assert_eq!(queue.jobs.lock().unwrap().len(), MAX_QUEUED_LOADS);
+    }
+
+    #[test]
+    fn parsing_can_be_cancelled_between_tokens_and_rules() {
+        use std::cell::Cell;
+        let checks = Cell::new(0);
+        let live = || {
+            checks.set(checks.get() + 1);
+            checks.get() < 10
+        };
+        assert!(html::parse_cancellable(&"<p>x</p>".repeat(1000), &live).is_none());
+        assert_eq!(checks.get(), 10);
+        checks.set(0);
+        assert!(css::parse_stylesheet_cancellable(&"p{color:red}".repeat(1000), &live).is_none());
+        assert!(checks.get() <= 11);
+    }
 
     #[test]
     fn view_source_of_a_blocked_page_is_not_fetched() {
@@ -797,6 +1141,10 @@ mod tests {
             let fetches = AtomicUsize::new(MAX_SHEET_FETCHES);
             let mut ctx = SheetContext {
                 doc_host: "",
+                control: &Control {
+                    live: &|| true,
+                    deadline: None,
+                },
                 fetches: &fetches,
                 seen: HashSet::new(),
             };

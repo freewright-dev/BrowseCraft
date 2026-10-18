@@ -235,7 +235,12 @@ impl AdBlocker {
     /// injects element-hiding CSS, in every document (ads live in iframes, so
     /// it runs in subframes too, like uBO's content script). The four `__*__`
     /// tokens are replaced with the compiled rules.
+    #[cfg(test)]
     pub fn page_script(&self) -> String {
+        self.page_script_with_network(true)
+    }
+
+    pub fn page_script_with_network(&self, network_hooks: bool) -> String {
         let mut url_rules: Vec<String> = Vec::new();
         for &i in &self.plain {
             let r = &self.rules[i];
@@ -314,6 +319,7 @@ impl AdBlocker {
             }
         }
         JS_HOOK
+            .replace("__NETWORK_HOOKS__", if network_hooks { "true" } else { "false" })
             .replace("__HOST_RULES__", &format!("{{{}}}", host_map.join("")))
             .replace("__URL_RULES__", &format!("[{}]", url_rules.join(",")))
             .replace("__GEN_CSS__", &format!("[{}]", generic_css.join(",")))
@@ -940,6 +946,7 @@ const decide=(u,t)=>{
      (document.head||document.documentElement).appendChild(st);
    }
  }}
+if(!__NETWORK_HOOKS__)return;
 const tagType=el=>{
   const t=(el.tagName||'').toLowerCase();
   if(t==='script')return M.script;
@@ -985,9 +992,13 @@ Element.prototype.setAttribute=function(n,v){
 const origFetch=window.fetch;
 if(origFetch){
   window.fetch=function(input,init){
-    const u=typeof input==='string'?input:(input&&input.url?input.url:'');
-    if(u&&decide(abs(u),M.xhr)===1)return Promise.reject(new TypeError('Blocked by BrowseCraft'));
-    return origFetch.apply(this,arguments);
+    // The native Request constructor handles URL objects, string conversion,
+    // cross-realm Requests and init overrides exactly once.
+    try {
+      const request=new Request(input,init);
+      if(decide(request.url,M.xhr)===1)return Promise.reject(new TypeError('Blocked by BrowseCraft'));
+      return origFetch.call(this,request);
+    } catch(error) { return Promise.reject(error); }
   };
 }
 const origOpen=XMLHttpRequest.prototype.open;
@@ -1066,6 +1077,18 @@ const START_LIST: &str = r#"! BrowseCraft starter list (subset of uBlock Origin 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fetch_inputs_are_normalized_once_before_filtering() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let ab = blocker(&["||blocked.example^"]);
+        let mut child = Command::new("node").arg("-e")
+            .arg(include_str!("../tests/fetch-inputs.cjs"))
+            .stdin(Stdio::piped()).spawn().expect("Node.js is required for fetch regression tests");
+        child.stdin.take().unwrap().write_all(ab.page_script().as_bytes()).unwrap();
+        assert!(child.wait().unwrap().success());
+    }
 
     #[test]
     fn page_script_strings_are_always_valid_javascript() {

@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Windows screenshot capture rejects overflowing or excessive dimensions before allocation, validates bitmap selection/restoration, and releases native resources on error paths (#55).
+- Ad blocking now checks every engine HTTP redirect destination and uses native WebView2 interception for parser-initiated resources and redirects. JavaScript fallback fetch hooks handle URL and Request objects with one native conversion (#52).
+- Cancelled engine loads stop scheduling document/stylesheet/import/image work and publishing stale events. Background loads use a bounded two-worker queue and whole-load deadlines (#53).
 - Nested `:is()`/`:not()` selector matching now shares cached results and a work budget, preventing the reported CPU-exhaustion path in the custom engine ([#48](https://github.com/pierruno-labs/BrowseCraft/issues/48), [PR #58](https://github.com/pierruno-labs/BrowseCraft/pull/58)).
 - Matching selector lists apply each rule's declarations once using the greatest matching specificity and rule source order, removing multiplicative cascade allocations. An aggregate per-element declaration limit bounds cascade size ([#49](https://github.com/pierruno-labs/BrowseCraft/issues/49), [PR #58](https://github.com/pierruno-labs/BrowseCraft/pull/58)).
 - Long sibling-selector chains are rejected by a shared 64-part selector-tree limit; runtime recursion is also bounded to prevent stack overflow, including combinations with nested pseudo-selectors ([#50](https://github.com/pierruno-labs/BrowseCraft/issues/50), [PR #58](https://github.com/pierruno-labs/BrowseCraft/pull/58)).
