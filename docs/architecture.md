@@ -62,12 +62,20 @@ over IPC and keys pressed inside iframes are covered too.
 
 ## Loading
 
-`loader::spawn` runs on a background thread. It fetches the document, parses
-it, and fetches every `<link rel=stylesheet>` in parallel, along with nested
-`@import`s. It then sends a `LoadEvent::Page` to the UI thread through winit's
-`EventLoopProxy`. Images follow from a small worker pool (`LoadEvent::Image`),
-and each one triggers a relayout. Every load has a generation number, so
-events from an outdated load are dropped.
+`loader::spawn` submits to two persistent background workers with a queue of
+at most 16 loads. New navigation removes stale queued generations. Each active
+load uses at most six workers for stylesheets or images, including its calling
+worker. A 60-second deadline includes queue time; individual HTTP operations
+are capped at 30 seconds or the remaining deadline. Already-started blocking
+I/O can finish or time out, but cancellation stops subsequent requests,
+redirect hops, imports, parser tokens/rules and stale page/image events.
+`LoadEvent::Page` reaches the UI through winit's `EventLoopProxy`; images follow
+as `LoadEvent::Image`, each triggering a relayout.
+
+HTTP redirects are followed manually (at most ten), checking the ad-block
+policy before each destination. Resource type and the document host are
+retained across stylesheet/image redirects. POST becomes GET for 301/302/303;
+307/308 retain the form body. Redirects cannot switch to local-file schemes.
 
 ## Parsing and sibling metadata
 
@@ -138,6 +146,12 @@ underneath.
 
 ## Painting
 
+Windows screenshot capture validates signed crop conversions, client bounds,
+row offsets and checked byte counts before acquiring GDI resources. Both the
+full-client and cropped RGBA buffers are limited to 128 MiB each and allocated
+fallibly. Bitmap selection/restoration is checked before `GetDIBits`; resource
+guards release the memory DC before its bitmap on every exit path.
+
 `paint::paint_items` draws only the items that intersect the viewport into a
 `u32` buffer, using alpha blending, anti-aliased rounded rectangles and cached
 glyph bitmaps. On the engine chrome path the browser draws its toolbar and
@@ -202,9 +216,15 @@ sinks:
    `blocked_subresource`): main-frame navigations and pop-ups are checked
    before they load (a blocked page becomes `about:blocked:<url>`), and engine
    pages skip blocked stylesheets and images.
-2. **WebView2 pages:** `page_script()` is installed as the web view's
-   initialization script. It cancels matching fetch/XHR/beacon/img/script/
-   iframe loads and injects a `<style>` for the `##` selectors.
+2. **WebView2 pages:** native `WebResourceRequested` interception checks requests
+   and redirects, including parser-initiated images, CSS and scripts. Supported
+   runtimes include frame/worker request sources. Request Origin/Referer, or
+   the current page URL as a fallback, supplies the document host. Blocked
+   requests receive an empty 403 response. Windows initialization scripts
+   handle cosmetic rules only; a failed native hook falls back to the engine.
+   On macOS, JavaScript request hooks remain best effort: fetch inputs are
+   normalized through `Request`, but parser-initiated resources are not fully
+   covered by JavaScript interception.
 3. **Engine pages:** `engine_cosmetic_css(host)` returns a stylesheet that
    `loader.rs` appends to fetched pages, hiding matches with `display: none`.
 

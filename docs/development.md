@@ -80,6 +80,18 @@ paint code as the window, so it's the quickest way to check a rendering change.
 
 ## Tests
 
+The fetch-input regression also requires Node.js 18 or newer (`node` on PATH).
+Native Windows network interception can be checked separately on a desktop
+with WebView2 installed:
+
+```sh
+cargo test --locked webview_network::tests -- --ignored --nocapture
+```
+
+This loopback-only integration test checks static resources, fetch input
+types (including a cross-frame Request) and redirected resources. It is
+ignored in the ordinary unit suite because it creates a native WebView2 window.
+
 ```sh
 cargo test
 ```

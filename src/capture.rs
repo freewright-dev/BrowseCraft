@@ -10,6 +10,63 @@
 
 use std::path::PathBuf;
 
+#[cfg(any(windows, test))]
+const MAX_CAPTURE_BYTES: usize = 128 * 1024 * 1024;
+
+#[cfg(any(windows, test))]
+struct CaptureLayout {
+    full_bytes: usize,
+    output_bytes: usize,
+    stride: usize,
+    row_bytes: usize,
+    start: usize,
+}
+
+#[cfg(any(windows, test))]
+impl CaptureLayout {
+    fn new(cw: i32, ch: i32, x: i32, y: i32, w: u32, h: u32) -> Option<Self> {
+        if cw <= 0 || ch <= 0 || cw > 32_768 || ch > 32_768 || x < 0 || y < 0 || w == 0 || h == 0 {
+            return None;
+        }
+        let (wi, hi) = (i32::try_from(w).ok()?, i32::try_from(h).ok()?);
+        if x.checked_add(wi)? > cw || y.checked_add(hi)? > ch {
+            return None;
+        }
+        let stride = usize::try_from(cw).ok()?.checked_mul(4)?;
+        let full_bytes = stride.checked_mul(usize::try_from(ch).ok()?)?;
+        let row_bytes = usize::try_from(w).ok()?.checked_mul(4)?;
+        let output_bytes = row_bytes.checked_mul(usize::try_from(h).ok()?)?;
+        if full_bytes > MAX_CAPTURE_BYTES || output_bytes > MAX_CAPTURE_BYTES {
+            return None;
+        }
+        let start = usize::try_from(y)
+            .ok()?
+            .checked_mul(stride)?
+            .checked_add(usize::try_from(x).ok()?.checked_mul(4)?)?;
+        let end = start
+            .checked_add((h as usize - 1).checked_mul(stride)?)?
+            .checked_add(row_bytes)?;
+        if end > full_bytes {
+            return None;
+        }
+        Some(Self {
+            full_bytes,
+            output_bytes,
+            stride,
+            row_bytes,
+            start,
+        })
+    }
+}
+
+#[cfg(windows)]
+fn zeroed_buffer(bytes: usize) -> Option<Vec<u8>> {
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(bytes).ok()?;
+    buffer.resize(bytes, 0);
+    Some(buffer)
+}
+
 /// Renders a rectangle of `window`'s client area and returns tightly packed
 /// RGBA (`w * h * 4` bytes). Coordinates are physical client pixels. Returns
 /// `None` when the platform can't capture or the region is empty.
@@ -60,6 +117,35 @@ mod imp {
     type Hwnd = *mut c_void;
     type Hdc = *mut c_void;
     type Hgdiobj = *mut c_void;
+
+    struct CaptureResources {
+        hwnd: Hwnd,
+        dc: Hdc,
+        mem: Hdc,
+        bmp: Hgdiobj,
+    }
+
+    impl Drop for CaptureResources {
+        fn drop(&mut self) {
+            unsafe {
+                // Destroying the memory DC first also releases a selected
+                // bitmap when restoration failed on an error path.
+                if !self.mem.is_null() {
+                    DeleteDC(self.mem);
+                }
+                if !self.bmp.is_null() {
+                    DeleteObject(self.bmp);
+                }
+                if !self.dc.is_null() {
+                    ReleaseDC(self.hwnd, self.dc);
+                }
+            }
+        }
+    }
+
+    fn valid_object(object: Hgdiobj) -> bool {
+        !object.is_null() && object as isize != -1
+    }
 
     #[repr(C)]
     #[allow(dead_code)]
@@ -173,37 +259,42 @@ mod imp {
             if GetClientRect(hwnd, &mut client) == 0 {
                 return None;
             }
-            let (cw, ch) = (client.right - client.left, client.bottom - client.top);
-            if cw <= 0 || ch <= 0 || cw > 32_768 || ch > 32_768 {
-                return None;
-            }
-            // The region must lie inside the client area.
-            let (x1, y1) = (x.checked_add(w as i32)?, y.checked_add(h as i32)?);
-            if x1 > cw || y1 > ch {
-                return None;
-            }
+            let (cw, ch) = (
+                client.right.checked_sub(client.left)?,
+                client.bottom.checked_sub(client.top)?,
+            );
+            let layout = super::CaptureLayout::new(cw, ch, x, y, w, h)?;
+            // Both fallible allocations happen before any GDI handles exist.
+            let mut full = super::zeroed_buffer(layout.full_bytes)?;
+            let mut out = super::zeroed_buffer(layout.output_bytes)?;
 
             let dc = GetDC(hwnd);
             if dc.is_null() {
                 return None;
             }
-            let mem = CreateCompatibleDC(dc);
-            let bmp = CreateCompatibleBitmap(dc, cw, ch);
+            let mut resources = CaptureResources {
+                hwnd,
+                dc,
+                mem: std::ptr::null_mut(),
+                bmp: std::ptr::null_mut(),
+            };
+            resources.mem = CreateCompatibleDC(dc);
+            resources.bmp = CreateCompatibleBitmap(dc, cw, ch);
+            let (mem, bmp) = (resources.mem, resources.bmp);
             if mem.is_null() || bmp.is_null() {
-                if !mem.is_null() {
-                    DeleteDC(mem);
-                }
-                if !bmp.is_null() {
-                    DeleteObject(bmp);
-                }
-                ReleaseDC(hwnd, dc);
                 return None;
             }
 
             let old = SelectObject(mem, bmp);
+            if !valid_object(old) {
+                return None;
+            }
             let printed = PrintWindow(hwnd, mem, PW_CLIENTONLY | PW_RENDERFULLCONTENT) != 0;
             // GetDIBits requires the bitmap not to be selected into a DC.
-            SelectObject(mem, old);
+            let restored = SelectObject(mem, old);
+            if !valid_object(restored) || restored != bmp {
+                return None;
+            }
             let mut info = BitmapInfo {
                 header: BitmapInfoHeader {
                     size: std::mem::size_of::<BitmapInfoHeader>() as u32,
@@ -225,7 +316,6 @@ mod imp {
                     reserved: 0,
                 }],
             };
-            let mut full = vec![0u8; cw as usize * ch as usize * 4];
             let lines = if printed {
                 GetDIBits(
                     dc,
@@ -240,18 +330,14 @@ mod imp {
                 0
             };
 
-            DeleteObject(bmp);
-            DeleteDC(mem);
-            ReleaseDC(hwnd, dc);
+            drop(resources);
 
             if lines != ch {
                 return None;
             }
-            let (row_bytes, stride) = (w as usize * 4, cw as usize * 4);
-            let mut out = Vec::with_capacity(row_bytes * h as usize);
-            for row in y as usize..y1 as usize {
-                let start = row * stride + x as usize * 4;
-                out.extend_from_slice(&full[start..start + row_bytes]);
+            for (row, dest) in out.chunks_exact_mut(layout.row_bytes).enumerate() {
+                let start = layout.start + row * layout.stride;
+                dest.copy_from_slice(&full[start..start + layout.row_bytes]);
             }
             for px in out.chunks_exact_mut(4) {
                 px.swap(0, 2); // BGRA -> RGBA
@@ -279,5 +365,95 @@ mod imp {
             CoTaskMemFree(path as *mut c_void);
             dir.filter(|d| !d.as_os_str().is_empty())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn native_capture_accepts_normal_crops_and_rejects_extremes() {
+        use std::ffi::c_void;
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn CreateWindowExW(
+                ex: u32,
+                class: *const u16,
+                name: *const u16,
+                style: u32,
+                x: i32,
+                y: i32,
+                w: i32,
+                h: i32,
+                parent: *mut c_void,
+                menu: *mut c_void,
+                instance: *mut c_void,
+                param: *mut c_void,
+            ) -> *mut c_void;
+            fn DestroyWindow(hwnd: *mut c_void) -> i32;
+        }
+        struct Window(*mut c_void);
+        impl Drop for Window {
+            fn drop(&mut self) {
+                unsafe {
+                    DestroyWindow(self.0);
+                }
+            }
+        }
+        let class: Vec<_> = "STATIC\0".encode_utf16().collect();
+        let null = std::ptr::null_mut();
+        let window = Window(unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                class.as_ptr(),
+                0x9000_0000,
+                0,
+                0,
+                64,
+                64,
+                null,
+                null,
+                null,
+                null,
+            )
+        });
+        assert!(!window.0.is_null());
+        let crop = imp::capture(window.0, 4, 5, 16, 12).expect("capture of native STATIC window");
+        assert_eq!(crop.len(), 16 * 12 * 4);
+        assert!(crop.chunks_exact(4).all(|p| p[3] == 255));
+        for (w, h) in [(u32::MAX, 1), (1, u32::MAX), (32_768, 32_768), (65, 64)] {
+            assert!(imp::capture(window.0, 0, 0, w, h).is_none());
+        }
+        assert!(imp::capture(null, 0, 0, 1, 1).is_none());
+    }
+
+    #[test]
+    fn capture_layout_rejects_narrowing_overflow_and_excess_allocations() {
+        for (cw, ch, x, y, w, h) in [
+            (100, 100, 0, 0, u32::MAX, 1),
+            (100, 100, 0, 0, 1, u32::MAX),
+            (32_768, 32_768, 0, 0, 1, 1),
+            (0, 100, 0, 0, 1, 1),
+            (100, 100, -1, 0, 1, 1),
+            (100, 100, 0, -1, 1, 1),
+            (100, 100, 99, 99, 2, 1),
+            (100, 100, 99, 99, 1, 2),
+            (100, 100, i32::MAX, 0, 1, 1),
+            (100, 100, 0, 0, 0, 1),
+        ] {
+            assert!(CaptureLayout::new(cw, ch, x, y, w, h).is_none());
+        }
+        let layout = CaptureLayout::new(100, 80, 90, 70, 10, 10).unwrap();
+        assert_eq!(layout.full_bytes, 32_000);
+        assert_eq!(layout.output_bytes, 400);
+        assert_eq!(
+            layout.start + 9 * layout.stride + layout.row_bytes,
+            layout.full_bytes
+        );
+        assert!(CaptureLayout::new(8192, 4096, 0, 0, 8192, 4096).is_some());
+        assert!(CaptureLayout::new(8192, 4097, 0, 0, 1, 1).is_none());
     }
 }

@@ -29,6 +29,7 @@ wry = "0.53"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
+windows = { version = "0.61", features = ["Win32_System_Com"] }
 
 [dev-dependencies]
 flate2 = "1"

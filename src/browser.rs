@@ -1488,7 +1488,7 @@ impl Browser {
         let builder = WebViewBuilder::new()
             .with_visible(false)
             .with_bounds(bounds)
-            .with_initialization_script(adblock::instance().page_script())
+            .with_initialization_script(adblock::instance().page_script_with_network(!cfg!(windows)))
             .with_navigation_handler(move |url| {
                 // Main-frame navigations the ad filter blocks become an engine
                 // notice page instead.
@@ -1528,6 +1528,11 @@ impl Browser {
         };
         match builder.build_as_child(window) {
             Ok(wv) => {
+                #[cfg(windows)]
+                if let Err(error) = crate::webview_network::install(&wv) {
+                    eprintln!("browsecraft: could not install native network filtering ({error}); using the engine");
+                    return;
+                }
                 #[cfg(windows)]
                 attach_webview_shortcuts(&wv, self.proxy.clone());
                 self.webview = Some(wv);
