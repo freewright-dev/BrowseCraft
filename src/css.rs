@@ -89,6 +89,7 @@ const MAX_NESTING: u32 = 32;
 const MAX_SELECTOR_PARTS: usize = 64;
 const MAX_MATCH_STEPS: usize = 100_000;
 
+#[allow(clippy::expect_used, reason = "parsing only stops when cancelled, and this never cancels")]
 pub fn parse_stylesheet(source: &str) -> Stylesheet {
     parse_stylesheet_cancellable(source, &|| true).expect("uncancelled parse")
 }

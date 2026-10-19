@@ -108,10 +108,12 @@ impl LoadQueue {
                     loop {
                         let job = {
                             let mut jobs = q.jobs.lock().unwrap_or_else(|e| e.into_inner());
-                            while jobs.is_empty() {
+                            loop {
+                                if let Some(job) = jobs.pop_front() {
+                                    break job;
+                                }
                                 jobs = q.ready.wait(jobs).unwrap_or_else(|e| e.into_inner());
                             }
-                            jobs.pop_front().unwrap()
                         };
                         job.run();
                     }
@@ -488,6 +490,7 @@ fn home_html() -> String {
     crate::internal::themed(&page, crate::internal::dark())
 }
 
+#[allow(clippy::expect_used, reason = "a constant, valid URL")]
 fn internal_page(url: &str, source: &str) -> Page {
     let doc = html::parse(source);
     let base = Url::parse("about:blank").expect("valid url");

@@ -238,6 +238,7 @@ impl Fonts {
             .as_ref()
     }
 
+    #[allow(clippy::expect_used, reason = "Fonts::new fails unless the UI face loads, and it stays cached")]
     fn font(&self, id: FaceId) -> &Font {
         if id >= FALLBACK_BASE {
             if let Some(Some(f)) = self.fallbacks[id - FALLBACK_BASE].get() {
@@ -327,6 +328,7 @@ impl Fonts {
     }
 
     /// Ascent and descent (both positive) of the face's line metrics.
+    #[allow(clippy::expect_used, reason = "Fonts::new fails unless the UI face loads, and it stays cached")]
     pub fn vertical_metrics(&self, key: FontKey, size: f32) -> (f32, f32) {
         if !safe_font_size(size) {
             return (0.0, 0.0);

@@ -1028,7 +1028,7 @@ impl<'a> Engine<'a> {
         w: f32,
     ) {
         let doc = self.doc();
-        match &doc.nodes[child].kind {
+        let el = match &doc.nodes[child].kind {
             NodeKind::Text(text) => {
                 state.inline.push(InlineItem::Text {
                     node: child,
@@ -1038,9 +1038,9 @@ impl<'a> Engine<'a> {
                 });
                 return;
             }
-            NodeKind::Element(_) => {}
+            NodeKind::Element(el) => el,
             NodeKind::Document => return,
-        }
+        };
         let st = self.st(child);
         let tag = doc.tag(child);
         match st.display {
@@ -1094,7 +1094,6 @@ impl<'a> Engine<'a> {
         }
 
         // An inline element: walk its children in the same inline run.
-        let el = doc.element(child).expect("element");
         if el.id().is_some() || (tag == "a" && el.attr("name").is_some()) {
             self.out.anchors.push((child, state.cursor + state.prev_mb));
         }
