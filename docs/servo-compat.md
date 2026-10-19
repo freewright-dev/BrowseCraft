@@ -54,6 +54,32 @@ Patterns:
   check. eBay may be refusing Servo's user agent rather than a missing
   feature.
 
+## Why sites fail
+
+The broken and partial sites were opened again with
+`BROWSECRAFT_SERVO_TRACE=1 RUST_LOG=error`. That logs page console errors,
+uncaught exceptions and Servo's own errors. The pages themselves download and
+parse within 0.4–3 s, so networking and HTML parsing are not the problem. What
+fails is the page's JavaScript, mostly on a web feature that is missing in
+this build.
+
+| Cause | Sites | Error seen | Fix |
+|---|---|---|---|
+| `crypto.getRandomValues()` missing | BBC, Amazon, Booking, Spotify, IMDb, Figma, Microsoft | `crypto.getRandomValues() not supported` / `crypto is not defined` | Ours: Servo has Web Crypto behind its `webcrypto` cargo feature, which is not among its defaults and is not enabled here |
+| `IntersectionObserver` missing | Netflix, GitHub repository page | `IntersectionObserver is not defined` | Ours: Servo has it behind the experimental preference `dom_intersection_observer_enabled` (off by default) |
+| `document.adoptedStyleSheets` missing | archive.org, GitHub repository page | `e.adoptedStyleSheets is undefined` | Ours: preference `dom_adoptedstylesheet_enabled` (off by default) |
+| `Element.animate()` missing | YouTube | `v.hostElement.animate is not a function` | Ours: preference `dom_web_animations_enabled` (off by default) |
+| JavaScript error during start-up | GitHub repository page | `can't access lexical declaration 'p' before initialization` | Unclear; recheck once the features above are on, otherwise report upstream |
+| Servo panics | PayPal | `internal error: entered unreachable code: Removed @font-face that was not previously present` (`servo-script-0.6.0/dom/css/fontfaceset.rs:184`) | Upstream bug. The browser keeps running, but the page never finishes and `notify_crashed` is not called |
+| The site turns away unfamiliar browsers | Stack Overflow (Cloudflare bot check), old.reddit (redirect to `/login/?reason=lor2`), eBay (error page) | none | Not a rendering problem; possibly helped by a different user-agent string |
+| Layout or drawing differences, no script error | rust-lang.org, nodejs.org | none | Upstream rendering gaps |
+
+Next step: build with Servo's `webcrypto` feature and enable the three
+preferences above (Servo's own browser, servoshell, turns these on with its
+experimental-features switch), then repeat the run for the sites listed here.
+Experimental features are less tested; they would only apply to this opt-in
+Linux build.
+
 ## Results
 
 Load time is when Servo reported the page complete, counted from Servo's
