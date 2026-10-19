@@ -2,6 +2,7 @@
 name = "browsecraft"
 version = "0.1.0"
 edition = "2024"
+license = "GPL-3.0-or-later"
 
 [profile.release]
 opt-level = "z"
@@ -17,21 +18,23 @@ egui-phosphor = "0.14.0"
 egui-wgpu = { version = "0.36.2", features = ["winit"] }
 egui-winit = "0.36.2"
 fontdue = "0.9"
+getrandom = "0.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 pollster = "1.0.1"
 softbuffer = "0.4"
+tempfile = "3"
 ureq = "3"
 url = "2"
 keepass = { version = "0.8", default-features = false, features = ["save_kdbx4"] }
 argon2 = { package = "rust-argon2", version = "3" }
 secstr = "0.5"
 base64 = "0.22"
-getrandom = "0.3"
 winit = "0.30"
-wry = "0.53"
+wry = "0.55"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
+windows = { version = "0.61", features = ["Win32_System_Com"] }
 
 [dev-dependencies]
 flate2 = "1"

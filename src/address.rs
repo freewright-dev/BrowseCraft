@@ -99,6 +99,10 @@ mod tests {
             resolve("view-source:https://example.com/"),
             "view-source:https://example.com/"
         );
+        assert_eq!(
+            resolve("about:blocked:https://bank.example/"),
+            "about:blocked:https://bank.example/"
+        );
     }
 
     #[test]

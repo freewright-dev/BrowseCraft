@@ -326,14 +326,10 @@ impl Vault {
         self.db
             .save(&mut buffer, self.key.clone())
             .map_err(|e| format!("Could not encrypt the vault: {e}"))?;
-        let mut temp = self.path.clone().into_os_string();
-        temp.push(".tmp");
-        let temp = PathBuf::from(temp);
-        std::fs::write(&temp, &buffer).map_err(|e| format!("Could not write the vault: {e}"))?;
-        std::fs::rename(&temp, &self.path).map_err(|e| {
-            let _ = std::fs::remove_file(&temp);
-            format!("Could not replace the vault file: {e}")
-        })
+        // An exclusively created, randomly named temporary file: a planted
+        // `<vault>.tmp` symlink cannot redirect the write.
+        crate::storage::replace_atomic(&self.path, &buffer)
+            .map_err(|e| format!("Could not write the vault: {e}"))
     }
 }
 

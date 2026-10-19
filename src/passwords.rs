@@ -177,15 +177,8 @@ fn state() -> MutexGuard<'static, State> {
 
 // ---- settings file ----
 
-#[cfg(not(test))]
-fn config_path() -> PathBuf {
-    std::env::current_dir().unwrap_or_default().join(FILE_NAME)
-}
-
-/// Tests must never touch the user's real settings.
-#[cfg(test)]
-fn config_path() -> PathBuf {
-    std::env::temp_dir().join(format!("browsecraft-test-{}-{FILE_NAME}", std::process::id()))
+fn config_path() -> Result<PathBuf, String> {
+    crate::storage::config_file(FILE_NAME)
 }
 
 fn save_config(s: &State) {
@@ -203,7 +196,9 @@ fn save_config(s: &State) {
     for host in &s.never {
         text += &format!("never={host}\n");
     }
-    let _ = std::fs::write(config_path(), text);
+    if let Ok(path) = config_path() {
+        let _ = crate::storage::write_private(&path, text.as_bytes());
+    }
 }
 
 fn parse_config(s: &mut State, text: &str) {
@@ -228,7 +223,7 @@ fn parse_config(s: &mut State, text: &str) {
 /// Reads `passwords.cfg` (which vault, how it unlocks, the never-save list).
 /// The vault stays locked until the user unlocks it.
 pub fn load() {
-    if let Ok(text) = std::fs::read_to_string(config_path()) {
+    if let Ok(text) = config_path().and_then(|path| std::fs::read_to_string(path).map_err(|e| e.to_string())) {
         parse_config(&mut state(), &text);
     }
 }
@@ -488,20 +483,23 @@ fn path_field(text: &str) -> Option<PathBuf> {
     (!t.is_empty()).then(|| PathBuf::from(t))
 }
 
+/// Suggested vault and key-file locations: the per-user config folder (made
+/// here, so creating a vault there works on a fresh install), never the
+/// working directory.
+fn default_data_path(name: &str) -> String {
+    let Ok(dir) = crate::storage::config_dir() else {
+        return String::new();
+    };
+    let _ = crate::storage::private_dir(&dir);
+    dir.join(name).display().to_string()
+}
+
 fn default_vault_path() -> String {
-    std::env::current_dir()
-        .unwrap_or_default()
-        .join("prowl-passwords.kdbx")
-        .display()
-        .to_string()
+    default_data_path("browsecraft-passwords.kdbx")
 }
 
 fn default_keyfile_path() -> String {
-    std::env::current_dir()
-        .unwrap_or_default()
-        .join("prowl-passwords.keyx")
-        .display()
-        .to_string()
+    default_data_path("browsecraft-passwords.keyx")
 }
 
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
@@ -675,7 +673,10 @@ fn button(label: &str) -> String {
 /// The `browsecraft://passwords` page for the current state. Each call
 /// issues a new form token.
 pub fn page_html() -> String {
-    let token = FORM_TOKEN.issue();
+    let token = match FORM_TOKEN.issue() {
+        Ok(token) => token,
+        Err(error) => return internal::unavailable_page("Passwords", &error),
+    };
     let mut s = state();
     let message = s.message.take();
     let mut body = String::from("<h1>Passwords</h1>");
@@ -715,7 +716,7 @@ pub fn page_html() -> String {
         let logins = vault.credentials();
         let mut list = String::new();
         if logins.is_empty() {
-            list.push_str("<div class=\"empty\">No saved logins yet. Sign in to a site and Prowl will offer to save it.</div>");
+            list.push_str("<div class=\"empty\">No saved logins yet. Sign in to a site and BrowseCraft will offer to save it.</div>");
         }
         for (i, login) in logins.iter().enumerate() {
             let letter: String = login
@@ -807,7 +808,7 @@ pub fn page_html() -> String {
         body += &card(
             "Use a different vault",
             &format!(
-                "<div class=\"note\">Disconnects this vault from Prowl. The file is not deleted.</div>{}",
+                "<div class=\"note\">Disconnects this vault from BrowseCraft. The file is not deleted.</div>{}",
                 form(&token, "forget", &button("Disconnect vault"))
             ),
         );
@@ -865,7 +866,7 @@ pub fn page_html() -> String {
 
     if !s.never.is_empty() {
         body += &format!(
-            "<p class=\"sub\">Prowl will not offer to save logins on: {}.</p>",
+            "<p class=\"sub\">BrowseCraft will not offer to save logins on: {}.</p>",
             internal::escape(&s.never.join(", "))
         );
     }
@@ -881,7 +882,7 @@ mod tests {
 
     fn reset() {
         *STATE.lock().unwrap_or_else(|p| p.into_inner()) = State::new();
-        let _ = std::fs::remove_file(config_path());
+        let _ = std::fs::remove_file(config_path().unwrap());
     }
 
     /// The token of a freshly rendered page.

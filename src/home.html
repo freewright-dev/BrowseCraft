@@ -2,9 +2,9 @@
 <title>New Tab</title>
 <style>
   {{CSS}}
-  .hero { text-align: center; padding: 96px 0 6px }
-  .logo { font-size: 56px; font-weight: 700; margin: 0 0 6px; text-align: center }
-  .accent { color: @accent@ }
+  .hero { text-align: center; padding: 48px 0 6px }
+  .logo { display: flex; justify-content: center; margin-bottom: 20px }
+  h1.name { font-size: 56px; font-weight: 700; margin: 0 0 6px; text-align: center }
   .tagline { text-align: center; color: @muted@; margin: 0 0 30px; font-size: 15px }
   form.search { display: flex; gap: 10px }
   form.search input { flex: 1; font-size: 16px; padding: 13px 18px; border: 1px solid @line@; border-radius: 12px; background: @surface@; color: @text@ }
@@ -15,7 +15,8 @@
 </style>
 <main>
   <div class="hero">
-    <h1 class="logo">Pr<span class="accent">owl</span></h1>
+    <div class="logo"><img src="browsecraft://assets/logo.png" alt="BrowseCraft logo" width="128" height="128"></div>
+    <h1 class="name">BrowseCraft</h1>
     <p class="tagline">A small, fast browser with its own Rust rendering engine.</p>
   </div>
   <form class="search" action="https://www.startpage.com/sp/search" method="get">

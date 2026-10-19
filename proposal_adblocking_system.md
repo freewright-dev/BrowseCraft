@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Ad blocker removed from the tree. Decision needed on what, if anything, replaces it. |
+| **Status** | Not adopted: the ad blocker was kept (see the README). Kept as background on its limits and on alternatives. |
 | **Date** | 2026-10-17 |
 | **Scope** | Why a uBlock Origin (uBO) port, or any ad blocking, does not work with BrowseCraft's current architecture, and what we could do instead. |
 

@@ -1,4 +1,4 @@
-/* Prowl password manager: page script.
+/* BrowseCraft password manager: page script.
  *
  * Runs in the top document of every web page. It
  *   1. finds login, sign-up and change-password forms and tells the browser

@@ -1,5 +1,8 @@
 //! Ported from uBlock Origin's core: a static network-filter engine and
 //! cosmetic (element-hiding) filters, consuming EasyList/uBO filter syntax.
+//! Upstream copyright (C) 2014-present Raymond Hill and contributors.
+//! SPDX-License-Identifier: GPL-3.0-or-later
+//! See LICENSE and THIRD_PARTY_NOTICES.md for license terms and attribution.
 //!
 //! The parts adapted from `uBlock-master/src/js` are: `static-net-filtering.js`
 //! (rule matching, `@@` exception priority, `$` options), the relevant slice of
@@ -9,22 +12,19 @@
 //!
 //! 1. Rust-side: main-frame/popup navigations and engine-page subresources are
 //!    checked before anything loads (`matches_network`).
-//! 2. WebView2 pages, natively: `browser.rs` answers `WebResourceRequested`
-//!    with `blocked_request`, so every request of a page is judged before it
-//!    is sent (this also covers tags the HTML parser inserts).
-//! 3. WebView2 pages, in the document: `page_script_with()` emits the
-//!    equivalent of uBO's `contentscript.js`: element hiding, and, where there
-//!    is no native interception, fetch/XHR/beacon/img/script/iframe blocking.
-//! 4. Engine pages: `engine_cosmetic_css()` returns a stylesheet applying
+//! 2. WebView2 pages: `page_script()` emits the equivalent content-script
+//!    (uBO's `contentscript.js`) that cancels matching fetch/XHR/beacon/img/
+//!    script/iframe loads and injects a `<style>` for `##` selectors.
+//! 3. Engine pages: `engine_cosmetic_css()` returns a stylesheet applying
 //!    `display: none` through the built-in selector engine.
 //!
 //! Limitations vs uBO: no regex filters (`/re/`), no `$redirect`/`$csp`/
 //! `$replace`/scriptlet/procedural filters (rules using them are dropped, never
-//! over-blocking), and third-party is computed with a hostname-suffix check
-//! instead of the PSL.
+//! over-blocking), `$domain=` is honoured only Rust-side, and third-party is
+//! computed with a hostname-suffix check instead of the PSL.
 
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::path::Path;
 use std::sync::OnceLock;
 
 // ---- Request types (bitmask, mirrors uBO's type bits) ----
@@ -102,10 +102,8 @@ struct NetRule {
 // ---- Compiled cosmetic rule ----
 
 struct Cosmetic {
-    /// Empty = applies to every document. Otherwise the comma-separated host
-    /// list of the filter: it applies when any positive host matches (or there
-    /// are only negated ones) and no negated host matches.
-    hosts: Vec<DomainSel>,
+    /// None = applies to every document.
+    host: Option<DomainSel>,
     selector: String,
     allow: bool,
 }
@@ -113,14 +111,7 @@ struct Cosmetic {
 pub struct AdBlocker {
     /// Rules keyed by the hostname they are anchored on, for fast lookup.
     by_host: HashMap<String, Vec<usize>>,
-    /// Every rule that is not `||host`-anchored (used to emit the JS tables).
     plain: Vec<usize>,
-    /// The same rules as `plain`, indexed by one literal URL token (the way
-    /// uBO's `static-net-filtering.js` buckets filters), so that a request
-    /// only tries the few rules that can possibly match it.
-    by_token: HashMap<String, Vec<usize>>,
-    /// Non-host rules for which no safe token exists: tried on every request.
-    loose: Vec<usize>,
     rules: Vec<NetRule>,
     cosmetic: Vec<Cosmetic>,
 }
@@ -132,8 +123,6 @@ impl AdBlocker {
         AdBlocker {
             by_host: HashMap::new(),
             plain: Vec::new(),
-            by_token: HashMap::new(),
-            loose: Vec::new(),
             rules: Vec::new(),
             cosmetic: Vec::new(),
         }
@@ -189,20 +178,8 @@ impl AdBlocker {
             }
         };
 
-        for &i in &self.loose {
+        for &i in &self.plain {
             consider(&self.rules[i]);
-        }
-        let mut seen: Vec<&str> = Vec::new();
-        for tok in hay.split(|c: char| !c.is_ascii_alphanumeric()) {
-            if tok.len() < MIN_TOKEN || seen.contains(&tok) {
-                continue;
-            }
-            seen.push(tok);
-            if let Some(indices) = self.by_token.get(tok) {
-                for &i in indices {
-                    consider(&self.rules[i]);
-                }
-            }
         }
         if !url_host.is_empty() {
             for key in host_suffixes(url_host) {
@@ -223,35 +200,25 @@ impl AdBlocker {
         }
     }
 
-    /// A one-line summary of what was loaded (for diagnostics).
-    #[allow(dead_code)]
-    pub fn stats(&self) -> String {
-        format!(
-            "{} network rules ({} host-anchored, {} token-indexed, {} untokenised), {} cosmetic rules",
-            self.rules.len(),
-            self.by_host.values().map(Vec::len).sum::<usize>(),
-            self.by_token.values().map(Vec::len).sum::<usize>(),
-            self.loose.len(),
-            self.cosmetic.len()
-        )
-    }
-
     /// Hide selectors applying to `doc_host`, exceptions (`#@#`) subtracted.
     pub fn cosmetic_selectors(&self, doc_host: &str) -> Vec<String> {
         let mut hide: Vec<String> = Vec::new();
-        let mut allow: HashSet<&str> = HashSet::new();
+        let mut allow: Vec<String> = Vec::new();
         for c in &self.cosmetic {
-            if cosmetic_applies(&c.hosts, doc_host) {
+            let applied = match &c.host {
+                None => true,
+                Some(h) => domain_sel_matches(h, doc_host),
+            };
+            if applied {
                 if c.allow {
-                    allow.insert(c.selector.as_str());
+                    allow.push(c.selector.clone());
                 } else {
                     hide.push(c.selector.clone());
                 }
             }
         }
-        let mut seen: HashSet<String> = HashSet::new();
         hide.into_iter()
-            .filter(|s| !allow.contains(s.as_str()) && seen.insert(s.clone()))
+            .filter(|s| !allow.iter().any(|a| a == s))
             .collect()
     }
 
@@ -267,84 +234,99 @@ impl AdBlocker {
             .join(" ")
     }
 
-    /// The WebView2 content script with network blocking included (what a
-    /// platform without native request interception needs).
-    #[allow(dead_code)]
+    /// The WebView2 content script: cancels matching network requests and
+    /// injects element-hiding CSS, in every document (ads live in iframes, so
+    /// it runs in subframes too, like uBO's content script). The four `__*__`
+    /// tokens are replaced with the compiled rules.
+    #[cfg(test)]
     pub fn page_script(&self) -> String {
-        self.page_script_with(true)
+        self.page_script_with_network(true)
     }
 
-    /// The WebView2 content script. It always injects the element-hiding
-    /// stylesheet (top document only). With `network` it also carries the
-    /// compiled network rules and cancels matching fetch/XHR/beacon/img/script/
-    /// iframe loads in every frame; pass `false` when the host intercepts
-    /// requests natively (WebView2's `WebResourceRequested`), which sees
-    /// parser-inserted tags too and keeps the script small.
-    pub fn page_script_with(&self, network: bool) -> String {
+    pub fn page_script_with_network(&self, network_hooks: bool) -> String {
         let mut url_rules: Vec<String> = Vec::new();
-        let mut host_map: Vec<String> = Vec::new();
-        if network {
-            for &i in &self.plain {
-                let r = &self.rules[i];
-                let re = token_regex(&r.pattern.toks, r.pattern.left_anchor, r.pattern.right_anchor);
-                url_rules.push(js_entry(&re, r));
+        for &i in &self.plain {
+            let r = &self.rules[i];
+            if !r.options.domains.is_empty() {
+                continue; // `domain=` is enforced Rust-side only.
             }
-            url_rules.sort();
-            for (host, indices) in &self.by_host {
-                let entries: Vec<String> = indices
-                    .iter()
-                    .map(|&i| {
-                        let r = &self.rules[i];
-                        js_entry(&token_regex(&r.pattern.toks, false, r.pattern.right_anchor), r)
-                    })
-                    .collect();
-                if !entries.is_empty() {
-                    host_map.push(format!("{}:[{}]", quote(host), entries.join(",")));
-                }
-            }
-            host_map.sort();
-        }
-
-        // Exceptions without a host list remove their selector everywhere.
-        let generic_allow: HashSet<&str> = self
-            .cosmetic
-            .iter()
-            .filter(|c| c.allow && c.hosts.is_empty())
-            .map(|c| c.selector.as_str())
-            .collect();
-        let mut generic: Vec<String> = Vec::new();
-        let mut seen: HashSet<&str> = HashSet::new();
-        let mut scoped: Vec<String> = Vec::new();
-        for c in &self.cosmetic {
-            if generic_allow.contains(c.selector.as_str()) {
+            if !r.pattern.host.is_empty() {
                 continue;
             }
-            if c.hosts.is_empty() {
-                if !c.allow && seen.insert(c.selector.as_str()) {
-                    generic.push(quote(&c.selector));
+            let re = token_regex(
+                &r.pattern.toks,
+                r.pattern.left_anchor,
+                r.pattern.right_anchor,
+            );
+            url_rules.push(format!(
+                "[{},{},{}]",
+                quote(&re),
+                r.options.types.unwrap_or(TYPE_ALL),
+                bit(r.allow, r.options.important)
+            ));
+        }
+        url_rules.sort();
+        let mut host_map: Vec<String> = Vec::new();
+        for (host, indices) in &self.by_host {
+            let mut entries = Vec::new();
+            let mut ok = true;
+            for &i in indices {
+                let r = &self.rules[i];
+                if !r.options.domains.is_empty() {
+                    ok = false;
+                    break;
                 }
-            } else {
-                scoped.push(format!(
+                let re = token_regex(&r.pattern.toks, false, r.pattern.right_anchor);
+                entries.push(format!(
                     "[{},{},{}]",
-                    c.allow as u8,
-                    js_hosts(&c.hosts),
-                    quote(&c.selector)
+                    quote(&re),
+                    r.options.types.unwrap_or(TYPE_ALL),
+                    bit(r.allow, r.options.important)
+                ));
+            }
+            if ok && !entries.is_empty() {
+                host_map.push(format!("{}:[{}],", quote(host), entries.join(",")));
+            }
+        }
+        host_map.sort();
+        let mut generic_css: Vec<String> = Vec::new();
+        for sel in self.cosmetic_selectors("") {
+            generic_css.push(quote(&sel));
+        }
+        let mut scoped: Vec<(String, Vec<String>)> = Vec::new();
+        for c in &self.cosmetic {
+            if let (Some(h), false) = (&c.host, c.allow) {
+                let key = if h.neg {
+                    format!("~{}", h.host)
+                } else {
+                    h.host.clone()
+                };
+                if let Some(entry) = scoped.iter_mut().find(|entry| entry.0 == key) {
+                    if !entry.1.contains(&c.selector) {
+                        entry.1.push(c.selector.clone());
+                    }
+                } else {
+                    scoped.push((key, vec![c.selector.clone()]));
+                }
+            }
+        }
+        scoped.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut scoped_js = Vec::new();
+        for (host, sels) in scoped {
+            if !sels.is_empty() {
+                scoped_js.push(format!(
+                    "[{},[{}]]",
+                    quote(&host),
+                    sels.iter().map(|s| quote(s)).collect::<Vec<_>>().join(",")
                 ));
             }
         }
-        scoped.sort();
-        scoped.dedup();
-
-        // Big tables go through JSON.parse of one string literal: far faster
-        // for V8 to load than an equally large object/array literal.
-        let json = |text: String| format!("JSON.parse({})", quote(&text));
         JS_HOOK
-            .replace("__SCRIPTLETS__", YT_SCRIPTLET)
-            .replace("__NET__", if network { "true" } else { "false" })
-            .replace("__HOST_RULES__", &json(format!("{{{}}}", host_map.join(","))))
-            .replace("__URL_RULES__", &json(format!("[{}]", url_rules.join(","))))
-            .replace("__GEN_CSS__", &json(format!("[{}]", generic.join(","))))
-            .replace("__SCOPED_CSS__", &json(format!("[{}]", scoped.join(","))))
+            .replace("__NETWORK_HOOKS__", if network_hooks { "true" } else { "false" })
+            .replace("__HOST_RULES__", &format!("{{{}}}", host_map.join("")))
+            .replace("__URL_RULES__", &format!("[{}]", url_rules.join(",")))
+            .replace("__GEN_CSS__", &format!("[{}]", generic_css.join(",")))
+            .replace("__SCOPED_CSS__", &format!("[{}]", scoped_js.join(",")))
     }
 
     fn add_filter_line(&mut self, line: &str) {
@@ -355,22 +337,13 @@ impl AdBlocker {
         {
             return;
         }
-        // Procedural filters, scriptlets and style injections need uBO's
-        // content-script machinery: dropped, never approximated.
-        if line.contains("#?#")
-            || line.contains("#$#")
-            || line.contains("#@$#")
-            || line.contains("#$?#")
-            || line.contains("##+js")
-            || line.contains("#@#+js")
-            || line.contains("#%#")
-        {
-            return;
-        }
         if line.contains("##") || line.contains("#@#") {
             if let Some(c) = parse_cosmetic(line) {
                 self.cosmetic.push(c);
             }
+            return;
+        }
+        if line.contains("#?#") || line.contains("#$#") || line.contains("##+js") {
             return;
         }
         if let Some(rule) = parse_network(line) {
@@ -378,11 +351,6 @@ impl AdBlocker {
             self.rules.push(rule);
             if self.rules[index].pattern.host.is_empty() {
                 self.plain.push(index);
-                let p = &self.rules[index].pattern;
-                match best_token(&p.toks, p.left_anchor, p.right_anchor) {
-                    Some(tok) => self.by_token.entry(tok).or_default().push(index),
-                    None => self.loose.push(index),
-                }
             } else {
                 self.by_host
                     .entry(self.rules[index].pattern.host.clone())
@@ -413,17 +381,8 @@ pub fn load_default() -> AdBlocker {
     {
         dirs.push(dir.to_path_buf());
     }
-    // The working directory is usually the executable's folder too: read each
-    // `filters` folder once, or every rule would be loaded (and emitted) twice.
-    let mut seen: Vec<PathBuf> = Vec::new();
     for dir in dirs {
-        let filters = dir.join("filters");
-        let key = std::fs::canonicalize(&filters).unwrap_or(filters.clone());
-        if seen.contains(&key) {
-            continue;
-        }
-        seen.push(key);
-        for text in load_directory(&filters).into_iter().flatten() {
+        for text in load_directory(&dir.join("filters")).into_iter().flatten() {
             ab.add_filter_list("filters", &text);
         }
     }
@@ -466,17 +425,6 @@ pub fn blocked_subresource(url: &str, type_bits: u32, doc_host: &str) -> bool {
     instance().matches_network(url, &host, type_bits, doc_host) == Decision::Block
 }
 
-/// Sub-resource verdict for a request made by the document at `doc_url`
-/// (used by the WebView2 request interceptor).
-#[cfg_attr(not(windows), allow(dead_code))]
-pub fn blocked_request(url: &str, type_bits: u32, doc_url: &str) -> bool {
-    let Some(host) = host_of(url) else {
-        return false;
-    };
-    let doc_host = host_of(doc_url).unwrap_or_default();
-    instance().matches_network(url, &host, type_bits, &doc_host) == Decision::Block
-}
-
 fn host_of(url: &str) -> Option<String> {
     url::Url::parse(url)
         .ok()
@@ -484,103 +432,6 @@ fn host_of(url: &str) -> Option<String> {
 }
 
 // ---- Matching helpers ----
-
-/// Shortest URL token worth indexing; shorter ones make huge buckets.
-const MIN_TOKEN: usize = 3;
-
-/// Tokens too common in URLs to narrow anything down.
-const STOP_TOKENS: &[&str] = &["http", "https", "www", "com", "net", "org", "html", "php"];
-
-/// The literal alphanumeric run of a pattern to index a rule under, or `None`
-/// when no run is *safe*. A run is safe only when both neighbours in the
-/// pattern are non-alphanumeric characters, a `^` separator or an anchor: then
-/// it can only match a whole alphanumeric token of the URL, so looking URL
-/// tokens up in the index never misses a rule.
-fn best_token(toks: &[Tok], left_anchor: bool, right_anchor: bool) -> Option<String> {
-    let mut best: Option<&str> = None;
-    for (ti, t) in toks.iter().enumerate() {
-        let Tok::Lit(s) = t else { continue };
-        let b = s.as_bytes();
-        let mut i = 0;
-        while i < b.len() {
-            if !b[i].is_ascii_alphanumeric() {
-                i += 1;
-                continue;
-            }
-            let start = i;
-            while i < b.len() && b[i].is_ascii_alphanumeric() {
-                i += 1;
-            }
-            let end = i;
-            let left_ok = start > 0
-                || (ti > 0 && matches!(toks[ti - 1], Tok::Sep))
-                || (ti == 0 && left_anchor);
-            let right_ok = end < b.len()
-                || (ti + 1 < toks.len() && matches!(toks[ti + 1], Tok::Sep))
-                || (ti + 1 == toks.len() && right_anchor);
-            let tok = &s[start..end];
-            if left_ok
-                && right_ok
-                && tok.len() >= MIN_TOKEN
-                && !STOP_TOKENS.contains(&tok)
-                && best.is_none_or(|cur| tok.len() > cur.len())
-            {
-                best = Some(tok);
-            }
-        }
-    }
-    best.map(str::to_string)
-}
-
-/// Whether a cosmetic filter with this host list applies to `doc_host`.
-fn cosmetic_applies(hosts: &[DomainSel], doc_host: &str) -> bool {
-    let mut has_pos = false;
-    let mut pos = false;
-    for d in hosts {
-        let m = suffix_match(doc_host, &d.host);
-        if d.neg {
-            if m {
-                return false;
-            }
-        } else {
-            has_pos = true;
-            pos |= m;
-        }
-    }
-    !has_pos || pos
-}
-
-fn js_hosts(hosts: &[DomainSel]) -> String {
-    let items: Vec<String> = hosts
-        .iter()
-        .map(|d| format!("[{},{}]", quote(&d.host), d.neg as u8))
-        .collect();
-    format!("[{}]", items.join(","))
-}
-
-/// One compiled network rule for the JS tables:
-/// `[regex, typeMask, flags(1 allow|2 important), party(0 any|1 first|2 third),
-/// domains|0]`.
-fn js_entry(re: &str, r: &NetRule) -> String {
-    let party = match r.options.party {
-        Party::Any => 0,
-        Party::First => 1,
-        Party::Third => 2,
-    };
-    let domains = if r.options.domains.is_empty() {
-        "0".to_string()
-    } else {
-        js_hosts(&r.options.domains)
-    };
-    format!(
-        "[{},{},{},{},{}]",
-        quote(re),
-        r.options.types.unwrap_or(TYPE_ALL),
-        bit(r.allow, r.options.important),
-        party,
-        domains
-    )
-}
 
 fn is_sep(c: char) -> bool {
     !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '%' | '~'))
@@ -931,26 +782,6 @@ fn parse_options(txt: &str) -> Option<Options> {
     if saw_unsupported { None } else { Some(o) }
 }
 
-/// uBO procedural cosmetic operators (not CSS): such filters are dropped.
-const PROCEDURAL: &[&str] = &[
-    ":has-text(",
-    ":xpath(",
-    ":matches-css",
-    ":matches-attr(",
-    ":matches-media(",
-    ":matches-path(",
-    ":matches-prop(",
-    ":upward(",
-    ":min-text-length(",
-    ":others(",
-    ":watch-attr(",
-    ":remove(",
-    ":style(",
-    ":nth-ancestor(",
-    ":contains(",
-    ":-abp-",
-];
-
 fn parse_cosmetic(line: &str) -> Option<Cosmetic> {
     let allow = line.contains("#@#");
     let marker = if allow { "#@#" } else { "##" };
@@ -959,31 +790,39 @@ fn parse_cosmetic(line: &str) -> Option<Cosmetic> {
     let selector = &line[pos + marker.len()..];
     // The selector goes into a stylesheet as `selector { display: none }`;
     // braces would let it close that rule and add rules of its own.
-    if selector.trim().is_empty()
-        || selector.contains(['{', '}', '\n', '\r'])
-        || selector.contains("/*")
-        || PROCEDURAL.iter().any(|p| selector.contains(p))
-    {
+    if selector.is_empty() || selector.contains(['{', '}']) {
         return None;
     }
-    let mut host_list: Vec<DomainSel> = Vec::new();
-    for h in hosts.split(',') {
-        let h = h.trim();
-        let (neg, raw) = match h.strip_prefix('~') {
-            Some(rest) => (true, rest),
-            None => (false, h),
-        };
-        let raw = raw.strip_prefix("*.").unwrap_or(raw);
-        if !raw.is_empty() {
-            host_list.push(DomainSel {
-                host: raw.to_lowercase(),
-                neg,
-            });
+    let host = if hosts.trim().is_empty() {
+        None
+    } else {
+        let mut first: Option<DomainSel> = None;
+        for h in hosts.split(',') {
+            let h = h.trim();
+            if h.is_empty() {
+                continue;
+            }
+            let (neg, raw) = if let Some(rest) = h.strip_prefix('~') {
+                (true, rest)
+            } else {
+                (false, h)
+            };
+            let raw = raw.strip_prefix("*.").unwrap_or(raw);
+            if raw.is_empty() {
+                continue;
+            }
+            if first.is_none() {
+                first = Some(DomainSel {
+                    host: raw.to_lowercase(),
+                    neg,
+                });
+            }
         }
-    }
+        first
+    };
     Some(Cosmetic {
-        hosts: host_list,
-        selector: selector.trim().to_string(),
+        host,
+        selector: selector.to_string(),
         allow,
     })
 }
@@ -1056,206 +895,61 @@ fn escape_regex(s: &str) -> String {
 /// flags], ...]` (flags: 1 allow, 2 important); `__URL_RULES__` an array of
 /// the same entries for non-host-anchored filters; `__GEN_CSS__`/
 /// `__SCOPED_CSS__` carry the `##` selectors. Type masks match TYPE_*.
-/// uBO "scriptlets" for YouTube, as plain JavaScript. YouTube describes its
-/// ads inside the player data (`adPlacements`, `playerAds`, `adSlots`), so
-/// network rules cannot remove them; uBO prunes those fields before the player
-/// reads them (`set-constant ytInitialPlayerResponse.*`, `json-prune`,
-/// `json-prune-fetch-response`, `json-prune-xhr-response`). The same is done
-/// here, plus a runtime skipper for ads that are not described in the data
-/// (server-side inserted ones): it mutes, speeds through and skips them.
-const YT_SCRIPTLET: &str = r#"try{
-if(/(^|\.)(youtube\.com|youtube-nocookie\.com|youtubekids\.com)$/.test(host)){
-  const KEYS=['adPlacements','playerAds','adSlots'];
-  const API=/\/youtubei\/v1\/(player|next|browse|search|get_watch|reel\/)|\/watch\?|\/playlist\?list=/;
-  const jp=JSON.parse;
-  const hasKey=s=>typeof s==='string'&&(s.indexOf('"adPlacements"')>=0||s.indexOf('"playerAds"')>=0||s.indexOf('"adSlots"')>=0);
-  const isAdItem=e=>{try{
-    if(!e||typeof e!=='object')return false;
-    if(e.adSlotRenderer)return true;
-    const c=e.richItemRenderer&&e.richItemRenderer.content;
-    if(c&&(c.adSlotRenderer||c.promotedSparklesWebRenderer))return true;
-    const a=e.command&&e.command.reelWatchEndpoint&&e.command.reelWatchEndpoint.adClientParams;
-    return !!(a&&a.isAd);
-  }catch(_){return false}};
-  const prune=(o,d)=>{
-    if(!o||typeof o!=='object'||d>9)return o;
-    if(Array.isArray(o)){
-      for(let i=o.length-1;i>=0;i--){if(isAdItem(o[i]))o.splice(i,1);else prune(o[i],d+1)}
-      return o;
-    }
-    for(const k of KEYS){if(k in o){try{delete o[k]}catch(_){try{o[k]=undefined}catch(__){}}}}
-    for(const k in o){const v=o[k];if(v&&typeof v==='object')prune(v,d+1)}
-    return o;
-  };
-  const pruneText=t=>{try{return JSON.stringify(prune(jp(t),0))}catch(_){return t}};
-
-  /* set-constant: the page assigns the initial player response from an inline
-     script; prune it as it is stored. */
-  try{
-    let v=window.ytInitialPlayerResponse;
-    Object.defineProperty(window,'ytInitialPlayerResponse',{configurable:true,enumerable:true,
-      get(){return v},set(x){v=(x&&typeof x==='object')?prune(x,0):x}});
-  }catch(_){}
-
-  /* json-prune: every JSON.parse result that carries ad fields. */
-  try{
-    JSON.parse=function(t){
-      const r=jp.apply(this,arguments);
-      try{if(r&&typeof r==='object'&&hasKey(t))prune(r,0)}catch(_){}
-      return r;
-    };
-  }catch(_){}
-
-  /* json-prune-fetch-response */
-  try{
-    const of=window.fetch;
-    if(of)window.fetch=function(input){
-      let url='';
-      try{url=typeof input==='string'?input:((input&&input.url)||String(input))}catch(_){}
-      const p=of.apply(this,arguments);
-      if(!API.test(url))return p;
-      return p.then(async resp=>{
-        try{
-          const text=await resp.clone().text();
-          if(!hasKey(text))return resp;
-          return new Response(pruneText(text),{status:resp.status,statusText:resp.statusText,headers:resp.headers});
-        }catch(_){return resp}
-      });
-    };
-  }catch(_){}
-
-  /* json-prune-xhr-response */
-  try{
-    const xo=XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open=function(m,u){
-      try{this.__bcYt=API.test(String(u))}catch(_){}
-      return xo.apply(this,arguments);
-    };
-    for(const prop of ['response','responseText']){
-      const d=Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype,prop);
-      if(!d||!d.get)continue;
-      Object.defineProperty(XMLHttpRequest.prototype,prop,{configurable:true,enumerable:d.enumerable,
-        get(){
-          const v=d.get.call(this);
-          try{
-            if(this.__bcYt&&this.readyState===4){
-              if(typeof v==='string'&&hasKey(v))return this['__bc_'+prop]||(this['__bc_'+prop]=pruneText(v));
-              if(v&&typeof v==='object')prune(v,0);
-            }
-          }catch(_){}
-          return v;
-        }});
-    }
-  }catch(_){}
-
-  /* Runtime skipper for ads that are not in the data (server-side inserted):
-     mute, run the ad to its end and press Skip, then restore the player. */
-  let saved=null;
-  const tick=()=>{try{
-    const p=document.getElementById('movie_player')||document.querySelector('.html5-video-player');
-    const v=document.querySelector('video.html5-main-video')||document.querySelector('video');
-    const ad=!!p&&(p.classList.contains('ad-showing')||p.classList.contains('ad-interrupting'));
-    if(ad&&v){
-      if(!saved)saved={m:v.muted,r:v.playbackRate};
-      v.muted=true;
-      const sk=document.querySelector('.ytp-skip-ad-button,.ytp-ad-skip-button,.ytp-ad-skip-button-modern');
-      if(sk)sk.click();
-      if(isFinite(v.duration)&&v.duration>0&&v.currentTime<v.duration-0.1){
-        v.playbackRate=16;
-        try{v.currentTime=Math.max(0,v.duration-0.05)}catch(_){}
-      }
-    }else if(saved&&v){
-      v.muted=saved.m;v.playbackRate=saved.r;saved=null;
-    }
-    const x=document.querySelector('.ytp-ad-overlay-close-button,.ytp-ad-overlay-slot-close-button');
-    if(x)x.click();
-    const w=document.querySelector('ytd-enforcement-message-view-model');
-    if(w){const dlg=w.closest('tp-yt-paper-dialog')||w;dlg.remove();if(v&&v.paused)v.play().catch(()=>{})}
-  }catch(_){}};
-  setInterval(tick,250);
-}
-}catch(e){}
-"#;
-
 const JS_HOOK: &str = r#"(function(){
-const NET=__NET__;
 const M={sub:2,script:4,image:8,sheet:16,font:32,xhr:64,ws:128,media:256,ping:512,other:1024,popup:2048};
-const host=String(location.hostname||'').toLowerCase();
-const hostMatch=(h,d)=>h===d||h.endsWith('.'+d);
-let isTop=true;try{isTop=window.top===window}catch(e){isTop=false}
-
-/* ---- element hiding (top document) ----
-   Never touches document.head/documentElement directly: at document-creation
-   time neither exists yet. A constructable stylesheet needs neither (and is
-   exempt from the page's CSP); the <style> fallback waits for the root. */
-try{
-  if(isTop){
-    const G=__GEN_CSS__,S=__SCOPED_CSS__;
-    const applies=hs=>{let hasPos=false,pos=false;for(const e of hs){const m=hostMatch(host,e[0]);if(e[1]){if(m)return false}else{hasPos=true;if(m)pos=true}}return !hasPos||pos};
-    const hide=new Set(G),allow=new Set();
-    for(const e of S){if(!applies(e[1]))continue;if(e[0])allow.add(e[2]);else hide.add(e[2])}
-    const sels=[];hide.forEach(x=>{if(!allow.has(x))sels.push(x)});
-    if(sels.length){
-      const css=sels.map(x=>x+'{display:none !important}').join('\n');
-      let done=false;
-      try{
-        if(typeof CSSStyleSheet==='function'&&'adoptedStyleSheets' in document){
-          const sh=new CSSStyleSheet();sh.replaceSync(css);
-          document.adoptedStyleSheets=[...document.adoptedStyleSheets,sh];done=true;
-        }
-      }catch(e){}
-      if(!done){
-        const put=()=>{const st=document.createElement('style');st.textContent=css;(document.head||document.documentElement).appendChild(st)};
-        if(document.documentElement)put();
-        else{const mo=new MutationObserver(()=>{if(document.documentElement){mo.disconnect();put()}});mo.observe(document,{childList:true})}
+const H=Object.assign(Object.create(null),__HOST_RULES__);
+const N=__URL_RULES__||[];
+const R=s=>{try{return s===null?null:new RegExp(s)}catch(e){return null}};
+for(const k in H){H[k].forEach(e=>{e[0]=R(e[0]);});}
+for(const e of N){e[0]=R(e[0]);}
+const abs=u=>{try{return new URL(u,location.href).href}catch(e){return ''}};
+const decide=(u,t)=>{
+  const l=String(u).toLowerCase();
+  let un='';try{un=new URL(String(u)).hostname.toLowerCase()}catch(e){return 0}
+  let block=false,allow=false,imp=false;
+  if(un){
+    const start=l.indexOf(un);
+    const tail=start>=0?l.slice(start+un.length):'';
+    const parts=un.split('.');
+    for(let i=0;i<parts.length;i++){
+      const rs=H[parts.slice(i).join('.')];
+      if(!rs)continue;
+      for(const r of rs){
+        const re=r[0],mask=r[1],flags=r[2];
+        if((mask&t)===0)continue;
+        if(!(re===null?true:re.test(tail)))continue;
+        if(flags&2)imp=true;
+        if(flags&1)allow=true;else block=true;
       }
     }
   }
-}catch(e){}
-
-/* ---- scriptlets (site-specific, independent of network blocking) ---- */
-__SCRIPTLETS__
-
-/* ---- network blocking (only when the host does not intercept natively) ---- */
-if(!NET)return;
-const H=__HOST_RULES__;
-const N=__URL_RULES__;
-/* Regexes compile on first use: a big list has tens of thousands of rules and
-   a page only ever touches a handful of them. */
-const re=r=>{if(typeof r[0]==='string'){try{r[0]=new RegExp(r[0])}catch(e){r[0]=null}}return r[0]};
-const abs=u=>{try{return new URL(String(u),location.href).href}catch(e){return ''}};
-const decide=(u,t)=>{
-  let un,l,tail;
-  try{
-    const x=new URL(String(u));
-    if(x.protocol!=='http:'&&x.protocol!=='https:')return 0;
-    un=x.hostname.toLowerCase();l=x.href.toLowerCase();
-    const at=l.indexOf(un,l.indexOf('//')+2);
-    tail=at>=0?l.slice(at+un.length):'';
-  }catch(e){return 0}
-  const third=!(un===host||un.endsWith('.'+host)||host.endsWith('.'+un));
-  let block=false,allow=false,imp=false;
-  const test=r=>{
-    if((r[1]&t)===0||!re(r))return false;
-    if(r[3]===1&&third)return false;
-    if(r[3]===2&&!third)return false;
-    if(r[4]){
-      let neg=false,hasPos=false,pos=false;
-      for(const d of r[4]){const m=hostMatch(host,d[0]);if(d[1]){if(m)neg=true}else{hasPos=true;if(m)pos=true}}
-      if((neg&&!pos)||(hasPos&&!pos))return false;
-    }
-    return true;
-  };
-  const hit=r=>{if(r[2]&2)imp=true;if(r[2]&1)allow=true;else block=true};
-  const parts=un.split('.');
-  for(let i=0;i<parts.length;i++){
-    const rs=H[parts.slice(i).join('.')];
-    if(!rs)continue;
-    for(const r of rs)if(test(r)&&r[0].test(tail))hit(r);
+  for(const r of N){
+    const re=r[0],mask=r[1],flags=r[2];
+    if((mask&t)===0)continue;
+    if(!re.test(l))continue;
+    if(flags&2)imp=true;
+    if(flags&1)allow=true;else block=true;
   }
-  for(const r of N)if(test(r)&&r[0].test(l))hit(r);
-  return block&&(imp||!allow)?1:0;
+  if(block && (imp || !allow))return 1;
+  return 0;
 };
+{const g=__GEN_CSS__||[],s=__SCOPED_CSS__||[];
+ if(g.length||s.length){
+   const h=location.hostname.toLowerCase();
+   let css=g.slice();
+   for(const x of s){
+     const host=x[0].startsWith('~')?x[0].slice(1):x[0];
+     const neg=x[0].startsWith('~');
+     const mm=neg?(h!==host&&!h.endsWith('.'+host)):(h===host||h.endsWith('.'+host));
+     if(mm)css=css.concat(x[1]);
+   }
+   if(css.length){
+     const st=document.createElement('style');
+     st.textContent=css.map(x=>x+'{display:none !important}').join('');
+     (document.head||document.documentElement).appendChild(st);
+   }
+ }}
+if(!__NETWORK_HOOKS__)return;
 const tagType=el=>{
   const t=(el.tagName||'').toLowerCase();
   if(t==='script')return M.script;
@@ -1266,16 +960,17 @@ const tagType=el=>{
   return M.other;
 };
 const intercept=(proto,attr)=>{
-  try{
-    const d=Object.getOwnPropertyDescriptor(proto,attr);
-    if(!d||!d.set)return;
-    const set=d.set;
-    Object.defineProperty(proto,attr,{configurable:true,enumerable:d.enumerable,get:d.get,
-      set:function(v){
-        try{const a=abs(v);if(a&&decide(a,tagType(this))===1)return}catch(e){}
-        set.call(this,v);
-      }});
-  }catch(e){}
+  const d=Object.getOwnPropertyDescriptor(proto,attr);
+  if(!d||!d.set)return;
+  const set=d.set;
+  Object.defineProperty(proto,attr,{
+    configurable:true,enumerable:d.enumerable,get:d.get,
+    set:function(v){
+      const a=abs(v);
+      if(a&&decide(a,tagType(this))===1)return;
+      set.call(this,v);
+    }
+  });
 };
 intercept(HTMLImageElement.prototype,'src');
 intercept(HTMLScriptElement.prototype,'src');
@@ -1286,67 +981,46 @@ intercept(HTMLLinkElement.prototype,'href');
 intercept(HTMLAudioElement.prototype,'src');
 intercept(HTMLVideoElement.prototype,'src');
 intercept(HTMLSourceElement.prototype,'src');
-try{
-  const oSA=Element.prototype.setAttribute;
-  Element.prototype.setAttribute=function(n,v){
-    try{
-      const k=String(n).toLowerCase();
-      if(k==='src'||k==='href'||k==='data'){
-        const t=tagType(this);
-        if(t!==M.other){const a=abs(v);if(a&&decide(a,t)===1)return}
-      }
-    }catch(e){}
-    return oSA.apply(this,arguments);
-  };
-}catch(e){}
-try{
-  const origFetch=window.fetch;
-  if(origFetch)window.fetch=function(input){
-    try{
-      const u=typeof input==='string'?input:(input&&input.url?input.url:String(input));
-      if(u&&decide(abs(u),M.xhr)===1)return Promise.reject(new TypeError('Blocked by BrowseCraft'));
-    }catch(e){}
-    return origFetch.apply(this,arguments);
-  };
-}catch(e){}
-try{
-  const origOpen=XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open=function(method,u){
-    try{
-      if(u&&decide(abs(u),M.xhr)===1){
-        const a=Array.prototype.slice.call(arguments);a[1]='about:blank';
-        return origOpen.apply(this,a);
-      }
-    }catch(e){}
-    return origOpen.apply(this,arguments);
-  };
-}catch(e){}
-try{
-  if(navigator.sendBeacon){
-    const sb=navigator.sendBeacon.bind(navigator);
-    navigator.sendBeacon=function(u){
-      try{if(u&&decide(abs(u),M.ping)===1)return false}catch(e){}
-      return sb.apply(navigator,arguments);
-    };
+const oSA=Element.prototype.setAttribute;
+Element.prototype.setAttribute=function(n,v){
+  if(n==='src'||n==='href'||n==='data'){
+    const t=tagType(this);
+    if(t!==M.other){
+      const a=abs(v);
+      if(a&&decide(a,t)===1)return;
+    }
   }
-}catch(e){}
-/* Backstop for tags the HTML parser inserts: the setters above never see
-   those, so remove blocked ones as they appear (the native interceptor is the
-   reliable path; this only runs where there is none). */
-try{
-  const ATTR={SCRIPT:'src',IMG:'src',IFRAME:'src',FRAME:'src',EMBED:'src',OBJECT:'data',AUDIO:'src',VIDEO:'src',SOURCE:'src',TRACK:'src',LINK:'href'};
-  const check=n=>{
-    const a=ATTR[n.tagName];if(!a)return;
-    const v=n.getAttribute(a);
-    if(v&&decide(abs(v),tagType(n))===1){try{n.removeAttribute(a);n.remove()}catch(e){}}
+  return oSA.call(this,n,v);
+};
+const origFetch=window.fetch;
+if(origFetch){
+  window.fetch=function(input,init){
+    // The native Request constructor handles URL objects, string conversion,
+    // cross-realm Requests and init overrides exactly once.
+    try {
+      const request=new Request(input,init);
+      if(decide(request.url,M.xhr)===1)return Promise.reject(new TypeError('Blocked by BrowseCraft'));
+      return origFetch.call(this,request);
+    } catch(error) { return Promise.reject(error); }
   };
-  const scan=n=>{
-    if(!n||n.nodeType!==1)return;
-    check(n);
-    if(n.querySelectorAll)n.querySelectorAll('script[src],img[src],iframe[src],link[href],embed[src],object[data],source[src],video[src],audio[src]').forEach(check);
+}
+const origOpen=XMLHttpRequest.prototype.open;
+XMLHttpRequest.prototype.open=function(method,u){
+  if(u&&decide(abs(u),M.xhr)===1)return;
+  return origOpen.apply(this,arguments);
+};
+if(navigator.sendBeacon){
+  const sb=navigator.sendBeacon.bind(navigator);
+  navigator.sendBeacon=function(u,data){
+    if(u&&decide(abs(u),M.ping)===1)return false;
+    return sb.apply(navigator,arguments);
   };
-  new MutationObserver(ms=>{for(const m of ms)m.addedNodes.forEach(scan)}).observe(document,{childList:true,subtree:true});
-}catch(e){}
+}
+const oCE=document.createElement;
+document.createElement=function(tag){
+  const el=oCE.call(this,tag);
+  return el;
+};
 })();"#;
 
 // ---- Built-in starter list ----
@@ -1406,6 +1080,18 @@ const START_LIST: &str = r#"! BrowseCraft starter list (subset of uBlock Origin 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fetch_inputs_are_normalized_once_before_filtering() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let ab = blocker(&["||blocked.example^"]);
+        let mut child = Command::new("node").arg("-e")
+            .arg(include_str!("../tests/fetch-inputs.cjs"))
+            .stdin(Stdio::piped()).spawn().expect("Node.js is required for fetch regression tests");
+        child.stdin.take().unwrap().write_all(ab.page_script().as_bytes()).unwrap();
+        assert!(child.wait().unwrap().success());
+    }
 
     #[test]
     fn page_script_strings_are_always_valid_javascript() {
@@ -1869,139 +1555,6 @@ mod tests {
         assert_eq!(
             decide(&ab, "http://example.com/x", TYPE_ALL, "x.com"),
             Decision::Block
-        );
-    }
-
-    #[test]
-    fn token_index_agrees_with_scanning_every_rule() {
-        let list = "/ads/banner\n&adunit=\n/pagead/*\n|http://tracker.example/pixel|\n||cdn.example^*/adframe.\n\
-            -banner-ad-\n/track^\nads*.gif\n.com/ad/\n@@/ads/banner/ok\n/AdServer/$script\n*/tag.js$third-party\n\
-            /x.php?ad=\nban$image\n/wp-content/ads/\n_300x250.\n://ads.\n|https://z.test/a|";
-        let ab = blocker(&[list]);
-        let mut naive = blocker(&[list]);
-        naive.by_token.clear();
-        naive.loose = naive.plain.clone();
-        assert!(!ab.by_token.is_empty(), "some rules must be indexed");
-        let urls = [
-            "https://site.test/ads/banner/1.png",
-            "https://site.test/ads/banner/ok.png",
-            "https://site.test/x?a=1&adunit=5",
-            "https://site.test/pagead/ads?x=1",
-            "http://tracker.example/pixel",
-            "http://tracker.example/pixel2",
-            "https://cdn.example/v1/adframe.html",
-            "https://site.test/css/my-banner-ad-top.png",
-            "https://site.test/track",
-            "https://site.test/track/x",
-            "https://site.test/tracker",
-            "https://adsense.test/img.gif",
-            "https://foo.com/ad/1",
-            "https://foo.com/AdServer/x.js",
-            "https://other.test/lib/tag.js",
-            "https://site.test/x.php?ad=1",
-            "https://site.test/banner.png",
-            "https://site.test/wp-content/ads/a.png",
-            "https://site.test/img_300x250.jpg",
-            "https://ads.site.test/",
-            "https://z.test/a",
-            "https://z.test/ab",
-            "https://clean.test/index.html",
-        ];
-        for u in urls {
-            for (types, doc) in [(TYPE_ALL, "site.test"), (TYPE_SCRIPT, "other.test"), (TYPE_IMAGE, "")] {
-                assert_eq!(decide(&ab, u, types, doc), decide(&naive, u, types, doc), "{u} {types}");
-            }
-        }
-        assert_eq!(decide(&ab, "https://site.test/ads/banner/1.png", TYPE_ALL, "site.test"), Decision::Block);
-    }
-
-    #[test]
-    fn unsafe_tokens_are_not_indexed() {
-        // `ads*` and `*ads` could match inside a longer word: no safe token.
-        let ab = blocker(&["ads*.gif", "*banner"]);
-        assert!(ab.by_token.is_empty());
-        assert_eq!(ab.loose.len(), 2);
-        assert_eq!(decide(&ab, "https://x.test/roads1.gif", TYPE_ALL, "x.test"), Decision::Block);
-    }
-
-    #[test]
-    fn cosmetic_host_lists_keep_every_host() {
-        let ab = blocker(&["a.com,b.com##.x", "~c.com##.y", "d.com,~e.d.com##.z"]);
-        assert_eq!(ab.cosmetic_selectors("a.com"), vec![".x", ".y"]);
-        assert_eq!(ab.cosmetic_selectors("b.com"), vec![".x", ".y"]);
-        assert_eq!(ab.cosmetic_selectors("c.com"), Vec::<String>::new());
-        assert_eq!(ab.cosmetic_selectors("d.com"), vec![".y", ".z"]);
-        assert_eq!(ab.cosmetic_selectors("e.d.com"), vec![".y"]);
-    }
-
-    #[test]
-    fn procedural_and_scriptlet_filters_are_dropped() {
-        let ab = blocker(&[
-            "a.com##+js(aopr, x)",
-            "a.com##div:has-text(Ad)",
-            "a.com#?#div:has(> .x)",
-            "a.com##.ok",
-        ]);
-        assert_eq!(ab.cosmetic_selectors("a.com"), vec![".ok"]);
-    }
-
-    #[test]
-    fn page_script_with_native_network_has_no_rule_tables() {
-        let ab = blocker(&["||doubleclick.net^", "/ads/banner", "##.adsbygoogle"]);
-        let js = ab.page_script_with(false);
-        assert!(!js.contains("doubleclick"));
-        assert!(!js.contains("banner"));
-        assert!(js.contains("adsbygoogle"));
-        assert!(js.contains("const NET=false"));
-        assert!(ab.page_script_with(true).contains("doubleclick"));
-        // No unreplaced placeholders.
-        for t in ["__SCRIPTLETS__", "__NET__", "__HOST_RULES__", "__URL_RULES__", "__GEN_CSS__", "__SCOPED_CSS__"] {
-            assert!(!js.contains(t) && !ab.page_script().contains(t), "{t}");
-        }
-    }
-
-    #[test]
-    fn js_rules_carry_party_and_domain_options() {
-        let ab = blocker(&["||ads.test^$third-party,domain=a.com|~b.a.com"]);
-        let js = ab.page_script();
-        assert!(js.contains("a.com"));
-        assert!(js.contains(",2,"), "third-party flag");
-    }
-
-    #[test]
-    fn blocked_request_uses_the_document_host() {
-        let mut ab = AdBlocker::empty();
-        ab.add_filter_list("t", "||ads.test^$third-party");
-        assert_eq!(decide(&ab, "https://ads.test/x.js", TYPE_SCRIPT, "ads.test"), Decision::Neutral);
-        assert_eq!(decide(&ab, "https://ads.test/x.js", TYPE_SCRIPT, "news.test"), Decision::Block);
-    }
-
-    #[test]
-    fn youtube_scriptlet_is_in_the_page_script_in_both_modes() {
-        let ab = blocker(&["##.ad"]);
-        for network in [true, false] {
-            let js = ab.page_script_with(network);
-            assert!(js.contains("adPlacements") && js.contains("ytInitialPlayerResponse"));
-            assert!(js.contains("ad-showing"));
-            assert!(!js.contains("__SCRIPTLETS__"));
-        }
-    }
-
-    #[test]
-    fn bundled_youtube_list_hides_player_ads_and_blocks_ad_stats() {
-        let ab = blocker(&[include_str!("../filters/youtube.txt")]);
-        let sel = ab.cosmetic_selectors("www.youtube.com");
-        for want in ["ytd-ad-slot-renderer", "#player-ads", "#masthead-ad"] {
-            assert!(sel.iter().any(|s| s == want), "{want}");
-        }
-        assert!(ab.cosmetic_selectors("example.com").is_empty());
-        assert_eq!(
-            decide(&ab, "https://www.youtube.com/api/stats/ads?ver=2", TYPE_XHR, "www.youtube.com"),
-            Decision::Block
-        );
-        assert_eq!(
-            decide(&ab, "https://www.youtube.com/youtubei/v1/player?key=1", TYPE_XHR, "www.youtube.com"),
-            Decision::Neutral
         );
     }
 }

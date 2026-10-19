@@ -87,15 +87,23 @@ When a web page goes fullscreen, for example a video's fullscreen button on YouT
 Click the key icon at the top right. The first time, choose how to protect your vault:
 
 - **A password**, or
-- **A key file**: a small file with random bytes that Prowl creates for you. The vault cannot be opened without it. Keep it apart from the vault (a USB stick, say). If you lose it, the vault is gone for good.
+- **A key file**: a small file with random bytes that BrowseCraft creates for you. The vault cannot be opened without it. Keep it apart from the vault (a USB stick, say). If you lose it, the vault is gone for good.
 
-The vault is a standard KeePass 4 (`.kdbx`) file, so KeePassXC and other KeePass apps open it too. You can also open an existing vault. Prowl locks the vault again after 15 minutes without use, and keeps which vault to use (never a password) in `passwords.cfg`.
+The vault is a standard KeePass 4 (`.kdbx`) file, so KeePassXC and other KeePass apps open it too. You can also open an existing vault. BrowseCraft locks the vault again after 15 minutes without use, and keeps which vault to use (never a password) in `passwords.cfg` in the [per-user settings folder](../README.md#settings), which is also where it suggests creating a new vault.
 
 On a page with a login form the key menu lists the logins saved for that site: click one to fill the page. On a sign-up or change-password form, *Suggest a strong password* fills a generated one. When you submit a login, a bar offers to **Save** it (or **Update** a changed password), or to never ask for that site. `browsecraft://passwords` lists, shows, copies (cleared from the clipboard after 30 seconds), adds and deletes logins.
 
 ## Settings (`browsecraft://flags`)
 
-`browsecraft://flags` is an engine-rendered settings page with switches and segmented controls. It sets the theme (system, light or dark; dark by default), the tab sidebar position, whether the bookmarks bar shows, and the interface renderer (auto, GPU or software). Changes apply immediately and are stored in `flags.txt` in the working directory. System follows the OS for the theme; Auto uses the GPU path when one is available. The renderer choice is made at startup, so restart to apply a change to it.
+`browsecraft://flags` is an engine-rendered settings page with switches and segmented controls. It sets the theme (system, light or dark; dark by default), the tab sidebar position, whether the bookmarks bar shows, and the interface renderer (auto, GPU or software). Changes are stored in the [per-user settings folder](../README.md#settings) and apply immediately after a successful save; save errors are shown on the page or in the status notice. System follows the OS for the theme; Auto uses the GPU path when one is available. The renderer choice is made at startup, so restart to apply a change to it.
+
+## Ad blocking
+
+BrowseCraft blocks ads and trackers with a small built-in filter list plus every
+`.txt` file in a `filters` folder in the working directory or next to the
+executable (EasyList / uBlock Origin syntax). A blocked page shows a "This page
+was blocked" notice while the address bar keeps the original address, and a
+blocked pop-up shows a short notice under the page.
 
 ## Keyboard and mouse
 

@@ -65,22 +65,63 @@ over IPC and keys pressed inside iframes are covered too.
 
 ## Loading
 
-`loader::spawn` runs on a background thread. It fetches the document, parses
-it, and fetches every `<link rel=stylesheet>` in parallel, along with nested
-`@import`s. It then sends a `LoadEvent::Page` to the UI thread through winit's
-`EventLoopProxy`. Images follow from a small worker pool (`LoadEvent::Image`),
-and each one triggers a relayout. Every load has a generation number, so
-events from an outdated load are dropped.
+`loader::spawn` submits to two persistent background workers with a queue of
+at most 16 loads. New navigation removes stale queued generations. Each active
+load uses at most six workers for stylesheets or images, including its calling
+worker. A 60-second deadline includes queue time; individual HTTP operations
+are capped at 30 seconds or the remaining deadline. Already-started blocking
+I/O can finish or time out, but cancellation stops subsequent requests,
+redirect hops, imports, parser tokens/rules and stale page/image events.
+`LoadEvent::Page` reaches the UI through winit's `EventLoopProxy`; images follow
+as `LoadEvent::Image`, each triggering a relayout.
+
+HTTP redirects are followed manually (at most ten), checking the ad-block
+policy before each destination. Resource type and the document host are
+retained across stylesheet/image redirects. POST becomes GET for 301/302/303;
+307/308 retain the form body. Redirects cannot switch to local-file schemes.
+
+## Parsing and sibling metadata
+
+CSS at-rule preludes use one forward scan to the first top-level `{` or `;`,
+respecting quotes, escapes and function/bracket nesting. A run of sibling
+at-rules therefore does not repeatedly scan the remaining stylesheet for a
+delimiter that is absent.
+
+The HTML builder retains separate attribute-name sets for the root and body
+throughout parsing. Repeated `<html>`/`<body>` tags add only unseen attributes,
+preserving the first value and insertion order without rescanning old names.
+
+`Document` lazily caches element sibling links, one-based element and same-tag
+indices, and last-of-type flags. Building this metadata visits each parent's
+children twice; subsequent first/last/nth-child and first/last-of-type checks
+use constant-time lookups. Sibling iterators skip text nodes via cached links.
+`append` and `element_mut` invalidate the cache, so structural additions and
+tag changes must use those methods. The cache is shared across matching calls
+and restyles of an unchanged document.
 
 ## Style
 
 `style::compute_styles` gives every node an `Rc<Style>`. Rules are bucketed by
 the subject's id, class or tag, so each element only tests likely selectors.
+Each rule contributes its declarations once, using the greatest specificity
+among its matching selectors and the rule's source order.
 Declarations are sorted by importance, origin (UA, HTML hints, author, inline),
 specificity and order. Custom properties resolve first so `var()` can be
 substituted, then shorthands expand into longhands. Lengths come out in
 **device pixels** (CSS px × scale factor × zoom); percentages stay for layout
 to resolve.
+
+Selector parsing permits at most 64 compound parts across an entire selector
+tree, including nested pseudo-selector lists. Matching also caps recursion at
+64 parts and shares memoized successes/failures across `:is()`/`:not()` calls,
+keyed by selector suffix identity and DOM node. A 100,000-step budget covers
+state visits and class/attribute/pseudo checks, shared by all candidate
+selectors for one element (or one standalone test-helper match).
+Exhaustion propagates as an error, so `:not()` cannot invert it into a match;
+styling stops evaluating further candidates for that element. The cascade
+retains at most 65,536 declarations per element, gathered in rule source order,
+then HTML hints and inline styles; excess declarations are ignored before
+sorting and value expansion. These limits apply to the custom engine.
 
 Styles depend on the viewport only through media queries and viewport units,
 so the browser restyles only when the set of matching `@media` queries or the
@@ -107,6 +148,12 @@ underneath.
 - **Positioning:** absolute boxes wait for their containing block's size, then are placed using `top/left/right/bottom`.
 
 ## Painting
+
+Windows screenshot capture validates signed crop conversions, client bounds,
+row offsets and checked byte counts before acquiring GDI resources. Both the
+full-client and cropped RGBA buffers are limited to 128 MiB each and allocated
+fallibly. Bitmap selection/restoration is checked before `GetDIBits`; resource
+guards release the memory DC before its bitmap on every exit path.
 
 `paint::paint_items` draws only the items that intersect the viewport into a
 `u32` buffer, using alpha blending, anti-aliased rounded rectangles and cached
@@ -136,10 +183,14 @@ webview rectangles.
 ## Flags and `browsecraft://`
 
 `flags.rs` holds user settings (`tabs-position`, `theme`, `chrome`) in a
-`RwLock`, persisted as `key=value` lines in `flags.txt` in the working
-directory. `browsecraft://flags` is an engine-internal page: `loader.rs` parses its
-query string with `flags::apply_query`, and the radio buttons submit
-`browsecraft://flags?key=value`. `browsecraft://` URLs are routed to the engine by
+`RwLock`, persisted as `key=value` lines in the per-user configuration directory.
+An exclusive temporary file is synced, then atomically replaces `flags.txt`;
+memory changes only after a successful save. `browsecraft://flags` is an
+engine-internal page: `loader.rs` passes its query to `flags::apply_form`.
+Each form owns a 128-bit OS-random one-time token. Up to 128 forms may remain
+outstanding; issuing a new token preserves other tabs, evicting only the oldest
+entry when full. Submitting consumes only that form's token, and replayed or
+evicted forms show an expiration message. `browsecraft://` URLs are routed to the engine by
 `request_in_webview`. The theme toggle (toolbar sun/moon) flips `theme` between
 Light and Dark; `Auto` follows the OS.
 
@@ -155,6 +206,33 @@ texture in the central panel. If GPU setup fails, or `chrome = engine`,
 `browser.rs` creates the softbuffer surface (`Gfx::surface` is `Some`) and
 draws its own chrome. The choice is made once at startup; the WebView2 pane is
 placed from the egui central panel rect on the GPU path. See `docs/egui.md`.
+
+## Ad blocking
+
+`adblock.rs` is a port of uBlock Origin's static network filtering and `##`
+element hiding, using EasyList/uBO syntax. `adblock::instance()` builds one
+shared `AdBlocker` from a built-in starter list plus every `filters/*.txt`
+file in the working directory and next to the executable. It feeds three
+sinks:
+
+1. **Rust-side network checks** (`matches_network`, through `blocked_page` and
+   `blocked_subresource`): main-frame navigations and pop-ups are checked
+   before they load (a blocked page becomes `about:blocked:<url>`), and engine
+   pages skip blocked stylesheets and images.
+2. **WebView2 pages:** native `WebResourceRequested` interception checks requests
+   and redirects, including parser-initiated images, CSS and scripts. Supported
+   runtimes include frame/worker request sources. Request Origin/Referer, or
+   the current page URL as a fallback, supplies the document host. Blocked
+   requests receive an empty 403 response. Windows initialization scripts
+   handle cosmetic rules only; a failed native hook falls back to the engine.
+   On macOS, JavaScript request hooks remain best effort: fetch inputs are
+   normalized through `Request`, but parser-initiated resources are not fully
+   covered by JavaScript interception.
+3. **Engine pages:** `engine_cosmetic_css(host)` returns a stylesheet that
+   `loader.rs` appends to fetched pages, hiding matches with `display: none`.
+
+Regex filters, `$redirect`/`$csp`/`$replace`, scriptlets and procedural
+filters are dropped; `$domain=` is only honoured on the Rust side.
 
 ## History
 

@@ -2,15 +2,14 @@
 
 use std::io::Read;
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use ureq::ResponseExt;
 use url::Url;
 
 pub const USER_AGENT: &str = concat!(
     "Mozilla/5.0 (compatible; BrowseCraft/",
     env!("CARGO_PKG_VERSION"),
-    "; +https://github.com/pierruno-labs/browsecraft)"
+    "; +https://github.com/freewright-dev/BrowseCraft)"
 );
 const MAX_BODY: u64 = 32 * 1024 * 1024;
 
@@ -29,40 +28,94 @@ fn agent() -> &'static ureq::Agent {
             .http_status_as_error(false)
             .timeout_global(Some(Duration::from_secs(30)))
             .user_agent(USER_AGENT)
-            .max_redirects(10)
+            // Every redirect destination is checked before a connection.
+            .max_redirects(0)
             .build()
             .into()
     })
 }
 
 /// Fetches `url`, sending `form` as an urlencoded POST body when given.
+#[cfg(test)]
 pub fn fetch(url: &Url, form: Option<&str>, accept: &str) -> Result<Response, String> {
+    fetch_checked(url, form, accept, &|_| Ok(()), None)
+}
+
+/// Apply caller policy/cancellation before every hop and during body reads.
+/// Redirects remain HTTP(S)-only; POST becomes GET for 301/302/303 and is
+/// retained for 307/308. No caller credentials/headers are forwarded.
+pub fn fetch_checked(
+    url: &Url,
+    form: Option<&str>,
+    accept: &str,
+    check: &dyn Fn(&Url) -> Result<(), String>,
+    deadline: Option<Instant>,
+) -> Result<Response, String> {
+    check_active(url, check, deadline)?;
     match url.scheme() {
         "http" | "https" => {
-            let result = match form {
-                Some(body) => agent()
-                    .post(url.as_str())
-                    .header("Accept", accept)
-                    .content_type("application/x-www-form-urlencoded")
-                    .send(body.as_bytes()),
-                None => agent().get(url.as_str()).header("Accept", accept).call(),
-            };
-            let mut resp = result.map_err(describe_error)?;
-            let final_url = Url::parse(&resp.get_uri().to_string()).unwrap_or_else(|_| url.clone());
-            let status = resp.status().as_u16();
-            let content_type = resp
-                .headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_string();
-            let body = read_http_body(resp.body_mut())?;
-            Ok(Response {
-                url: final_url,
-                status,
-                content_type,
-                body,
-            })
+            let mut current = url.clone();
+            let mut form = form;
+            for redirects in 0..=10 {
+                check_active(&current, check, deadline)?;
+                let timeout = deadline.map_or(Duration::from_secs(30), |end| {
+                    end.saturating_duration_since(Instant::now())
+                        .min(Duration::from_secs(30))
+                });
+                let result = match form {
+                    Some(body) => agent()
+                        .post(current.as_str())
+                        .config()
+                        .timeout_global(Some(timeout))
+                        .build()
+                        .header("Accept", accept)
+                        .content_type("application/x-www-form-urlencoded")
+                        .send(body.as_bytes()),
+                    None => agent()
+                        .get(current.as_str())
+                        .config()
+                        .timeout_global(Some(timeout))
+                        .build()
+                        .header("Accept", accept)
+                        .call(),
+                };
+                let mut resp = result.map_err(describe_error)?;
+                check_active(&current, check, deadline)?;
+                let status = resp.status().as_u16();
+                if matches!(status, 301 | 302 | 303 | 307 | 308) {
+                    if let Some(location) = resp.headers().get("location") {
+                        if redirects == 10 {
+                            return Err("too many redirects".into());
+                        }
+                        let location =
+                            location.to_str().map_err(|_| "invalid redirect location")?;
+                        let next = current.join(location).map_err(|_| "invalid redirect URL")?;
+                        if !matches!(next.scheme(), "http" | "https") {
+                            return Err("redirects must use HTTP or HTTPS".into());
+                        }
+                        if matches!(status, 301 | 302 | 303) {
+                            form = None;
+                        }
+                        current = next;
+                        continue;
+                    }
+                }
+                let content_type = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                let body =
+                    read_http_body(resp.body_mut(), &|| check_active(&current, check, deadline))?;
+                return Ok(Response {
+                    url: current,
+                    status,
+                    content_type,
+                    body,
+                });
+            }
+            Err("too many redirects".into())
         }
         "file" => {
             // On Windows `file://host/share` maps to the UNC path
@@ -116,17 +169,41 @@ pub fn fetch(url: &Url, form: Option<&str>, accept: &str) -> Result<Response, St
     }
 }
 
-fn read_http_body(body: &mut ureq::Body) -> Result<Vec<u8>, String> {
+fn check_active(
+    url: &Url,
+    check: &dyn Fn(&Url) -> Result<(), String>,
+    deadline: Option<Instant>,
+) -> Result<(), String> {
+    if deadline.is_some_and(|end| Instant::now() >= end) {
+        return Err("the page load timed out".into());
+    }
+    check(url)
+}
+
+fn read_http_body(
+    body: &mut ureq::Body,
+    check: &dyn Fn() -> Result<(), String>,
+) -> Result<Vec<u8>, String> {
     // ureq's limit applies BEFORE content decoding. Keep a wire-size cap,
     // but also bound the decoded stream to prevent gzip decompression bombs.
     // Read one extra byte to distinguish an exact-limit body from truncation.
     let mut decoded = Vec::new();
-    body.with_config()
+    let mut reader = body
+        .with_config()
         .limit(MAX_BODY + 1)
         .reader()
-        .take(MAX_BODY + 1)
-        .read_to_end(&mut decoded)
-        .map_err(|e| describe_error(e.into()))?;
+        .take(MAX_BODY + 1);
+    let mut chunk = [0u8; 8192];
+    loop {
+        check()?;
+        let n = reader
+            .read(&mut chunk)
+            .map_err(|e| describe_error(e.into()))?;
+        if n == 0 {
+            break;
+        }
+        decoded.extend_from_slice(&chunk[..n]);
+    }
     if decoded.len() as u64 > MAX_BODY {
         return Err("the response is too large".into());
     }
@@ -334,6 +411,91 @@ mod tests {
     use super::*;
 
     #[test]
+    fn redirects_check_policy_before_connecting_and_preserve_methods() {
+        use crate::test_http::{Server, ok, redirect};
+        for status in [301, 302, 303, 307, 308] {
+            let server = Server::new(move |r| {
+                if r.path == "/" {
+                    redirect(status, "/target")
+                } else {
+                    ok("done")
+                }
+            });
+            let response = fetch(&server.url, Some("a=b"), "*/*").unwrap();
+            assert_eq!(response.url.path(), "/target");
+            let seen = server.requests.lock().unwrap();
+            assert_eq!(seen.len(), 2);
+            assert_eq!(seen[0].method, "POST");
+            let preserved = matches!(status, 307 | 308);
+            assert_eq!(seen[1].method, if preserved { "POST" } else { "GET" });
+            assert_eq!(
+                seen[1].body,
+                if preserved { b"a=b".to_vec() } else { vec![] }
+            );
+        }
+        let server = Server::new(|r| {
+            if r.path == "/" {
+                redirect(302, "/blocked")
+            } else {
+                ok("should not arrive")
+            }
+        });
+        let mut blocker = crate::adblock::AdBlocker::empty();
+        blocker.add_filter_list(
+            "test",
+            &format!("|{}|", server.url.join("blocked").unwrap()),
+        );
+        for kind in [crate::adblock::TYPE_IMAGE, crate::adblock::TYPE_STYLESHEET] {
+            let result = fetch_checked(
+                &server.url,
+                None,
+                "*/*",
+                &|url| {
+                    if blocker.matches_network(
+                        url.as_str(),
+                        url.host_str().unwrap(),
+                        kind,
+                        "127.0.0.1",
+                    ) == crate::adblock::Decision::Block
+                    {
+                        Err("blocked".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+                None,
+            );
+            assert_eq!(result.err().as_deref(), Some("blocked"));
+        }
+        assert!(
+            server
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|r| r.path == "/")
+        );
+    }
+
+    #[test]
+    fn redirects_are_bounded_and_cannot_escape_to_local_files() {
+        use crate::test_http::{Server, redirect};
+        let server = Server::new(|_| redirect(302, "/"));
+        assert_eq!(
+            fetch(&server.url, None, "*/*").err().as_deref(),
+            Some("too many redirects")
+        );
+        assert_eq!(server.requests.lock().unwrap().len(), 11);
+        let server = Server::new(|_| redirect(302, "file:///C:/secret"));
+        assert!(fetch(&server.url, None, "*/*").is_err());
+        assert_eq!(server.requests.lock().unwrap().len(), 1);
+        assert!(
+            fetch_checked(&server.url, None, "*/*", &|_| Ok(()), Some(Instant::now())).is_err()
+        );
+        assert_eq!(server.requests.lock().unwrap().len(), 1);
+    }
+
+    #[test]
     fn data_urls_decode_a_trailing_escape() {
         assert_eq!(parse_data_url("data:,a%41").unwrap().1, b"aA");
         assert_eq!(parse_data_url("data:,%4").unwrap().1, b"%4");
@@ -384,8 +546,12 @@ mod tests {
         let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             let mut reader = BufReader::new(&stream);
             loop {
                 let mut line = String::new();
@@ -394,10 +560,17 @@ mod tests {
                     break;
                 }
             }
-            let encoding = if gzip { "Content-Encoding: gzip\r\n" } else { "" };
-            write!(stream,
+            let encoding = if gzip {
+                "Content-Encoding: gzip\r\n"
+            } else {
+                ""
+            };
+            write!(
+                stream,
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{encoding}Connection: close\r\n\r\n",
-                body.len()).unwrap();
+                body.len()
+            )
+            .unwrap();
             // An oversized response may be rejected before the server finishes.
             let _ = stream.write_all(&body);
         });
@@ -411,8 +584,8 @@ mod tests {
         for gzip in [false, true] {
             for len in [0, 5, MAX_BODY, MAX_BODY + 1] {
                 let body = if gzip {
-                    let mut encoder = flate2::write::GzEncoder::new(
-                        Vec::new(), flate2::Compression::fast());
+                    let mut encoder =
+                        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
                     std::io::copy(&mut std::io::repeat(b'x').take(len), &mut encoder).unwrap();
                     let compressed = encoder.finish().unwrap();
                     assert!((compressed.len() as u64) < MAX_BODY);
@@ -422,10 +595,14 @@ mod tests {
                 };
                 let result = fetch_test_body(body, gzip);
                 if len > MAX_BODY {
-                    assert_eq!(result.err().as_deref(), Some("the response is too large"),
-                        "gzip={gzip}, length={len}");
+                    assert_eq!(
+                        result.err().as_deref(),
+                        Some("the response is too large"),
+                        "gzip={gzip}, length={len}"
+                    );
                 } else {
-                    let response = result.unwrap_or_else(|e| panic!("gzip={gzip}, length={len}: {e}"));
+                    let response =
+                        result.unwrap_or_else(|e| panic!("gzip={gzip}, length={len}: {e}"));
                     assert_eq!(response.body.len() as u64, len);
                     assert!(response.body.iter().all(|&b| b == b'x'));
                 }

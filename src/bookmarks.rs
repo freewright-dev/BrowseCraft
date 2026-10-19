@@ -1,7 +1,8 @@
 //! Bookmarks: a global, persisted list shared by every tab.
 //!
-//! Stored in `bookmarks.txt` next to `flags.txt` as one `url<TAB>title` line
-//! per bookmark, in the order the user added them. The bookmarks bar, the
+//! Stored in `bookmarks.txt` next to `flags.txt` in the per-user config
+//! folder, as one `url<TAB>title` line per bookmark, in the order the user
+//! added them. The bookmarks bar, the
 //! star button, the new-tab page and the `browsecraft://bookmarks` page all
 //! read this store.
 
@@ -22,15 +23,8 @@ pub struct Bookmark {
 static STORE: RwLock<Vec<Bookmark>> = RwLock::new(Vec::new());
 static FORM_TOKEN: FormToken = FormToken::new();
 
-#[cfg(not(test))]
-fn file_path() -> std::path::PathBuf {
-    std::env::current_dir().unwrap_or_default().join(FILE_NAME)
-}
-
-/// Tests must never touch the user's real bookmarks.
-#[cfg(test)]
-fn file_path() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("browsecraft-test-{}-{FILE_NAME}", std::process::id()))
+fn file_path() -> Result<std::path::PathBuf, String> {
+    crate::storage::config_file(FILE_NAME)
 }
 
 /// Only web pages are bookmarkable.
@@ -97,12 +91,14 @@ fn serialize(list: &[Bookmark]) -> String {
 }
 
 fn save(list: &[Bookmark]) {
-    let _ = std::fs::write(file_path(), serialize(list));
+    if let Ok(path) = file_path() {
+        let _ = crate::storage::write_private(&path, serialize(list).as_bytes());
+    }
 }
 
 /// Reads `bookmarks.txt`. Call once at startup.
 pub fn load() {
-    if let Ok(text) = std::fs::read_to_string(file_path()) {
+    if let Ok(text) = file_path().and_then(|path| std::fs::read_to_string(path).map_err(|e| e.to_string())) {
         *STORE.write().unwrap_or_else(|p| p.into_inner()) = parse(&text);
     }
 }
@@ -177,7 +173,10 @@ pub fn apply_form(query: &str) -> bool {
 
 /// The `browsecraft://bookmarks` page. Each call issues a new form token.
 pub fn page_html() -> String {
-    let token = FORM_TOKEN.issue();
+    let token = match FORM_TOKEN.issue() {
+        Ok(token) => token,
+        Err(error) => return internal::unavailable_page("Bookmarks", &error),
+    };
     let list = all();
     let mut body = String::from(
         "<h1>Bookmarks</h1><p class=\"sub\">Pages you saved. Star a page in the address bar, \
@@ -273,7 +272,7 @@ mod tests {
         load();
         assert!(contains("https://disk.test/"));
         remove("https://disk.test/");
-        let _ = std::fs::remove_file(file_path());
+        let _ = std::fs::remove_file(file_path().unwrap());
     }
 
     #[test]
@@ -292,7 +291,7 @@ mod tests {
         assert!(apply_form(&format!("token={token}&remove={enc}")));
         assert!(!contains("https://keep.test/?a=1&b=2"));
         assert!(!apply_form(&format!("token={token}&remove={enc}")), "token used up");
-        let _ = std::fs::remove_file(file_path());
+        let _ = std::fs::remove_file(file_path().unwrap());
     }
 
     #[test]
@@ -304,6 +303,6 @@ mod tests {
         assert!(!html.contains("<script>x"));
         assert!(html.contains("&lt;script&gt;"));
         reset();
-        let _ = std::fs::remove_file(file_path());
+        let _ = std::fs::remove_file(file_path().unwrap());
     }
 }

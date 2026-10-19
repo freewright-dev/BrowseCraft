@@ -2,7 +2,8 @@
 /dist
 /flags.txt
 
-# Personal data written next to the executable
+# Personal data older builds wrote to the working directory (now kept in the
+# per-user config folder); never commit it
 bookmarks.txt
 passwords.cfg
 *.kdbx

@@ -47,9 +47,17 @@ not), builds, then copies the executable to `dist\browsecraft.exe`. Set
 
 ## Flags
 
-Settings from `browsecraft://flags` are saved as `key=value` lines in `flags.txt` in
-the working directory (ignored by git). Bookmarks live in `bookmarks.txt` and the
-password manager's settings (which vault, never-save sites) in `passwords.cfg`.
+Settings from `browsecraft://flags` are saved in the per-user configuration
+folder listed in [the README](../README.md#settings). A same-directory,
+exclusively created temporary file is synced and atomically replaces
+`flags.txt`; destination symlinks/hard links do not redirect writes to their
+targets. Tests use isolated temporary directories rather than user settings.
+Save failures leave in-memory flags unchanged and are shown by the settings
+page or the toolbar notice. Working-directory settings are not migrated
+automatically; users can copy a trusted legacy file while the browser is closed.
+Bookmarks (`bookmarks.txt`) and the password manager's settings (`passwords.cfg`:
+which vault, how it unlocks, never-save sites) live in the same folder and are
+written the same way.
 
 ## Headless screenshots
 
@@ -65,6 +73,18 @@ paint code as the window, so it's the quickest way to check a rendering change.
 
 ## Tests
 
+The fetch-input regression also requires Node.js 18 or newer (`node` on PATH).
+Native Windows network interception can be checked separately on a desktop
+with WebView2 installed:
+
+```sh
+cargo test --locked webview_network::tests -- --ignored --nocapture
+```
+
+This loopback-only integration test checks static resources, fetch input
+types (including a cross-frame Request) and redirected resources. It is
+ignored in the ordinary unit suite because it creates a native WebView2 window.
+
 ```sh
 cargo test
 ```
@@ -73,7 +93,8 @@ CI (`.github/workflows/ci.yml`) runs `cargo build --locked` and
 `cargo test --locked` on `windows-latest` for every pull request and every
 push to `main`.
 
-Unit tests live next to the code: HTML parsing (`html.rs`), selectors, values
+Unit tests live next to the code: HTML parsing (`html.rs`), sibling metadata
+and cache invalidation (`dom.rs`), selectors, values
 and media queries (`css.rs`), the cascade (`style.rs`), data URLs and charsets
 (`net.rs`), text editing (`textfield.rs`), address-bar rules (`address.rs`),
 flags and the `flags.txt` store (`flags.rs`),
@@ -81,7 +102,47 @@ glyph coverage (`font.rs`), the history store (`history.rs`), and WebView2
 routing, zoom steps, shortcuts and form submission (`browser.rs`). The
 `flags.rs` tests share a global store and file, so they serialise on a mutex.
 
+### Parser and selector regressions
+
+Run the focused engine suites with:
+
+```sh
+cargo test --locked css::tests
+cargo test --locked html::tests
+cargo test --locked dom::tests
+cargo test --locked style::tests
+```
+
+Coverage for the fixes in [PR #58](https://github.com/freewright-dev/BrowseCraft/pull/58)
+and [PR #59](https://github.com/freewright-dev/BrowseCraft/pull/59) includes:
+
+- Nested `:is()`/`:not()` matching: bounded operation counts, distinct cache
+  keys and budget exhaustion that cannot be inverted into a match by `:not()`.
+- Long selector chains: a 50,000-part input is rejected in a subprocess with
+  a 15-second deadline and a 2 MiB worker stack. Accepted flat/nested chains
+  and directly constructed selectors are checked too.
+- Cascade allocation: a rule with 10,000 matching selectors and 10,000
+  declarations contributes 10,000 author cascade entries rather than 100 million.
+  Tests also cover specificity, source order, `!important` and aggregate limits.
+- At-rule parsing: 25,000, 50,000 and 100,000 sibling blocks/statements with
+  counted prelude visits bounded by input size, plus quoted and escaped delimiters.
+- Attribute merging: 25,000 repeated root/body tags preserve distinct
+  attributes, first values and insertion order within a five-second guard.
+- Sibling matching: nine selector passes over 40,000 elements share one
+  two-pass metadata build. Tests include text nodes, distinct tag names,
+  parent boundaries, appends, tag changes and document clones.
+
+Prefer deterministic operation or allocation counts for scaling regressions;
+the broad time guards catch gross slowdowns rather than serve as benchmarks.
+Use `Document::append` for structural additions and `Document::element_mut`
+for tag changes so cached sibling metadata is invalidated. The limits and
+cache design are described in [architecture](architecture.md#parsing-and-sibling-metadata).
+
 ## Common changes
+
+For dependency upgrades, run `cargo audit` and `cargo deny check` as well as
+the build/tests. See [dependency maintenance](dependencies.md) for the current
+target-specific advisories and license/source policy.
 
 - **Default styles:** `src/ua.css`.
 - **A new CSS property:** add it to `Style` and `apply()` in `style.rs` (and to `expand_shorthand()` if it is a shorthand), then use it in `layout.rs`.

@@ -6,6 +6,7 @@
 //! parses stylesheets, `style` runs the cascade, `layout` builds a display
 //! list and `paint` rasterizes it. `browser` is the window and UI around it.
 
+mod adblock;
 mod address;
 mod bookmarks;
 mod browser;
@@ -25,9 +26,14 @@ mod loader;
 mod net;
 mod paint;
 mod passwords;
+mod storage;
 mod style;
 mod textfield;
+#[cfg(test)]
+mod test_http;
 mod vault;
+#[cfg(windows)]
+mod webview_network;
 
 use winit::event_loop::EventLoop;
 

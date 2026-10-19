@@ -2,9 +2,9 @@
 ! folder; they are merged at startup. `!` lines are comments.
 !
 ! Network rules (block requests) are served to both the engine renderer and the
-! WebView2 pages. WebView2 requests are cancelled natively (WebResourceRequested);
-! element hiding is applied by an injected stylesheet; engine-rendered
-! images/stylesheets are filtered at load time.
+! WebView2 pages. Ad blocks and popups in WebView2 pages are cancelled by the
+! injected JavaScript hook; engine-rendered images/stylesheet are filtered at
+! load time.
 !
 ||doubleclick.net^
 ||googlesyndication.com^

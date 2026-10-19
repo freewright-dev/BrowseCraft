@@ -64,12 +64,18 @@ const P_SCOPE: &[&str] = &[
 ];
 
 pub fn parse(source: &str) -> Document {
+    parse_cancellable(source, &|| true).expect("uncancelled parse")
+}
+
+pub fn parse_cancellable(source: &str, live: &dyn Fn() -> bool) -> Option<Document> {
+    if !live() { return None; }
     let mut builder = Builder::new();
     let mut tok = Tokenizer {
         src: source,
         pos: 0,
     };
     while let Some(token) = tok.next(builder.raw_text_tag()) {
+        if !live() { return None; }
         builder.token(token);
     }
     let mut doc = builder.finish();
@@ -77,7 +83,7 @@ pub fn parse(source: &str) -> Document {
     doc.quirks = !start
         .get(..14)
         .is_some_and(|s| s.eq_ignore_ascii_case("<!doctype html"));
-    doc
+    live().then_some(doc)
 }
 
 enum Token {
@@ -269,6 +275,11 @@ struct Builder {
     html: NodeId,
     head: Option<NodeId>,
     body: Option<NodeId>,
+    /// These elements start empty and receive attributes only through
+    /// merge_attrs. Keep their name sets for the entire parse, rather than
+    /// rebuilding them for every repeated <html>/<body> start tag.
+    html_attrs: HashSet<String>,
+    body_attrs: HashSet<String>,
     /// Open elements below `<html>`, innermost last.
     stack: Vec<NodeId>,
     /// Skip one newline right after `<pre>` or `<textarea>`.
@@ -290,6 +301,8 @@ impl Builder {
             html,
             head: None,
             body: None,
+            html_attrs: HashSet::new(),
+            body_attrs: HashSet::new(),
             stack: Vec::new(),
             skip_newline: false,
         }
@@ -400,20 +413,27 @@ impl Builder {
     fn start(&mut self, tag: String, attrs: Vec<(String, String)>, self_closing: bool) {
         match tag.as_str() {
             "html" => {
-                merge_attrs(self.doc.element_mut(self.html), attrs);
+                merge_attrs(self.doc.element_mut(self.html), attrs, &mut self.html_attrs);
                 return;
             }
             "head" => {
                 if self.head.is_none() && self.body.is_none() {
                     let head = self.ensure_head();
-                    merge_attrs(self.doc.element_mut(head), attrs);
+                    // The explicit head is accepted only once, and is empty.
+                    if let Some(element) = self.doc.element_mut(head) {
+                        element.attrs = attrs;
+                    }
                     self.stack = vec![head];
                 }
                 return;
             }
             "body" => {
                 self.ensure_body();
-                merge_attrs(self.body.and_then(|b| self.doc.element_mut(b)), attrs);
+                merge_attrs(
+                    self.body.and_then(|b| self.doc.element_mut(b)),
+                    attrs,
+                    &mut self.body_attrs,
+                );
                 return;
             }
             _ => {}
@@ -508,9 +528,12 @@ impl Builder {
     }
 }
 
-fn merge_attrs(element: Option<&mut Element>, attrs: Vec<(String, String)>) {
+fn merge_attrs(
+    element: Option<&mut Element>,
+    attrs: Vec<(String, String)>,
+    names: &mut HashSet<String>,
+) {
     if let Some(e) = element {
-        let mut names: HashSet<String> = e.attrs.iter().map(|(n, _)| n.clone()).collect();
         for (name, value) in attrs {
             if names.insert(name.clone()) {
                 e.attrs.push((name, value));
@@ -726,6 +749,56 @@ mod tests {
         let doc = parse("<SCRIPT>a</b></ScRiPt><p>after");
         assert_eq!(doc.text_content(doc.find_tag("script").unwrap()), "a</b>");
         assert_eq!(doc.text_content(doc.find_tag("p").unwrap()), "after");
+    }
+
+    #[test]
+    fn repeated_root_and_body_attributes_merge_in_linear_time() {
+        let count = 25_000;
+        let mut markup = String::from("<head data-head=first></head><p>implied body</p>");
+        for i in 0..count {
+            markup.push_str(&format!("<html a{i}=root><body a{i}=body>"));
+        }
+        markup.push_str("<HTML A0=changed><BODY A0=changed><head data-head=changed>");
+        let start = std::time::Instant::now();
+        let doc = parse(&markup);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+        for (tag, value) in [("html", "root"), ("body", "body")] {
+            let el = doc.element(doc.find_tag(tag).unwrap()).unwrap();
+            assert_eq!(el.attrs.len(), count);
+            for (i, (name, actual)) in el.attrs.iter().enumerate() {
+                assert_eq!(name, &format!("a{i}"));
+                assert_eq!(actual, value);
+            }
+        }
+        let head = doc.element(doc.find_tag("head").unwrap()).unwrap();
+        assert_eq!(head.attr("data-head"), Some("first"));
+        assert_eq!(doc.text_content(doc.find_tag("p").unwrap()), "implied body");
+    }
+
+    #[test]
+    fn repeated_attribute_names_keep_the_first_value_and_order() {
+        let doc = parse(
+            "<html lang=en><body id=first class=one><html lang=fr dir=ltr>\
+             <body class=two title=hello><html dir=rtl><body id=last>",
+        );
+        let root = doc.element(doc.find_tag("html").unwrap()).unwrap();
+        let body = doc.element(doc.find_tag("body").unwrap()).unwrap();
+        assert_eq!(
+            root.attrs,
+            [("lang".into(), "en".into()), ("dir".into(), "ltr".into())]
+        );
+        assert_eq!(
+            body.attrs,
+            [
+                ("id".into(), "first".into()),
+                ("class".into(), "one".into()),
+                ("title".into(), "hello".into()),
+            ]
+        );
     }
 
     #[test]

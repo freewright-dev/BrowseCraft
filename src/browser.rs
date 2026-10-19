@@ -31,6 +31,7 @@ use wry::dpi::{
 };
 use wry::{NewWindowResponse, PageLoadEvent, WebView, WebViewBuilder};
 
+use crate::adblock;
 use crate::address;
 use crate::bookmarks;
 use crate::css::Color;
@@ -97,7 +98,7 @@ pub enum UserMessage {
     WebStart(String),
     /// The WebView2 page finished loading this URL.
     WebLoad(String),
-    /// The WebView2 pane wants to open this URL (pop-ups).
+    /// The WebView2 pane wants to open this URL (pop-ups, blocked pages).
     WebOpen(String),
     /// A shortcut pressed inside the WebView2 pane (`AcceleratorKeyPressed`).
     #[cfg_attr(not(windows), allow(dead_code))]
@@ -1293,7 +1294,13 @@ impl Browser {
         self.start_load(request, push, None);
     }
 
-    fn start_load(&mut self, request: Request, push: bool, restore: Option<f32>) {
+    fn start_load(&mut self, mut request: Request, push: bool, restore: Option<f32>) {
+        let url = request.url().to_string();
+        // Main-frame ad filtering: blocked pages show an engine notice but
+        // keep the original URL in the address bar.
+        if is_web_url(&url) && adblock::blocked_page(&url, "") {
+            request = Request::Get(format!("about:blocked:{url}"));
+        }
         if push {
             let scroll = self.live_scroll();
             if let Some(entry) = self.history.get_mut(self.index) {
@@ -1353,7 +1360,10 @@ impl Browser {
         self.web_url.clear();
         self.web_expect = false;
         self.pending_restore = restore;
-        self.address.set(&target);
+        let shown = loader::blocked_notice_target(&target)
+            .unwrap_or(&target)
+            .to_string();
+        self.address.set(&shown);
         let proxy = self.proxy.clone();
         loader::spawn(
             request,
@@ -1436,7 +1446,7 @@ impl Browser {
         } else {
             flags::Theme::Dark
         };
-        flags::set(f);
+        if let Err(error) = flags::set(f) { self.set_notice(&error); }
         self.request_redraw();
     }
 
@@ -1487,7 +1497,7 @@ impl Browser {
 
     fn suggest_password(&mut self) {
         if self.run_in_page(&passwords::suggest_script()) {
-            self.set_notice("Filled a new password. Submit the form and Prowl will offer to save it");
+            self.set_notice("Filled a new password. Submit the form and BrowseCraft will offer to save it");
         } else {
             self.set_notice("Could not fill the password fields");
         }
@@ -1514,7 +1524,7 @@ impl Browser {
     fn toggle_bookmarks_bar(&mut self) {
         let mut f = flags::get();
         f.bookmarks_bar = !f.bookmarks_bar;
-        flags::set(f);
+        if let Err(error) = flags::set(f) { self.set_notice(&error); }
         self.request_redraw();
     }
 
@@ -1604,7 +1614,11 @@ impl Browser {
                     (_, Some(f)) => Some(PendingScroll::Fragment(f)),
                     _ => None,
                 };
-                if !url.starts_with("about:") {
+                let blocked = self
+                    .history
+                    .get(self.index)
+                    .is_some_and(|e| e.request.url().starts_with("about:blocked:"));
+                if !blocked && !url.starts_with("about:") {
                     history::record(&url, &title);
                 }
                 self.title = title;
@@ -1707,10 +1721,14 @@ impl Browser {
         }
     }
 
-    /// A pop-up asked to open `url`.
+    /// A pop-up or a blocked main-frame navigation asked to open `url`.
     fn web_open(&mut self, url: String) {
         if !self.web_page {
             return; // from a page that is no longer shown
+        }
+        if is_web_url(&url) && adblock::blocked_page(&url, "") {
+            self.set_notice("Blocked a pop-up (ad filter)");
+            return;
         }
         self.load(Request::Get(url), true);
     }
@@ -1740,6 +1758,7 @@ impl Browser {
         if !(cfg!(windows) || cfg!(target_os = "macos")) {
             return;
         }
+        let nav_proxy = self.proxy.clone();
         let popup_proxy = self.proxy.clone();
         let title_proxy = self.proxy.clone();
         let load_proxy = self.proxy.clone();
@@ -1752,6 +1771,7 @@ impl Browser {
         let builder = WebViewBuilder::new()
             .with_visible(false)
             .with_bounds(bounds)
+            .with_initialization_script(adblock::instance().page_script_with_network(!cfg!(windows)))
             .with_initialization_script(passwords::PAGE_SCRIPT)
             .with_ipc_handler(move |request| {
                 // Reports from the password script. The page is untrusted:
@@ -1760,6 +1780,16 @@ impl Browser {
                 if let Some(message) = passwords::parse_page_message(request.body()) {
                     let _ = ipc_proxy.send_event(UserMessage::Page(message));
                 }
+            })
+            .with_navigation_handler(move |url| {
+                // Main-frame navigations the ad filter blocks become an engine
+                // notice page instead.
+                if is_web_url(&url) && adblock::blocked_page(&url, "") {
+                    let _ =
+                        nav_proxy.send_event(UserMessage::WebOpen(format!("about:blocked:{url}")));
+                    return false;
+                }
+                true
             })
             .with_new_window_req_handler(move |url, _features| {
                 // Pop-ups open as a new navigation in the browser, but only
@@ -1792,6 +1822,10 @@ impl Browser {
             Ok(wv) => {
                 #[cfg(windows)]
                 {
+                    if let Err(error) = crate::webview_network::install(&wv) {
+                        eprintln!("browsecraft: could not install native network filtering ({error}); using the engine");
+                        return;
+                    }
                     attach_webview_shortcuts(&wv, self.proxy.clone());
                     attach_webview_fullscreen(&wv, self.proxy.clone());
                 }
@@ -3707,7 +3741,7 @@ impl Browser {
                 Action::DismissOffer => passwords::dismiss_offer(),
                 Action::NeverSave => {
                     passwords::never_offer_for_site();
-                    self.set_notice("Prowl will not offer to save logins on this site");
+                    self.set_notice("BrowseCraft will not offer to save logins on this site");
                 }
                 Action::LockVault => {
                     passwords::lock();
@@ -3746,8 +3780,19 @@ impl ApplicationHandler<UserMessage> for Browser {
         if self.gfx.is_some() {
             return;
         }
+        let window_icon = image::load_from_memory(icons::LOGO_PNG)
+            .map_err(|e| eprintln!("browsecraft: could not decode the window logo: {e}"))
+            .ok()
+            .and_then(|image| {
+                let rgba = image
+                    .resize(64, 64, image::imageops::FilterType::Lanczos3)
+                    .into_rgba8();
+                let (width, height) = rgba.dimensions();
+                winit::window::Icon::from_rgba(rgba.into_raw(), width, height).ok()
+            });
         let attrs = Window::default_attributes()
             .with_title("BrowseCraft")
+            .with_window_icon(window_icon)
             .with_inner_size(LogicalSize::new(1280.0, 800.0))
             .with_min_inner_size(LogicalSize::new(480.0, 320.0));
         let window = match event_loop.create_window(attrs) {
@@ -3957,6 +4002,7 @@ mod tests {
         assert!(request_in_webview("https://example.com/"));
         assert!(request_in_webview("file:///C:/index.html"));
         assert!(!request_in_webview("about:home"));
+        assert!(!request_in_webview("about:blocked:https://ads.example"));
         assert!(!request_in_webview("view-source:https://example.com"));
         assert!(!request_in_webview("browsecraft://history"));
         let (a, b) = ("https://slow.example/", "https://b.example/");
@@ -3979,6 +4025,7 @@ mod tests {
             "browsecraft://flags?theme=dark",
             "file:///C:/",
             "view-source:file://host/x",
+            "about:blocked:https://bank.example",
             "javascript:alert(1)",
         ] {
             assert!(!popup_allowed(url), "{url}");

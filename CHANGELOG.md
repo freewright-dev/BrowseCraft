@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Page fullscreen: when a web page (a video, `requestFullscreen()`) goes fullscreen, the whole window goes fullscreen and the chrome is hidden, instead of the page only filling the viewport. Driven by WebView2's `ContainsFullScreenElementChanged`; the window returns to its previous state when the page leaves fullscreen. `F11` toggles window fullscreen.
 - Bookmarks: a star in the address bar, `Ctrl+D`, a bookmarks bar under the address bar (`Ctrl+Shift+B` to show or hide, overflow menu, middle-click and right-click menus), the `browsecraft://bookmarks` page (`Ctrl+Shift+O`), bookmarks as quick links on the new-tab page, and `bookmarks.txt` persistence.
-- Password manager: a KeePass 4 (`.kdbx`) vault protected by a password or a key file (created by Prowl), a key menu at the top right, login/sign-up/change-password form detection, a "Save this login?" bar (save, update, never for this site), autofill, strong password suggestion, auto-lock after 15 minutes, and the `browsecraft://passwords` page.
+- Password manager: a KeePass 4 (`.kdbx`) vault protected by a password or a key file (created by BrowseCraft), a key menu at the top right, login/sign-up/change-password form detection, a "Save this login?" bar (save, update, never for this site), autofill, strong password suggestion, auto-lock after 15 minutes, and the `browsecraft://passwords` page.
 - Tab context menu: duplicate tab, close tab, close other tabs.
 
 - Browser window with a toolbar (back, forward, reload/stop, home), a loading indicator and the page title in the window title.
@@ -41,15 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Modern look: a refreshed dark and light palette for the toolbar, tabs and address bar (rounded, with a focus ring), and a shared stylesheet for every internal page (new tab, settings, history, bookmarks, passwords, error pages). Internal pages follow the theme and reload when it changes.
 - The theme now defaults to dark.
 - The settings page is redesigned with toggle switches and segmented controls; changing a setting no longer adds a Back step each time.
-
-- The internal pages moved from `craft://` to `browsecraft://` (`browsecraft://flags`, `browsecraft://history`), and the repository moved to `pierruno-labs/browsecraft`.
+- Declared GPL-3.0-or-later licensing with the full license text and uBlock Origin attribution; added an explicit dependency license/source policy.
+- The internal pages moved from `craft://` to `browsecraft://` (`browsecraft://flags`, `browsecraft://history`), and the repository moved to `freewright-dev/BrowseCraft`.
 - Replaced the original wry/tao-only browser with a hybrid design: BrowseCraft's own engine and winit window draw the chrome and internal pages, while websites render in an embedded WebView2 pane. The HTML toolbar webview is gone; the toolbar is drawn by the engine or by egui.
 - Searches use Startpage instead of DuckDuckGo.
 - The home page (`Alt+Home`, and the page shown at startup without an argument) is Startpage; new tabs open the built-in `about:home` start page.
-
-### Removed
-
-- The experimental ad blocker (a uBlock Origin port): the `adblock` module, the `filters/` lists, the `about:blocked:` notice page and the injected page script. Why it was removed and what could replace it: [proposal_adblocking_system.md](proposal_adblocking_system.md).
 
 ### Fixed
 
@@ -58,6 +54,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A click on a menu that hangs over the page (the key menu, a bookmark's right-click menu, the `»` overflow menu) was also delivered to the page underneath.
 - Menus drawn over a web page were hidden behind the WebView2 pane (a native window that always paints on top of egui). While a menu is open the page is now shown as a snapshot and the live pane is hidden, then restored when the menu closes.
 - The vault was queried (copied and sorted) on every frame to show the key icon's state; it now counts logins cheaply and loads site logins only while the menu is open.
-
+- Updated rustls to 0.23.46 for four TLS advisories and wry to 0.55.1 to remove the affected fxhash/rand dependency chains. Remaining GTK/font maintenance advisories are tracked in `docs/dependencies.md` (#54).
+- Settings now use atomic replacement in a per-user configuration directory, preventing planted working-directory symlinks from redirecting writes. Save errors are displayed and preserve the in-memory settings; trusted legacy files can be copied manually to the new location (#56).
+- Settings forms in multiple retained tabs keep independent OS-random one-time tokens, with bounded storage, replay rejection and an explanation when a form has expired (#57).
+- Windows screenshot capture rejects overflowing or excessive dimensions before allocation, validates bitmap selection/restoration, and releases native resources on error paths (#55).
+- Ad blocking now checks every engine HTTP redirect destination and uses native WebView2 interception for parser-initiated resources and redirects. JavaScript fallback fetch hooks handle URL and Request objects with one native conversion (#52).
+- Cancelled engine loads stop scheduling document/stylesheet/import/image work and publishing stale events. Background loads use a bounded two-worker queue and whole-load deadlines (#53).
+- Nested `:is()`/`:not()` selector matching now shares cached results and a work budget, preventing the reported CPU-exhaustion path in the custom engine ([#48](https://github.com/freewright-dev/BrowseCraft/issues/48), [PR #58](https://github.com/freewright-dev/BrowseCraft/pull/58)).
+- Matching selector lists apply each rule's declarations once using the greatest matching specificity and rule source order, removing multiplicative cascade allocations. An aggregate per-element declaration limit bounds cascade size ([#49](https://github.com/freewright-dev/BrowseCraft/issues/49), [PR #58](https://github.com/freewright-dev/BrowseCraft/pull/58)).
+- Long sibling-selector chains are rejected by a shared 64-part selector-tree limit; runtime recursion is also bounded to prevent stack overflow, including combinations with nested pseudo-selectors ([#50](https://github.com/freewright-dev/BrowseCraft/issues/50), [PR #58](https://github.com/freewright-dev/BrowseCraft/pull/58)).
+- Removed quadratic at-rule prelude scanning and repeated root/body attribute merging. Cached sibling links and indices make positional selector checks constant-time after a linear metadata build ([#51](https://github.com/freewright-dev/BrowseCraft/issues/51), [PR #59](https://github.com/freewright-dev/BrowseCraft/pull/59)).
 - BrowseCraft's keyboard shortcuts (new/close tab, address bar, reload, back/forward, zoom, history and the rest) now work while a web page has the keyboard, instead of only after clicking the toolbar or sidebar.
 - Keyboard shortcuts in the WebView2 pane now use the controller's native `AcceleratorKeyPressed` event instead of an injected script over `window.ipc`, preventing page JavaScript from triggering browser shortcuts.

@@ -7,6 +7,7 @@
 //! page is generated for the current theme (`set_dark` is called whenever the
 //! chrome theme changes) and reloaded when it flips.
 
+use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -114,55 +115,69 @@ pub fn page(title: &str, body: &str) -> String {
     )
 }
 
-/// A one-time token a page's forms must send back. Only a page that was just
-/// rendered can know it, so a link, a pop-up or a back/forward replay of an
-/// earlier submission cannot change anything.
+/// How many rendered pages' tokens a `FormToken` keeps at once.
+pub const MAX_FORM_TOKENS: usize = 128;
+
+/// One-time tokens a page's forms and links must send back. Only a page that
+/// was rendered can know one, so a link, a pop-up or a back/forward replay of
+/// an earlier submission cannot change anything.
 pub struct FormToken {
-    slot: Mutex<Option<String>>,
+    tokens: Mutex<VecDeque<String>>,
 }
 
 impl FormToken {
     pub const fn new() -> Self {
         FormToken {
-            slot: Mutex::new(None),
+            tokens: Mutex::new(VecDeque::new()),
         }
     }
 
-    /// Makes and remembers a new token, replacing the previous one.
-    pub fn issue(&self) -> String {
-        use std::hash::{BuildHasher, Hasher};
-        // Each `RandomState` is seeded from the OS's random number generator.
-        let token: String = (0..2)
-            .map(|_| {
-                let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-                h.write_u8(0);
-                format!("{:016x}", h.finish())
-            })
-            .collect();
-        *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(token.clone());
-        token
+    /// Each retained page owns a one-time OS-random token. Rendering another
+    /// page preserves older tokens until the bounded store evicts its oldest
+    /// entry.
+    pub fn issue(&self) -> Result<String, String> {
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).map_err(|e| format!("Could not create a form token: {e}"))?;
+        let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let mut tokens = self.tokens.lock().unwrap_or_else(|e| e.into_inner());
+        if tokens.len() == MAX_FORM_TOKENS {
+            tokens.pop_front();
+        }
+        tokens.push_back(token.clone());
+        Ok(token)
     }
 
-    /// Forgets the current token.
+    /// Forgets every outstanding token.
     #[cfg(test)]
     pub fn clear(&self) {
-        *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.tokens.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     /// Parses a submitted query (or form body) and returns its pairs if it
-    /// carries the current token, which is used up. `None` otherwise.
+    /// carries an outstanding token, which is used up. `None` otherwise.
     pub fn take(&self, query: &str) -> Option<Vec<(String, String)>> {
         let pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
             .collect();
-        let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
-        let sent = pairs.iter().find(|(k, _)| k == "token").map(|(_, v)| v);
-        if slot.is_none() || sent != slot.as_ref() {
-            return None;
-        }
-        *slot = None;
+        let mut tokens = self.tokens.lock().unwrap_or_else(|e| e.into_inner());
+        let sent = pairs.iter().find(|(k, _)| k == "token").map(|(_, v)| v)?;
+        let index = tokens.iter().position(|token| token == sent)?;
+        tokens.remove(index);
         Some(pairs)
     }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.tokens.lock().unwrap().len()
+    }
+}
+
+/// What an internal page shows when it cannot issue a form token.
+pub fn unavailable_page(title: &str, error: &str) -> String {
+    page(
+        &format!("{title} unavailable"),
+        &format!("<h1>{}</h1><p class=\"sub bad\">{}</p>", escape(title), escape(error)),
+    )
 }
 
 /// Percent-encodes a value for use inside a query string.
@@ -233,12 +248,23 @@ mod tests {
     fn tokens_are_single_use() {
         let tokens = FormToken::new();
         assert!(tokens.take("token=abc").is_none());
-        let t = tokens.issue();
+        let t = tokens.issue().unwrap();
         assert!(tokens.take("token=wrong&x=1").is_none());
         assert!(tokens.take("x=1").is_none());
         let pairs = tokens.take(&format!("x=1&token={t}")).unwrap();
         assert!(pairs.contains(&("x".into(), "1".into())));
         assert!(tokens.take(&format!("token={t}")).is_none(), "used up");
+    }
+
+    #[test]
+    fn outstanding_tokens_are_bounded() {
+        let store = FormToken::new();
+        let tokens: Vec<_> = (0..=MAX_FORM_TOKENS).map(|_| store.issue().unwrap()).collect();
+        assert_eq!(store.len(), MAX_FORM_TOKENS);
+        assert!(store.take(&format!("token={}", tokens[0])).is_none(), "evicted");
+        assert!(store.take(&format!("token={}", tokens[1])).is_some());
+        assert!(store.take(&format!("token={}", tokens.last().unwrap())).is_some());
+        assert_eq!(store.len(), MAX_FORM_TOKENS - 2);
     }
 
     #[test]

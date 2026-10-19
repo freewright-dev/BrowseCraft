@@ -1,12 +1,12 @@
-//! User-settable browser behavior ("flags"), persisted to `flags.txt` in the
-//! working directory.
+//! User-settable behavior, atomically persisted in the per-user config folder.
 //!
 //! BrowseCraft's own experiment switches (no Chromium involved): a tiny
 //! `key=value` store. They load once at process start and are written back whenever they change,
 //! as `key=value` lines. The internal `browsecraft://flags` page (the settings
 //! page) edits them; a few (theme, tab side) also have toolbar/panel shortcuts.
 
-use std::sync::RwLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, RwLock};
 
 use crate::internal::{self, FormToken};
 
@@ -57,14 +57,18 @@ const DEFAULT_FLAGS: Flags = Flags {
 };
 
 static FLAGS: RwLock<Flags> = RwLock::new(DEFAULT_FLAGS);
+static SAVE_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
-fn file_path() -> std::path::PathBuf {
-    std::env::current_dir().unwrap_or_default().join(FILE_NAME)
+fn file_path() -> Result<PathBuf, String> {
+    crate::storage::config_file(FILE_NAME)
 }
 
 /// Loads the persisted flags from disk, merging into the defaults.
 fn load_from_mut(flags: &mut Flags) {
-    let Ok(text) = std::fs::read_to_string(file_path()) else {
+    let Ok(path) = file_path() else {
+        return;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
         return;
     };
     for line in text.lines() {
@@ -88,7 +92,7 @@ fn load_from_mut(flags: &mut Flags) {
     }
 }
 
-fn save(flags: &Flags) {
+fn save_to(path: &Path, flags: &Flags) -> std::io::Result<()> {
     let mut text = String::new();
     match flags.tabs_position {
         TabsPosition::Left => text += "tabs-position=left\n",
@@ -110,11 +114,10 @@ fn save(flags: &Flags) {
     } else {
         "bookmarks-bar=off\n"
     };
-    let _ = std::fs::write(file_path(), text);
+    crate::storage::write_private(path, text.as_bytes())
 }
 
-/// Applies `load_from_mut`, persisting only the keys that changed. Call once
-/// at startup.
+/// Loads persisted settings once at startup without writing a new file.
 pub fn load() {
     let mut flags = get();
     load_from_mut(&mut flags);
@@ -126,10 +129,18 @@ pub fn get() -> Flags {
     *FLAGS.read().unwrap_or_else(|p| p.into_inner())
 }
 
-/// Replaces the flags and writes them to `flags.txt`.
-pub fn set(flags: Flags) {
-    *FLAGS.write().unwrap_or_else(|p| p.into_inner()) = flags;
-    save(&flags);
+/// Persist atomically before changing in-memory flags; report failures to UI.
+pub fn set(flags: Flags) -> Result<(), String> {
+    let mut current = FLAGS.write().unwrap_or_else(|p| p.into_inner());
+    let result = file_path().and_then(|path| {
+        save_to(&path, &flags)
+            .map_err(|e| format!("Could not save settings to {}: {e}", path.display()))
+    });
+    *SAVE_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = result.as_ref().err().cloned();
+    if result.is_ok() {
+        *current = flags;
+    }
+    result
 }
 
 // ---- browsecraft://flags page ---------------------------------------------------
@@ -149,13 +160,21 @@ pub fn effective_dark(window_dark: bool) -> bool {
 static FORM_TOKEN: FormToken = FormToken::new();
 
 /// Applies a submission of the settings page (the URL query, without the
-/// `?`). Returns whether any flag changed. Without the current token it does
-/// nothing; with it, the token is used up.
+/// `?`). Returns whether any flag changed. Without an outstanding token it
+/// does nothing; with it, the token is used up.
 pub fn apply_form(query: &str) -> bool {
-    match FORM_TOKEN.take(query) {
-        Some(pairs) => apply_query(pairs.into_iter()),
-        None => false,
+    if query.is_empty() {
+        return false;
     }
+    let Some(pairs) = FORM_TOKEN.take(query) else {
+        *SAVE_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = Some(
+            "This settings link has expired or was already used. Review the values and choose again."
+                .into(),
+        );
+        return false;
+    };
+    *SAVE_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    apply_query(pairs.into_iter())
 }
 
 fn apply_query(pairs: impl Iterator<Item = (String, String)>) -> bool {
@@ -211,7 +230,7 @@ fn apply_query(pairs: impl Iterator<Item = (String, String)>) -> bool {
         }
     }
     if changed {
-        set(flags);
+        return set(flags).is_ok();
     }
     changed
 }
@@ -220,7 +239,21 @@ fn apply_query(pairs: impl Iterator<Item = (String, String)>) -> bool {
 /// the current flags. Each call issues a new form token.
 pub fn page_html() -> String {
     let flags = get();
-    let token = FORM_TOKEN.issue();
+    let token = match FORM_TOKEN.issue() {
+        Ok(token) => token,
+        Err(error) => return internal::unavailable_page("Settings", &error),
+    };
+    let error = SAVE_ERROR
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_deref()
+        .map(|error| {
+            format!(
+                "<div class=\"card\"><div class=\"row first\"><div class=\"bad\" role=alert>{}</div></div></div>",
+                internal::escape(error)
+            )
+        })
+        .unwrap_or_default();
     // Every option is a link back to the page carrying the token.
     let to = |key: &str, value: &str| format!("browsecraft://flags?token={token}&{key}={value}");
 
@@ -266,7 +299,7 @@ pub fn page_html() -> String {
         ],
     );
     let body = format!(
-        "<h1>Settings</h1><p class=\"sub\">Changes apply immediately.</p>\
+        "<h1>Settings</h1><p class=\"sub\">Changes apply immediately.</p>{error}\
          <div class=\"card\"><h2>Appearance</h2>{appearance}</div>\
          <div class=\"card\"><h2>Layout</h2>{layout}{bar}</div>\
          <div class=\"card\"><h2>Advanced</h2>{renderer}</div>\
@@ -293,7 +326,7 @@ mod tests {
     fn query_sets_flags() {
         let _guard = SERIAL.lock().unwrap();
         let before = get();
-        set(Flags::default());
+        set(Flags::default()).unwrap();
         let pairs = vec![
             ("tabs-position".into(), "right".into()),
             ("theme".into(), "light".into()),
@@ -308,7 +341,7 @@ mod tests {
         assert!(!after.bookmarks_bar);
         assert!(!apply_query(vec![].into_iter()));
         assert!(!effective_dark(false));
-        set(before);
+        set(before).unwrap();
     }
 
     #[test]
@@ -329,7 +362,7 @@ mod tests {
     fn only_the_settings_page_can_change_flags() {
         let _guard = SERIAL.lock().unwrap();
         let before = get();
-        set(Flags::default());
+        set(Flags::default()).unwrap();
         let query = |token: &str| format!("token={token}&theme=light");
 
         // No token, a guessed token, or a link with no page rendered yet.
@@ -344,23 +377,23 @@ mod tests {
         // The real link works once; replaying it (back/forward) does not.
         assert!(apply_form(&query(&token)));
         assert_eq!(get().theme, Theme::Light);
-        set(Flags::default());
+        set(Flags::default()).unwrap();
         assert!(!apply_form(&query(&token)));
         assert_eq!(get().theme, Theme::Dark);
 
         // Rendering again issues a different token.
         assert_ne!(rendered_token(), token);
-        set(before);
+        set(before).unwrap();
     }
 
     #[test]
     fn unknown_keys_ignored() {
         let _guard = SERIAL.lock().unwrap();
         let before = get();
-        set(Flags::default());
+        set(Flags::default()).unwrap();
         assert!(!apply_query(vec![("bogus".into(), "1".into())].into_iter()));
         assert_eq!(get().tabs_position, TabsPosition::Left);
-        set(before);
+        set(before).unwrap();
     }
 
     #[test]
@@ -372,7 +405,7 @@ mod tests {
             theme: Theme::Light,
             chrome: Chrome::Egui,
             bookmarks_bar: false,
-        });
+        }).unwrap();
         let html = page_html();
         assert!(html.contains("tabs-position=right\">Right"), "unselected links have no class");
         assert!(html.contains("class=\"on\" href=\"browsecraft://flags?token="));
@@ -380,9 +413,9 @@ mod tests {
         // The bookmarks-bar switch is off and offers to turn it on.
         assert!(html.contains("bookmarks-bar=on"));
         assert!(!html.contains("class=\"sw on\""));
-        set(Flags { bookmarks_bar: true, ..Flags::default() });
+        set(Flags { bookmarks_bar: true, ..Flags::default() }).unwrap();
         assert!(page_html().contains("class=\"sw on\""));
-        set(before);
+        set(before).unwrap();
     }
 
     #[test]
@@ -394,13 +427,49 @@ mod tests {
             theme: Theme::Light,
             chrome: Chrome::Egui,
             bookmarks_bar: false,
-        });
+        }).unwrap();
         let mut flags = Flags::default();
         load_from_mut(&mut flags);
         assert_eq!(flags.tabs_position, TabsPosition::Right);
         assert_eq!(flags.theme, Theme::Light);
         assert_eq!(flags.chrome, Chrome::Egui);
         assert!(!flags.bookmarks_bar);
-        set(before);
+        set(before).unwrap();
+    }
+
+    #[test]
+    fn retained_pages_have_independent_single_use_tokens() {
+        let _guard = SERIAL.lock().unwrap();
+        set(Flags::default()).unwrap();
+        FORM_TOKEN.clear();
+        let first = rendered_token();
+        let second = rendered_token();
+        assert_ne!(first, second);
+        assert!(apply_form(&format!("token={first}&theme=light")));
+        assert!(apply_form(&format!("token={second}&theme=auto")));
+        assert!(!apply_form(&format!("token={first}&theme=dark")));
+        assert!(!apply_form(&format!("token={second}&theme=dark")));
+        assert_eq!(get().theme, Theme::Auto);
+        assert!(page_html().contains("already used"));
+        set(Flags::default()).unwrap();
+    }
+
+    #[test]
+    fn failed_persistence_preserves_flags_and_displays_the_error() {
+        let _guard = SERIAL.lock().unwrap();
+        let before = get();
+        let path = file_path().unwrap();
+        std::fs::create_dir_all(&path).unwrap(); // a directory cannot be atomically replaced by a file
+        let mut next = before;
+        next.theme = Theme::Light;
+        assert!(set(next).is_err());
+        assert_eq!(get(), before);
+        assert!(page_html().contains("Could not save settings"));
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            1
+        );
+        std::fs::remove_dir(path).unwrap();
+        set(before).unwrap();
     }
 }
