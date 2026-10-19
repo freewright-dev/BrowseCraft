@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 use crate::css::{self, Color, Declaration, Length, Selector, SelectorKey, Stylesheet};
-use crate::dom::{Document, NodeId, NodeKind};
+use crate::dom::{Document, Element, NodeId, NodeKind};
 
 const UA_CSS: &str = include_str!("ua.css");
 
@@ -522,8 +522,8 @@ pub fn compute_styles(doc: &Document, sheets: &[Stylesheet], ctx: &StyleContext)
             .parent
             .map_or(root_style.clone(), |p| styles[p].clone());
         styles[id] = match &doc.nodes[id].kind {
-            NodeKind::Element(_) => {
-                let style = compute_element(doc, id, &parent, &index, ctx, root_font);
+            NodeKind::Element(el) => {
+                let style = compute_element(doc, id, el, &parent, &index, ctx, root_font);
                 if doc.tag(id) == "html" {
                     root_font = style.font_size;
                 }
@@ -538,14 +538,14 @@ pub fn compute_styles(doc: &Document, sheets: &[Stylesheet], ctx: &StyleContext)
 fn compute_element(
     doc: &Document,
     node: NodeId,
+    el: &Element,
     parent: &Style,
     index: &RuleIndex,
     ctx: &StyleContext,
     root_font: f32,
 ) -> Style {
-    let el = doc.element(node).expect("element");
     let mut entries = index.cascade(doc, node);
-    let hints = presentational_hints(doc, node);
+    let hints = presentational_hints(doc, node, el);
     for d in hints.iter().take(MAX_CASCADE_DECLARATIONS - entries.len()) {
         entries.push((false, ORIGIN_HINT, (0, 0, 0), 0, d));
     }
@@ -1364,8 +1364,7 @@ fn expand_font(value: &str) -> Vec<(String, String)> {
 }
 
 /// Turns legacy HTML attributes like `bgcolor` and `width` into declarations.
-fn presentational_hints(doc: &Document, node: NodeId) -> Vec<Declaration> {
-    let el = doc.element(node).expect("element");
+fn presentational_hints(doc: &Document, node: NodeId, el: &Element) -> Vec<Declaration> {
     let mut out = Vec::new();
     let mut add = |name: &str, value: String| {
         out.push(Declaration {
@@ -1477,8 +1476,11 @@ fn presentational_hints(doc: &Document, node: NodeId) -> Vec<Declaration> {
         }
     }
     if matches!(tag, "td" | "th") {
-        if let Some(table) = doc.ancestors(node).find(|&a| doc.tag(a) == "table") {
-            let table_el = doc.element(table).expect("element");
+        if let Some(table_el) = doc
+            .ancestors(node)
+            .find(|&a| doc.tag(a) == "table")
+            .and_then(|a| doc.element(a))
+        {
             if let Some(p) = table_el.attr("cellpadding").and_then(dim) {
                 add("padding", p);
             }

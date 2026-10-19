@@ -63,6 +63,7 @@ const P_SCOPE: &[&str] = &[
     "html", "body", "table", "td", "th", "caption", "button", "template", "object",
 ];
 
+#[allow(clippy::expect_used, reason = "parsing only stops when cancelled, and this never cancels")]
 pub fn parse(source: &str) -> Document {
     parse_cancellable(source, &|| true).expect("uncancelled parse")
 }

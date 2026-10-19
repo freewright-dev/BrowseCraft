@@ -93,6 +93,10 @@ pub fn fetch_checked(
                         if !matches!(next.scheme(), "http" | "https") {
                             return Err("redirects must use HTTP or HTTPS".into());
                         }
+                        // 301/302/303 turn a POST into a GET. 307/308 repeat it,
+                        // body included, even to another origin: that is what
+                        // RFC 9110 asks for and what browsers do, so a form's
+                        // data goes wherever its target redirects it.
                         if matches!(status, 301 | 302 | 303) {
                             form = None;
                         }

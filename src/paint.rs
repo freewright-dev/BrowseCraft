@@ -32,7 +32,9 @@ impl<'a> Canvas<'a> {
 
     /// The current clip as (x0, y0, x1, y1), exclusive.
     fn bounds(&self) -> (i32, i32, i32, i32) {
-        *self.clip.last().expect("clip")
+        // `pop_clip` keeps the canvas-sized base clip; an empty stack would
+        // only clip everything away.
+        self.clip.last().copied().unwrap_or_default()
     }
 
     pub fn push_clip(&mut self, r: Rect) {

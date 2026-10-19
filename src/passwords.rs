@@ -18,7 +18,7 @@
 //!   only when the user picked a login for that very site.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Condvar, Mutex, MutexGuard, Once, PoisonError};
 use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
@@ -512,20 +512,91 @@ fn default_keyfile_path() -> String {
     default_data_path("browsecraft-passwords.keyx")
 }
 
+/// The password last copied and when to take it off the clipboard.
+struct PendingClear {
+    text: Zeroizing<String>,
+    at: Instant,
+}
+
+/// The pending clear, and the signal that wakes the clearer when it changes.
+/// One clearer thread serves every copy: a new copy replaces the pending one
+/// (the old password can no longer be on the clipboard) instead of adding a
+/// thread per copy.
+static CLIPBOARD: (Mutex<Option<PendingClear>>, Condvar) = (Mutex::new(None), Condvar::new());
+
+/// The address a manually added login is saved under: empty, or an
+/// `http(s)` URL with a host (`https://` is added to a bare `example.com`).
+/// `None` for anything else, such as `javascript:` or `data:` URLs.
+fn login_url(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Some(String::new());
+    }
+    let full = if text.contains("://") {
+        text.to_string()
+    } else {
+        format!("https://{text}")
+    };
+    url::Url::parse(&full)
+        .ok()
+        .filter(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
+        .map(|_| full)
+}
+
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("No clipboard: {e}"))?;
     clipboard.set_text(text).map_err(|e| format!("Could not copy: {e}"))?;
-    let copied = Zeroizing::new(text.to_string());
-    // Do not leave the password on the clipboard: clear it if it is still ours.
-    std::thread::spawn(move || {
-        std::thread::sleep(CLIPBOARD_CLEAR);
+    schedule_clear(text);
+    static CLEARER: Once = Once::new();
+    CLEARER.call_once(|| {
+        let _ = std::thread::Builder::new()
+            .name("clipboard-clearer".into())
+            .spawn(clipboard_clearer);
+    });
+    Ok(())
+}
+
+/// Clears `text` from the clipboard after [`CLIPBOARD_CLEAR`], replacing any
+/// clear still pending.
+fn schedule_clear(text: &str) {
+    let (pending, wake) = &CLIPBOARD;
+    *pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(PendingClear {
+        text: Zeroizing::new(text.to_string()),
+        at: Instant::now() + CLIPBOARD_CLEAR,
+    });
+    wake.notify_one();
+}
+
+/// The clearer thread: waits for the pending clear to come due, then empties
+/// the clipboard if it still holds that password (not something copied
+/// since).
+fn clipboard_clearer() {
+    let (lock, wake) = &CLIPBOARD;
+    let mut pending = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    loop {
+        let Some(at) = pending.as_ref().map(|p| p.at) else {
+            pending = wake.wait(pending).unwrap_or_else(PoisonError::into_inner);
+            continue;
+        };
+        let now = Instant::now();
+        if at > now {
+            pending = wake
+                .wait_timeout(pending, at - now)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+            continue;
+        }
+        let Some(due) = pending.take() else {
+            continue;
+        };
+        drop(pending);
         if let Ok(mut clipboard) = arboard::Clipboard::new()
-            && clipboard.get_text().is_ok_and(|now| *Zeroizing::new(now) == *copied)
+            && clipboard.get_text().is_ok_and(|now| *Zeroizing::new(now) == *due.text)
         {
             let _ = clipboard.clear();
         }
-    });
-    Ok(())
+        pending = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    }
 }
 
 /// Applies a submission of the passwords page: the query of a link, or the
@@ -616,11 +687,8 @@ pub fn handle(query: &str, post_body: Option<&str>) {
                     if password.is_empty() && !field(&pairs, "generate").is_empty() {
                         password = Zeroizing::new(vault::generate_password(20));
                     }
-                    let url = field(&pairs, "url").trim();
-                    let url = if url.is_empty() || url.contains("://") {
-                        url.to_string()
-                    } else {
-                        format!("https://{url}")
+                    let Some(url) = login_url(field(&pairs, "url")) else {
+                        return s.fail("Enter the site's web address (https://…), or leave it empty.");
                     };
                     match vault.add(field(&pairs, "title"), &url, field(&pairs, "username"), &password) {
                         Ok(_) => s.ok("Login saved."),
@@ -919,6 +987,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn manual_logins_need_a_web_address() {
+        assert_eq!(login_url(" example.com/login ").as_deref(), Some("https://example.com/login"));
+        assert_eq!(login_url("http://127.0.0.1:8080/").as_deref(), Some("http://127.0.0.1:8080/"));
+        assert_eq!(login_url("  ").as_deref(), Some(""));
+        for bad in ["javascript:alert(1)", "data:text/html,hi", "ftp://example.com/", "file:///C:/x", "https://"] {
+            assert_eq!(login_url(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_new_copy_replaces_the_pending_clipboard_clear() {
+        schedule_clear("first");
+        schedule_clear("second");
+        let pending = CLIPBOARD.0.lock().unwrap();
+        let pending = pending.as_ref().unwrap();
+        assert_eq!(pending.text.as_str(), "second");
+        assert!(pending.at > Instant::now() + CLIPBOARD_CLEAR - Duration::from_secs(5));
     }
 
     #[test]
