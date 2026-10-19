@@ -53,6 +53,12 @@ pop-ups are refused. The password manager's page script is not injected yet.
 The `Servo (experimental)` workflow builds this configuration; it is not a
 required check.
 
+For evaluation, `BROWSECRAFT_SERVO_TRACE=1` prints load progress, titles and
+crashes, and `BROWSECRAFT_SERVO_FRAME=<file.png>` keeps Servo's newest frame.
+`tools/servo-compat/run.sh` uses both to open every site in
+`tools/servo-compat/sites.txt`; the first run's results are in
+[servo-compat.md](servo-compat.md).
+
 ### build.bat
 
 On Windows, `build.bat` wraps the same steps:

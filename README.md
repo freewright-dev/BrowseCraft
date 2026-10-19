@@ -49,7 +49,9 @@ rather than build a second general-purpose DOM, layout and JavaScript stack.
 engine (see [docs/development.md](docs/development.md#servo-on-linux-experimental)).
 It is off by default, not part of release builds, and not yet secure for
 arbitrary browsing: Servo runs in the browser process, and the password
-manager's page script and element hiding are not wired up yet.
+manager's page script and element hiding are not wired up yet. In the first
+[compatibility run](docs/servo-compat.md), 33 of 50 popular sites rendered
+properly, 6 partly and 11 not, with no crashes.
 
 Existing native web views stay in place until the integration passes explicit
 compatibility, packaging and security gates. Windows renderer containment is
