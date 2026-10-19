@@ -64,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ad blocking loads at most 200,000 filter rules; the Windows page script no longer embeds the network rules it never uses (WebView2 filters natively); and the macOS JavaScript hooks take the host from the parsed URL, so a host name in the user info or path cannot shift where host rules match (#80).
 - Copying passwords no longer starts a 30-second thread per copy: one clipboard clearer serves every copy, and a new copy replaces the pending clear (#81).
 - A login added on `browsecraft://passwords` must have an `http(s)` address with a host (or none); `javascript:`, `data:` and other URLs are refused (#81).
+- An SVG file opened in the engine (`file://` or `image/svg+xml`) shows its source instead of a "can't be displayed" page, since the engine does not draw SVG (#81).
 - Windows screenshot capture rejects overflowing or excessive dimensions before allocation, validates bitmap selection/restoration, and releases native resources on error paths (#55).
 - Ad blocking now checks every engine HTTP redirect destination and uses native WebView2 interception for parser-initiated resources and redirects. JavaScript fallback fetch hooks handle URL and Request objects with one native conversion (#52).
 - Cancelled engine loads stop scheduling document/stylesheet/import/image work and publishing stale events. Background loads use a bounded two-worker queue and whole-load deadlines (#53).

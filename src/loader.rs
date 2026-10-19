@@ -403,7 +403,12 @@ fn load_page_checked(request: &Request, control: &Control) -> Page {
         || mime.contains("xml") && !mime.contains("svg")
     {
         net::decode_text(&resp.body, &resp.content_type)
-    } else if mime.starts_with("text/") || mime.contains("json") || mime.contains("javascript") {
+    } else if mime.starts_with("text/")
+        || mime.contains("json")
+        || mime.contains("javascript")
+        // The engine cannot draw SVG: show its source rather than nothing.
+        || mime == "image/svg+xml"
+    {
         let text = net::decode_text(&resp.body, &resp.content_type);
         format!(
             "<pre style=\"white-space:pre-wrap;margin:8px\">{}</pre>",
@@ -1223,6 +1228,18 @@ mod tests {
         assert_eq!(imported("https://example.com/s.css"), 1);
         assert_eq!(imported("file:///D:/site/s.css"), 2);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn svg_files_show_their_source() {
+        let path = std::env::temp_dir().join(format!("browsecraft-{}.svg", std::process::id()));
+        std::fs::write(&path, "<svg xmlns=\"http://www.w3.org/2000/svg\"><circle r=\"4\"/></svg>").unwrap();
+        let url = Url::from_file_path(&path).unwrap().to_string();
+        let (page, _) = load_blocking(&Request::Get(url));
+        std::fs::remove_file(&path).unwrap();
+        let text = page.doc.text_content(Document::ROOT);
+        assert!(text.contains("<circle r=\"4\"/>"), "{text}");
+        assert!(!text.contains("can't be displayed"));
     }
 
     #[test]
