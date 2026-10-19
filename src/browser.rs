@@ -2535,7 +2535,7 @@ impl Browser {
             .extend_pairs(pairs)
             .finish();
         let request = if post {
-            Request::Post(url.to_string(), body)
+            Request::Post(url.to_string(), zeroize::Zeroizing::new(body))
         } else {
             url.set_query(if body.is_empty() { None } else { Some(&body) });
             Request::Get(url.to_string())

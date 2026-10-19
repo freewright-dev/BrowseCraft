@@ -11,6 +11,8 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use zeroize::Zeroizing;
+
 static DARK: AtomicBool = AtomicBool::new(true);
 
 /// Records the effective theme. Returns `true` when it changed.
@@ -155,12 +157,13 @@ impl FormToken {
 
     /// Parses a submitted query (or form body) and returns its pairs if it
     /// carries an outstanding token, which is used up. `None` otherwise.
-    pub fn take(&self, query: &str) -> Option<Vec<(String, String)>> {
-        let pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
-            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+    /// Values can be passwords, so they are wiped when dropped.
+    pub fn take(&self, query: &str) -> Option<Vec<(String, Zeroizing<String>)>> {
+        let pairs: Vec<(String, Zeroizing<String>)> = url::form_urlencoded::parse(query.as_bytes())
+            .map(|(k, v)| (k.into_owned(), Zeroizing::new(v.into_owned())))
             .collect();
         let mut tokens = self.tokens.lock().unwrap_or_else(|e| e.into_inner());
-        let sent = pairs.iter().find(|(k, _)| k == "token").map(|(_, v)| v)?;
+        let sent = pairs.iter().find(|(k, _)| k == "token").map(|(_, v)| v.as_str())?;
         let index = tokens.iter().position(|token| token == sent)?;
         tokens.remove(index);
         Some(pairs)
@@ -252,7 +255,7 @@ mod tests {
         assert!(tokens.take("token=wrong&x=1").is_none());
         assert!(tokens.take("x=1").is_none());
         let pairs = tokens.take(&format!("x=1&token={t}")).unwrap();
-        assert!(pairs.contains(&("x".into(), "1".into())));
+        assert!(pairs.iter().any(|(k, v)| k == "x" && v.as_str() == "1"));
         assert!(tokens.take(&format!("token={t}")).is_none(), "used up");
     }
 

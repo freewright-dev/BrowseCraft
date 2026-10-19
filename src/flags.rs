@@ -174,7 +174,7 @@ pub fn apply_form(query: &str) -> bool {
         return false;
     };
     *SAVE_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    apply_query(pairs.into_iter())
+    apply_query(pairs.into_iter().map(|(k, v)| (k, v.to_string())))
 }
 
 fn apply_query(pairs: impl Iterator<Item = (String, String)>) -> bool {

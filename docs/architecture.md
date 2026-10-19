@@ -254,6 +254,12 @@ a vault that could not be created is removed.
 `passwords.rs` holds the unlocked vault (auto-locked after 15 minutes),
 `passwords.cfg` (which vault and key file, never-save sites; no secrets), the
 save/update offer and the fill script, and renders `browsecraft://passwords`.
+Whether an offer is made never depends on the saved password: the save bar
+changes the page's height, which the page can observe, so a login form for a
+saved username makes no offer at all, and change-password and sign-up forms
+offer an update whatever the password. Passwords on their way through the
+browser (form-token values, `Unlock`/`NewProtection`, the engine's POST body,
+fill scripts, offers) are `Zeroizing`, so they are wiped when dropped.
 Its forms post their fields in the request body, never the URL, so secrets do
 not reach the history. The suggested vault location is the per-user
 configuration folder.

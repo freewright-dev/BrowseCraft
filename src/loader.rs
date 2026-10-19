@@ -7,6 +7,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use url::Url;
+use zeroize::Zeroizing;
 
 use crate::css::{self, Stylesheet};
 use crate::dom::{Document, NodeKind};
@@ -145,8 +146,9 @@ impl LoadQueue {
 #[derive(Clone, Debug)]
 pub enum Request {
     Get(String),
-    /// URL and urlencoded form body.
-    Post(String, String),
+    /// URL and urlencoded form body. The body can hold typed passwords, so it
+    /// is wiped when dropped.
+    Post(String, Zeroizing<String>),
 }
 
 impl Request {
