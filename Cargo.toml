@@ -34,6 +34,13 @@ winit = "0.30"
 wry = "0.55"
 psl = "2"
 
+# Release builds abort on panic, so production code may not unwrap or
+# expect; the few proven invariants say why in an `allow` attribute. Tests
+# may (clippy.toml). Enforced by `cargo clippy` in CI.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
 windows = { version = "0.61", features = ["Win32_System_Com"] }

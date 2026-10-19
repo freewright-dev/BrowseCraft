@@ -1,0 +1,3 @@
+# Tests may unwrap and expect; production code may not (see [lints] in Cargo.toml).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

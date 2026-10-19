@@ -94,8 +94,13 @@ cargo test
 
 CI (`.github/workflows/ci.yml`) runs `cargo build --locked` and
 `cargo test --locked` on `windows-latest` for every pull request and every
-push to `main`. `.github/workflows/deny.yml` runs `cargo deny check` on the
-same events and once a week.
+push to `main`, then `cargo clippy --locked --all-targets`. Clippy denies
+`unwrap` and `expect` in production code (`[lints.clippy]` in `Cargo.toml`;
+`clippy.toml` allows them in tests), because release builds abort on panic.
+Handle the `None`/`Err` case instead; where an invariant really guarantees
+the value, put `#[allow(clippy::expect_used, reason = "...")]` on the
+function and say why. `.github/workflows/deny.yml` runs `cargo deny check` on
+the same events and once a week.
 
 Unit tests live next to the code: HTML parsing (`html.rs`), sibling metadata
 and cache invalidation (`dom.rs`), selectors, values
