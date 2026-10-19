@@ -268,6 +268,9 @@ pub struct Browser {
     egui_page: Option<Rect>,
     cheatsheet: bool,
     notice: Option<(String, Instant)>,
+    /// The notice is the "press F11 or Esc to exit" hint shown when a page
+    /// goes fullscreen; other notices do not replace it while it shows.
+    fullscreen_hint: bool,
     // ---- state added when rebuilding the shell ----
     drag: Drag,
     quit: bool,
@@ -978,6 +981,7 @@ impl Browser {
             egui_page: None,
             cheatsheet: false,
             notice: None,
+            fullscreen_hint: false,
             drag: Drag::None,
             quit: false,
             epoch: Instant::now(),
@@ -1057,7 +1061,9 @@ impl Browser {
     }
 
     fn notice_h(&self) -> f32 {
-        if self.notice_active() && !self.web_fullscreen {
+        // Shown in page fullscreen too: the strip is drawn by the browser,
+        // outside the page, so it says which site is full screen.
+        if self.notice_active() {
             (NOTICE_HEIGHT * self.scale()).round()
         } else {
             0.0
@@ -1065,6 +1071,10 @@ impl Browser {
     }
 
     fn set_notice(&mut self, message: impl Into<String>) {
+        if self.web_fullscreen && self.fullscreen_hint && self.notice_active() {
+            return;
+        }
+        self.fullscreen_hint = false;
         self.notice = Some((message.into(), Instant::now()));
         self.request_redraw();
     }
@@ -1563,7 +1573,10 @@ impl Browser {
 
     /// F11: the whole window fullscreen, independent of page fullscreen.
     fn toggle_window_fullscreen(&mut self) {
+        // In page fullscreen F11 leaves it, whatever the page does with Esc.
         if self.web_fullscreen {
+            self.run_in_page("document.exitFullscreen&&document.exitFullscreen().catch(function(){})");
+            self.set_web_fullscreen(false);
             return;
         }
         if let Some(g) = &self.gfx {
@@ -1915,6 +1928,17 @@ impl Browser {
     fn set_web_fullscreen(&mut self, on: bool) {
         if on == self.web_fullscreen {
             return;
+        }
+        if on {
+            // The page fills the screen and can draw anything, including a
+            // fake toolbar: say which site it is and how to leave.
+            let host = vault::host_key(&self.web_document);
+            let site = if host.is_empty() { "This page".to_string() } else { host };
+            self.set_notice(format!("{site} is full screen. Press F11 or Esc to exit"));
+            self.fullscreen_hint = true;
+        } else if self.fullscreen_hint {
+            self.notice = None;
+            self.fullscreen_hint = false;
         }
         self.web_fullscreen = on;
         if let Some(g) = &self.gfx {
@@ -3688,7 +3712,6 @@ impl Browser {
 
         // Notice strip.
         if self.notice_active()
-            && !fullscreen
             && let Some((message, _)) = self.notice.clone()
         {
             egui::Panel::bottom("notice")
