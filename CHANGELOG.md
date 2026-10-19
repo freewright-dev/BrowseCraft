@@ -91,6 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Engine inline layout keeps only the floats beside the current line (at most 1,024) instead of rescanning every float of the paragraph for each word and line.
 - Engine painting stops after 64 times the window area of work per repaint, so thousands of stacked full-screen boxes or huge text no longer make every repaint slow.
 - A rounded box 2^31 pixels wide or more no longer overflows an integer in paint (a panic in debug builds).
+- Engine pages share one stylesheet budget: 16 MiB of CSS text, charged before parsing, and 200,000 rules, where the parser stops instead of allocating more. A page with 18 MiB of inline CSS peaked at 1,989 MB in `--screenshot` mode; it now peaks at 363 MB.
+- Engine pages fetch at most 1,024 images, stop downloading once the page's image pixels are spent, and an image that does not decode no longer uses up that budget.
 - Windows screenshot capture rejects overflowing or excessive dimensions before allocation, validates bitmap selection/restoration, and releases native resources on error paths.
 - Ad blocking now checks every engine HTTP redirect destination and uses native WebView2 interception for parser-initiated resources and redirects. JavaScript fallback fetch hooks handle URL and Request objects with one native conversion.
 - Cancelled engine loads stop scheduling document/stylesheet/import/image work and publishing stale events. Background loads use a bounded two-worker queue and whole-load deadlines.

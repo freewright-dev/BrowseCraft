@@ -151,10 +151,20 @@ pub fn parse_stylesheet(source: &str) -> Stylesheet {
 }
 
 pub fn parse_stylesheet_cancellable(source: &str, live: &dyn Fn() -> bool) -> Option<Stylesheet> {
+    parse_stylesheet_limited(source, live, usize::MAX)
+}
+
+/// Parses at most `max_rules` rules; the rest of the sheet is ignored, so a
+/// huge sheet stops before its rules are allocated rather than after.
+pub fn parse_stylesheet_limited(
+    source: &str,
+    live: &dyn Fn() -> bool,
+    max_rules: usize,
+) -> Option<Stylesheet> {
     if !live() { return None; }
     let source = strip_comments(source);
     let mut sheet = Stylesheet::default();
-    parse_rules(&source, None, &mut sheet, 0, live);
+    parse_rules(&source, None, &mut sheet, 0, live, max_rules);
     live().then_some(sheet)
 }
 
@@ -230,9 +240,16 @@ std::thread_local! {
     static PRELUDE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-fn parse_rules(mut s: &str, media: Option<&Arc<Media>>, sheet: &mut Stylesheet, depth: u32, live: &dyn Fn() -> bool) {
+fn parse_rules(
+    mut s: &str,
+    media: Option<&Arc<Media>>,
+    sheet: &mut Stylesheet,
+    depth: u32,
+    live: &dyn Fn() -> bool,
+    max_rules: usize,
+) {
     loop {
-        if !live() { return; }
+        if !live() || sheet.rules.len() >= max_rules { return; }
         s = s.trim_start();
         if s.is_empty() {
             return;
@@ -266,13 +283,13 @@ fn parse_rules(mut s: &str, media: Option<&Arc<Media>>, sheet: &mut Stylesheet, 
                 _ if depth >= MAX_NESTING => {}
                 "media" => {
                     let block = Media::new(condition, media.cloned());
-                    parse_rules(body, Some(&block), sheet, depth + 1, live);
+                    parse_rules(body, Some(&block), sheet, depth + 1, live, max_rules);
                 }
                 "supports" if !condition.trim_start().starts_with("not") => {
-                    parse_rules(body, media, sheet, depth + 1, live)
+                    parse_rules(body, media, sheet, depth + 1, live, max_rules)
                 }
                 "layer" | "document" | "-moz-document" | "container" | "scope" => {
-                    parse_rules(body, media, sheet, depth + 1, live)
+                    parse_rules(body, media, sheet, depth + 1, live, max_rules)
                 }
                 _ => {}
             }
@@ -1337,6 +1354,15 @@ fn named_color(name: &str) -> Option<Color> {
 mod tests {
     use super::*;
     use crate::html;
+
+    #[test]
+    fn rule_limit_stops_parsing() {
+        let source = "@media all{a{b:c}}".to_string() + &"p{x:y}".repeat(1000);
+        let sheet = parse_stylesheet_limited(&source, &|| true, 100).unwrap();
+        assert_eq!(sheet.rules.len(), 100);
+        assert_eq!(parse_stylesheet_limited(&source, &|| true, 0).unwrap().rules.len(), 0);
+        assert_eq!(parse_stylesheet(&source).rules.len(), 1001);
+    }
 
     #[test]
     fn compound_tests_are_capped() {
