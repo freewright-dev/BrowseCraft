@@ -1,10 +1,10 @@
 //! CSS parsing: stylesheets, selectors, declarations and the value types the
 //! style system understands.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::dom::{Document, NodeId};
+use crate::dom::{Document, Element, NodeId};
 
 #[derive(Default)]
 #[derive(Clone, Debug)]
@@ -136,6 +136,14 @@ const MAX_NESTING: u32 = 32;
 /// ordinary selectors while fitting comfortably on a default worker stack.
 const MAX_SELECTOR_PARTS: usize = 64;
 const MAX_MATCH_STEPS: usize = 100_000;
+
+/// Bytes of class or attribute text one match step may scan. A step that
+/// scans more is charged more, so the step budget also bounds bytes read.
+const STEP_BYTES: usize = 64;
+
+/// Class and attribute tests one compound selector may have (`.a.b[c]…`);
+/// a compound with more is invalid. Real selectors use a handful.
+const MAX_COMPOUND_TESTS: usize = 256;
 
 #[allow(clippy::expect_used, reason = "parsing only stops when cancelled, and this never cancels")]
 pub fn parse_stylesheet(source: &str) -> Stylesheet {
@@ -479,11 +487,17 @@ fn parse_compound<'a>(
                     return None;
                 }
                 c.classes.push(unescape(&rest[1..end]));
+                if c.classes.len() + c.attrs.len() > MAX_COMPOUND_TESTS {
+                    return None;
+                }
                 rest = &rest[end..];
             }
             '[' => {
                 let end = rest.find(']')?;
                 c.attrs.push(parse_attr_selector(&rest[1..end])?);
+                if c.classes.len() + c.attrs.len() > MAX_COMPOUND_TESTS {
+                    return None;
+                }
                 rest = &rest[end + 1..];
             }
             ':' => {
@@ -662,21 +676,46 @@ pub enum SelectorKey {
 pub(crate) struct MatchContext<'a> {
     results: HashMap<(usize, usize, NodeId), bool>,
     remaining: usize,
+    /// Each element's classes, split once: a `class` attribute can be a
+    /// megabyte long, and selectors test it once per class.
+    classes: HashMap<NodeId, HashSet<&'a str>>,
     lifetime: std::marker::PhantomData<(&'a Selector, &'a Document)>,
 }
 
-impl MatchContext<'_> {
+impl<'a> MatchContext<'a> {
     pub(crate) fn new() -> Self {
         Self {
             results: HashMap::new(),
             remaining: MAX_MATCH_STEPS,
+            classes: HashMap::new(),
             lifetime: std::marker::PhantomData,
         }
     }
 
     fn step(&mut self) -> Result<(), ()> {
-        self.remaining = self.remaining.checked_sub(1).ok_or(())?;
+        self.scan(0)
+    }
+
+    /// One step that reads about `bytes` bytes of the document.
+    fn scan(&mut self, bytes: usize) -> Result<(), ()> {
+        self.remaining = self.remaining.checked_sub(1 + bytes / STEP_BYTES).ok_or(())?;
         Ok(())
+    }
+
+    fn has_class(&mut self, el: &'a Element, node: NodeId, class: &str) -> Result<bool, ()> {
+        if !self.classes.contains_key(&node) {
+            let attr = el.attr("class").unwrap_or("");
+            self.scan(attr.len())?;
+            self.classes.insert(node, attr.split_ascii_whitespace().collect());
+        }
+        self.step()?;
+        Ok(self.classes.get(&node).is_some_and(|set| set.contains(class)))
+    }
+
+    /// Looks up an attribute, charged for the names it compares.
+    fn attr(&mut self, el: &'a Element, name: &str) -> Result<Option<&'a str>, ()> {
+        self.scan(el.attrs.iter().map(|(n, _)| n.len()).sum())?;
+        Ok(el.attr(name))
     }
 }
 
@@ -749,20 +788,23 @@ fn compound_matches<'a>(
     if c.tag.as_ref().is_some_and(|t| *t != el.tag) {
         return Ok(false);
     }
-    if c.id.as_ref().is_some_and(|id| el.id() != Some(id)) {
+    if let Some(id) = &c.id
+        && ctx.attr(el, "id")?.filter(|v| !v.is_empty()) != Some(id.as_str())
+    {
         return Ok(false);
     }
     for class in &c.classes {
-        ctx.step()?;
-        if !el.has_class(class) {
+        if !ctx.has_class(el, node, class)? {
             return Ok(false);
         }
     }
     for a in &c.attrs {
-        ctx.step()?;
-        let Some(value) = el.attr(&a.name) else {
+        let Some(value) = ctx.attr(el, &a.name)? else {
             return Ok(false);
         };
+        if a.op.is_some() {
+            ctx.scan(value.len())?;
+        }
         let ok = match &a.op {
             None => true,
             Some(('=', v)) => value == v,
@@ -1297,11 +1339,36 @@ mod tests {
     use crate::html;
 
     #[test]
-    fn specificity_saturates() {
-        let many = ".a".repeat(70_000);
-        assert_eq!(parse_selector(&many).unwrap().specificity.1, u16::MAX);
-        let nested = format!(":is({many}):is({many})");
-        assert_eq!(parse_selector(&nested).unwrap().specificity.1, u16::MAX);
+    fn compound_tests_are_capped() {
+        // Up to 256 class and attribute tests per compound (audit B-08);
+        // more makes the selector invalid.
+        let most = ".a".repeat(MAX_COMPOUND_TESTS - 1) + "[b]";
+        assert_eq!(parse_selector(&most).unwrap().specificity.1, MAX_COMPOUND_TESTS as u16);
+        assert!(parse_selector(&(".a".repeat(MAX_COMPOUND_TESTS) + "[b]")).is_none());
+        assert!(parse_selector(&".a".repeat(70_000)).is_none());
+    }
+
+    #[test]
+    fn class_and_attribute_scans_are_charged() {
+        // A megabyte class attribute is split once per element, and each
+        // scan is charged by its length, so many class tests stay cheap.
+        let classes = "a ".repeat(500_000) + "z";
+        let doc = html::parse(&format!("<p class=\"{classes}\" data-x=\"{classes}\">x</p>"));
+        let node = doc.find_tag("p").unwrap();
+        let start = std::time::Instant::now();
+        let selectors: Vec<Selector> =
+            (0..300).map(|_| parse_selector(&".z".repeat(200)).unwrap()).collect();
+        let mut ctx = MatchContext::new();
+        for selector in &selectors {
+            assert_eq!(selector.matches_with_context(&doc, node, &mut ctx), Ok(true));
+        }
+        // Attribute values are charged by length: [data-x*=…] on a 1 MB value
+        // spends about 16k steps, so the budget runs out after a few.
+        let contains: Vec<Selector> = (0..20).map(|_| parse_selector("[data-x*=q]").unwrap()).collect();
+        let mut ctx = MatchContext::new();
+        let results: Vec<_> = contains.iter().map(|s| s.matches_with_context(&doc, node, &mut ctx)).collect();
+        assert!(results.contains(&Err(())));
+        assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
     }
 
     fn condition(rule: &Rule) -> Option<&str> {
@@ -1398,7 +1465,7 @@ mod tests {
         let p2 = doc
             .descendants(Document::ROOT)
             .into_iter()
-            .find(|&n| doc.element(n).is_some_and(|e| e.has_class("x")))
+            .find(|&n| doc.element(n).is_some_and(|e| e.classes().any(|c| c == "x")))
             .unwrap();
         for (sel, expected) in [
             ("p", true),
@@ -1574,9 +1641,11 @@ mod tests {
             assert!(ctx.results.is_empty());
             assert_eq!(ctx.remaining, 0);
         }
-        // Exercise the public entry point's actual budget, too.
-        let selector =
-            parse_selector(&format!("p:not({}.missing)", ".a".repeat(MAX_MATCH_STEPS))).unwrap();
+        // Exercise the public entry point's actual budget, too: scanning an
+        // 8 MB class attribute costs more than the whole budget.
+        let doc = html::parse(&format!("<p class=\"{}\"></p>", "a ".repeat(4 << 20)));
+        let node = doc.find_tag("p").unwrap();
+        let selector = parse_selector("p:not(.missing)").unwrap();
         assert!(!selector.matches(&doc, node));
     }
 

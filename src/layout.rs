@@ -1295,6 +1295,8 @@ impl<'a> Engine<'a> {
         let mut ls = LineState {
             y: cy,
             floats: Vec::new(),
+            float_w: (0.0, 0.0),
+            floats_bottom: cy,
             line: Vec::new(),
             content: false,
             line_w: 0.0,
@@ -1327,7 +1329,7 @@ impl<'a> Engine<'a> {
                         link.clone(),
                     ));
                 }
-                ls.floats.push((right, fw, ls.y + fh));
+                ls.add_float(right, fw, ls.y + fh);
                 ls.avail -= fw;
                 continue;
             }
@@ -1425,8 +1427,7 @@ impl<'a> Engine<'a> {
         if !ls.line.is_empty() {
             self.finish_line(&mut ls, &items, &atomics, cst, cx, w, indent);
         }
-        let floats_bottom = ls.floats.iter().map(|f| f.2).fold(ls.y, f32::max);
-        floats_bottom - cy
+        ls.floats_bottom.max(ls.y) - cy
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2396,10 +2397,18 @@ impl<'a> Engine<'a> {
     }
 }
 
+/// Floats beside one line that text flows around; more are drawn without.
+const MAX_ACTIVE_FLOATS: usize = 1024;
+
 struct LineState {
     y: f32,
-    /// Floats placed in this run: (is right, width, bottom edge).
+    /// Floats in this run that reach below the current line: (is right,
+    /// width, bottom edge).
     floats: Vec<(bool, f32, f32)>,
+    /// Widths of `floats` on the left and right.
+    float_w: (f32, f32),
+    /// Bottom edge of the lowest float placed in this run.
+    floats_bottom: f32,
     line: Vec<Piece>,
     /// Whether `line` holds anything but spaces and spacers. Kept up to date
     /// on push, so each piece does not rescan a line of preserved spaces.
@@ -2412,14 +2421,32 @@ struct LineState {
 impl LineState {
     /// Widths taken by floats on the left and right at the current line.
     fn bounds(&self) -> (f32, f32) {
-        let mut left = 0.0;
-        let mut right = 0.0;
-        for &(is_right, w, bottom) in &self.floats {
-            if bottom > self.y + 0.01 {
-                if is_right { right += w } else { left += w }
-            }
+        self.float_w
+    }
+
+    /// Records a float placed beside the current line. One that ends at or
+    /// above the line takes no room; beyond `MAX_ACTIVE_FLOATS` side by side,
+    /// more are drawn but text no longer flows around them.
+    fn add_float(&mut self, right: bool, w: f32, bottom: f32) {
+        self.floats_bottom = self.floats_bottom.max(bottom);
+        if bottom <= self.y + 0.01 || self.floats.len() >= MAX_ACTIVE_FLOATS {
+            return;
         }
-        (left, right)
+        self.floats.push((right, w, bottom));
+        if right { self.float_w.1 += w } else { self.float_w.0 += w }
+    }
+
+    /// Forgets the floats the current line is below, so each placement and
+    /// line end looks only at floats still beside it.
+    fn prune_floats(&mut self) {
+        let y = self.y;
+        let before = self.floats.len();
+        self.floats.retain(|f| f.2 > y + 0.01);
+        if self.floats.len() != before {
+            self.float_w = self.floats.iter().fold((0.0, 0.0), |(l, r), &(is_right, w, _)| {
+                if is_right { (l, r + w) } else { (l + w, r) }
+            });
+        }
     }
 
     fn next_float_bottom(&self) -> Option<f32> {
@@ -2436,6 +2463,7 @@ impl LineState {
     }
 
     fn reset(&mut self, w: f32, indent: f32) {
+        self.prune_floats();
         let (l, r) = self.bounds();
         let ind = if self.first { indent } else { 0.0 };
         self.avail = w - l - r - ind;

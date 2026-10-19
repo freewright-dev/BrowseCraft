@@ -142,7 +142,7 @@ impl<'a> Canvas<'a> {
             right = right.min(inner.x + inner.w - ir);
         }
         let band0 = (left.ceil() as i32).clamp(x0, x1);
-        let band1 = ((right - 1.0).floor() as i32 + 1).clamp(band0, x1);
+        let band1 = ((right - 1.0).floor() as i32).saturating_add(1).clamp(band0, x1);
         for y in y0..y1 {
             let py = y as f32 + 0.5;
             let coverage = |px: f32| {
@@ -315,6 +315,12 @@ fn rounded_coverage(r: Rect, radius: f32, px: f32, py: f32) -> f32 {
 
 /// Paints the items that intersect the visible part of the page, shifted by
 /// the scroll offset and the page's position in the window.
+/// Work one paint may do, in multiples of the canvas area. Real pages stack
+/// a few backgrounds, borders and text runs per pixel; a page of 100,000
+/// overlapping full-screen boxes stops after the first few dozen instead of
+/// blending every one of them on every repaint.
+const PAINT_OVERDRAW: u64 = 64;
+
 pub fn paint_items(
     canvas: &mut Canvas,
     items: &[Item],
@@ -323,7 +329,7 @@ pub fn paint_items(
     dx: f32,
     dy: f32,
 ) {
-    let (_, clip_top, _, clip_bottom) = canvas.bounds();
+    let (clip_left, clip_top, clip_right, clip_bottom) = canvas.bounds();
     let view_top = clip_top as f32 - dy;
     let view_bottom = clip_bottom as f32 - dy;
     let visible = |top: f32, bottom: f32| bottom >= view_top && top <= view_bottom;
@@ -332,6 +338,27 @@ pub fn paint_items(
         y: r.y + dy,
         ..*r
     };
+    // Each drawn item is charged for the canvas pixels it covers (text for
+    // its length, scaled by glyph size); once the budget is spent the rest
+    // is skipped, though clips are still pushed and popped in pairs.
+    let canvas_area = (clip_right - clip_left).max(1) as u64 * (clip_bottom - clip_top).max(1) as u64;
+    let mut budget = canvas_area.saturating_mul(PAINT_OVERDRAW);
+    let mut spend = |cost: u64| match budget.checked_sub(cost) {
+        Some(left) => {
+            budget = left;
+            true
+        }
+        None => {
+            budget = 0;
+            false
+        }
+    };
+    let cost = |r: &Rect| {
+        let r = shift(r);
+        let w = ((r.x + r.w).min(clip_right as f32) - r.x.max(clip_left as f32)).max(0.0);
+        let h = ((r.y + r.h).min(clip_bottom as f32) - r.y.max(clip_top as f32)).max(0.0);
+        (w * h) as u64 + 1
+    };
     for item in items {
         match item {
             Item::Fill {
@@ -339,7 +366,7 @@ pub fn paint_items(
                 color,
                 radius,
             } => {
-                if visible(rect.y, rect.y + rect.h) {
+                if visible(rect.y, rect.y + rect.h) && spend(cost(rect)) {
                     if *radius >= 0.5 {
                         canvas.fill_rounded(shift(rect), *radius, *color, None);
                     } else {
@@ -353,7 +380,7 @@ pub fn paint_items(
                 colors,
                 radius,
             } => {
-                if visible(rect.y, rect.y + rect.h) {
+                if visible(rect.y, rect.y + rect.h) && spend(cost(rect)) {
                     canvas.draw_border(shift(rect), *widths, *colors, *radius);
                 }
             }
@@ -365,13 +392,17 @@ pub fn paint_items(
                 size,
                 color,
             } => {
-                if visible(y - size * 1.2, y + size * 0.5) {
+                let glyph_cost = 1 + (size * size) as u64 / 256;
+                if visible(y - size * 1.2, y + size * 0.5)
+                    && spend((text.len() as u64).saturating_mul(glyph_cost))
+                {
                     canvas.draw_text(fonts, x + dx, y + dy, text, *font, *size, *color);
                 }
             }
             Item::Image { rect, src } => {
                 if visible(rect.y, rect.y + rect.h)
                     && let Some(img) = images.get(&**src)
+                    && spend(cost(rect))
                 {
                     canvas.draw_image(img, shift(rect));
                 }
@@ -418,6 +449,39 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn paint_work_is_bounded() {
+        let Ok(fonts) = Fonts::new() else {
+            return; // no system fonts on this machine
+        };
+        let full = Rect { x: 0.0, y: 0.0, w: 64.0, h: 64.0 };
+        let fill = |a: u8| Item::Fill { rect: full, color: Color { r: 255, g: 0, b: 0, a }, radius: 0.0 };
+        let paint = |items: &[Item]| {
+            let mut pixels = vec![0u32; 64 * 64];
+            paint_items(&mut Canvas::new(&mut pixels, 64, 64), items, &fonts, &HashMap::new(), 0.0, 0.0);
+            pixels[0]
+        };
+        // A few overlapping boxes all paint.
+        assert_eq!(paint(&[fill(255)]), 0x00ff_0000);
+        // 100,000 stacked translucent full-canvas boxes stop at the budget
+        // (audit B-21), and clips stay balanced.
+        let mut many: Vec<Item> = vec![Item::PushClip(full)];
+        many.extend((0..100_000).map(|_| fill(1)));
+        many.push(Item::PopClip);
+        let start = std::time::Instant::now();
+        paint(&many);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2), "{:?}", start.elapsed());
+    }
+
+    #[test]
+    fn huge_rounded_boxes_do_not_overflow() {
+        // `width: 3000000000px; border-radius: 4px` (audit B-28).
+        let mut pixels = vec![0u32; 16 * 16];
+        let wide = Rect { x: 0.0, y: 0.0, w: 3.0e9, h: 16.0 };
+        Canvas::new(&mut pixels, 16, 16).fill_rounded(wide, 4.0, Color { r: 0, g: 0, b: 255, a: 255 }, None);
+        assert_eq!(pixels[8 * 16 + 8], 0x0000_00ff);
     }
 
     #[test]
