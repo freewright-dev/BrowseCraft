@@ -1,0 +1,21 @@
+name: Dependencies
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # New advisories are published without any change here: check weekly too.
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Advisories (vulnerable, unmaintained, unsound or yanked crates from the
+      # RustSec database), licenses, bans and sources, as set in deny.toml.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

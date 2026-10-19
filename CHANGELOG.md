@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The theme now defaults to dark.
 - The settings page is redesigned with toggle switches and segmented controls; changing a setting no longer adds a Back step each time.
 - Declared GPL-3.0-or-later licensing with the full license text and uBlock Origin attribution; added an explicit dependency license/source policy.
+- CI runs `cargo deny check` (advisories, bans, licenses, sources) on every pull request, on pushes to `main` and weekly. The two tracked unmaintained advisories (`proc-macro-error`, `ttf-parser`) are ignored by ID with a reason; any other advisory fails the check (#76).
 - The internal pages moved from `craft://` to `browsecraft://` (`browsecraft://flags`, `browsecraft://history`), and the repository moved to `freewright-dev/BrowseCraft`.
 - Replaced the original wry/tao-only browser with a hybrid design: BrowseCraft's own engine and winit window draw the chrome and internal pages, while websites render in an embedded WebView2 pane. The HTML toolbar webview is gone; the toolbar is drawn by the engine or by egui.
 - Searches use Startpage instead of DuckDuckGo.

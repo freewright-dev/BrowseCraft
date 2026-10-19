@@ -30,9 +30,15 @@ Reviewed 2026-10-18 for [issue #54](https://github.com/freewright-dev/BrowseCraf
   path does not use it. Track the GTK/wry family upgrade to a corrected glib
   rather than applying an incompatible standalone version override.
 
-These findings remain visible: `deny.toml` has no advisory ignores. Review
-them again when updating wry, GTK, fontdue or winit. Do not treat a successful
-`cargo audit` exit as the absence of informational warnings.
+`deny.toml` ignores exactly the two unmaintained advisories above, by ID and
+with a reason pointing here, so that `cargo deny check` can pass and run in CI
+([issue #76](https://github.com/freewright-dev/BrowseCraft/issues/76)). There
+is no blanket setting: any other advisory, including a new one for these same
+crates, still fails the check. The glib finding is not reported by
+`cargo deny` (it only flags unsound crates in the workspace itself) and stays
+listed here. Review all three again when updating wry, GTK, fontdue or winit,
+and remove an ignore as soon as its crate leaves the graph. Do not treat a
+successful `cargo audit` exit as the absence of informational warnings.
 
 ## Policy and checks
 
@@ -40,6 +46,10 @@ The project is GPL-3.0-or-later. [Third-party notices](../THIRD_PARTY_NOTICES.md
 identify the uBlock Origin adaptation and dependency/asset obligations.
 `deny.toml` explicitly allows the licenses needed by the current graph,
 rejects unknown registry/git sources and reports duplicate versions.
+
+CI runs `cargo deny check` (advisories, bans, licenses and sources) in
+`.github/workflows/deny.yml` on every pull request, on pushes to `main` and
+weekly, so an advisory published between changes is still noticed.
 
 ```sh
 cargo audit
