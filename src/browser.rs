@@ -8,7 +8,7 @@
 //! (toolbar and tab sidebar) is drawn either by the engine into a softbuffer
 //! frame, or by egui on wgpu when a GPU is available.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -109,6 +109,9 @@ pub enum UserMessage {
     /// The page closed itself (`window.close()`), which destroys the web view.
     #[cfg_attr(not(windows), allow(dead_code))]
     WebClosed,
+    /// WebView2 could not verify the certificate of a request to this URL.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    WebCertError(String),
     /// A shortcut pressed inside the WebView2 pane (`AcceleratorKeyPressed`).
     #[cfg_attr(not(windows), allow(dead_code))]
     WebKey(Shortcut),
@@ -253,6 +256,9 @@ pub struct Browser {
     web_epoch: Arc<AtomicU64>,
     /// When the last pop-up was followed, to follow at most one a second.
     last_popup: Option<Instant>,
+    /// Hosts WebView2 reported a certificate error for this session. Their
+    /// pages never show the lock, even after the user clicks through.
+    cert_error_hosts: HashSet<String>,
     tabs: Vec<TabState>,
     active: usize,
     history: Vec<HistoryEntry>,
@@ -390,6 +396,14 @@ fn same_internal_page(a: &str, b: &str) -> bool {
 fn is_web_url(url: &str) -> bool {
     let lower = url.trim_start().to_ascii_lowercase();
     lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// Whether the web view's committed document `url` earns the lock: HTTPS,
+/// and no certificate error was reported for its host.
+fn secure_web_document(url: &str, cert_error_hosts: &HashSet<String>) -> bool {
+    Url::parse(url).is_ok_and(|u| {
+        u.scheme() == "https" && u.host_str().is_some_and(|h| !cert_error_hosts.contains(h))
+    })
 }
 
 /// Whether `a` and `b` are web URLs with the same origin (scheme, host and
@@ -691,11 +705,14 @@ fn vk_to_key(vk: u32) -> Option<Key> {
 }
 
 /// Maps a Win32 virtual-key code and modifier state from WebView2's native
-/// `AcceleratorKeyPressed` event to a browser [`Shortcut`].
+/// `AcceleratorKeyPressed` event to a browser [`Shortcut`]. The browser cannot
+/// tell whether a text field in the page has focus, so keys that edit text
+/// (Ctrl+Left and Ctrl+Right move by a word) stay with the page; Alt+Left and
+/// Alt+Right still go Back and Forward.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn web_shortcut_for(vk: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Shortcut> {
     let key = vk_to_key(vk)?;
-    shortcut_for(&key, ctrl, shift, alt, false)
+    shortcut_for(&key, ctrl, shift, alt, true)
 }
 
 #[cfg(windows)]
@@ -776,13 +793,15 @@ fn attach_webview_fullscreen(wv: &WebView, proxy: EventLoopProxy<UserMessage>, e
 /// - links to other apps (`LaunchingExternalUriScheme`, from any frame): the
 ///   launch is cancelled and a notice says so;
 /// - `window.close()` (`WindowCloseRequested`): wry destroys the web view's
-///   window, so the browser builds a new web view.
+///   window, so the browser builds a new web view;
+/// - certificate errors (`ServerCertificateErrorDetected`): WebView2 still
+///   shows its warning page; the host loses the lock for the session.
 #[cfg(windows)]
 fn attach_webview_guards(wv: &WebView, proxy: EventLoopProxy<UserMessage>, epoch: Arc<AtomicU64>) {
-    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_18;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_14, ICoreWebView2_18};
     use webview2_com::{
         LaunchingExternalUriSchemeEventHandler, NewWindowRequestedEventHandler,
-        WindowCloseRequestedEventHandler, take_pwstr,
+        ServerCertificateErrorDetectedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
     };
     use windows::core::{Interface, PWSTR};
     use wry::WebViewExtWindows;
@@ -826,6 +845,20 @@ fn attach_webview_guards(wv: &WebView, proxy: EventLoopProxy<UserMessage>, epoch
             Ok(())
         }));
         let _ = unsafe { view.add_LaunchingExternalUriScheme(&handler, &mut token) };
+    }
+
+    if let Ok(view) = webview.cast::<ICoreWebView2_14>() {
+        let certs = proxy.clone();
+        let handler = ServerCertificateErrorDetectedEventHandler::create(Box::new(move |_, args| {
+            let Some(args) = args else {
+                return Ok(());
+            };
+            let mut uri = PWSTR::null();
+            unsafe { args.RequestUri(&mut uri)? };
+            let _ = certs.send_event(UserMessage::WebCertError(take_pwstr(uri)));
+            Ok(())
+        }));
+        let _ = unsafe { view.add_ServerCertificateErrorDetected(&handler, &mut token) };
     }
 
     let handler = WindowCloseRequestedEventHandler::create(Box::new(move |_, _| {
@@ -1069,6 +1102,7 @@ impl Browser {
             generation: Arc::new(AtomicU64::new(0)),
             web_epoch: Arc::new(AtomicU64::new(0)),
             last_popup: None,
+            cert_error_hosts: HashSet::new(),
             tabs: vec![TabState::default()],
             active: 0,
             history: Vec::new(),
@@ -1256,6 +1290,17 @@ impl Browser {
     // ---- tabs ----
 
     /// The URL of the page this tab shows.
+    /// Whether the page shown arrived over HTTPS with a certificate nobody
+    /// had to override: the address bar's lock. It follows the document
+    /// actually shown, never the text in the address bar.
+    fn page_secure(&self) -> bool {
+        if self.web_page {
+            secure_web_document(&self.web_document, &self.cert_error_hosts)
+        } else {
+            self.tab.as_ref().is_some_and(|t| t.page.secure)
+        }
+    }
+
     fn current_url(&self) -> String {
         if self.web_page {
             self.web_url.clone()
@@ -3199,7 +3244,7 @@ impl Browser {
         let border = if focused { pal.accent } else { pal.line };
         canvas.fill_rounded(a, radius, border, None);
         canvas.fill_rounded(inset(a, 1.0), radius - 1.0, pal.field_bg, None);
-        let https = self.address.text.starts_with("https://");
+        let https = self.page_secure();
         let lead = Rect { x: a.x + 8.0 * s, y: a.y, w: 20.0 * s, h: a.h };
         self.icon_in(
             canvas,
@@ -3664,7 +3709,7 @@ impl Browser {
         let mut actions: Vec<Action> = Vec::new();
         let (can_back, can_forward) = (self.button_enabled(Button::Back), self.button_enabled(Button::Forward));
         let loading = self.loading;
-        let leading = if self.address.text.starts_with("https://") { ICON_LOCK } else { ICON_GLOBE };
+        let leading = if self.page_secure() { ICON_LOCK } else { ICON_GLOBE };
         let theme_icon = if dark { egui_chrome::ICON_SUN } else { egui_chrome::ICON_MOON };
         let reload_icon = if loading { egui_chrome::ICON_STOP } else { egui_chrome::ICON_RELOAD };
 
@@ -4014,6 +4059,11 @@ impl Browser {
             UserMessage::WebOpen { epoch, url, popup } => self.web_open(epoch, url, popup),
             UserMessage::WebExternal(url) => self.set_notice(external_notice(&url)),
             UserMessage::WebClosed => self.web_closed(),
+            UserMessage::WebCertError(url) => {
+                if let Some(host) = Url::parse(&url).ok().and_then(|u| u.host_str().map(str::to_string)) {
+                    self.cert_error_hosts.insert(host);
+                }
+            }
             UserMessage::WebKey(shortcut) => self.web_key(shortcut),
             UserMessage::WebFullscreen { epoch, on } => {
                 // Leaving fullscreen always applies; entering it only for the
@@ -4239,6 +4289,10 @@ mod tests {
         assert_eq!(web_shortcut_for(0x53, true, false, false), Some(Shortcut::FocusAddress));
         assert_eq!(web_shortcut_for(0x09, true, true, false), Some(Shortcut::CycleTab(-1)));
         assert_eq!(web_shortcut_for(0x25, false, false, true), Some(Shortcut::Go(-1)));
+        assert_eq!(web_shortcut_for(0x27, false, false, true), Some(Shortcut::Go(1)));
+        // Ctrl+Left and Ctrl+Right move by a word in the page's text fields.
+        assert_eq!(web_shortcut_for(0x25, true, false, false), None);
+        assert_eq!(web_shortcut_for(0x27, true, true, false), None);
         assert_eq!(web_shortcut_for(0x24, false, false, true), Some(Shortcut::Home));
         assert_eq!(web_shortcut_for(0x74, false, false, false), Some(Shortcut::Reload));
         assert_eq!(web_shortcut_for(0x75, false, false, false), Some(Shortcut::FocusAddress));
@@ -4323,6 +4377,14 @@ mod tests {
             assert!(!navigation_allowed(url), "{url}");
         }
         assert_eq!(external_notice("MailTo:x"), "Blocked a link that opens another app (mailto:)");
+
+        let mut bad = HashSet::new();
+        assert!(secure_web_document("https://bank.example/login", &bad));
+        assert!(!secure_web_document("http://bank.example/", &bad));
+        assert!(!secure_web_document("", &bad)); // nothing committed yet
+        bad.insert("bank.example".to_string());
+        assert!(!secure_web_document("https://bank.example/login", &bad));
+        assert!(secure_web_document("https://other.example/", &bad));
 
         // A page that opens pop-ups in a loop cannot grow a tab's history.
         let mut history = Vec::new();
