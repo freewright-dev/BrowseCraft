@@ -34,10 +34,6 @@ impl Element {
         self.attr("class").unwrap_or("").split_ascii_whitespace()
     }
 
-    pub fn has_class(&self, class: &str) -> bool {
-        self.classes().any(|c| c == class)
-    }
-
     /// The image URL to load for `<img>` and `<input type=image>`. Lazy
     /// loading scripts often keep the real URL in `data-src` and a tiny
     /// placeholder in `src`; without scripts we use `data-src` directly.

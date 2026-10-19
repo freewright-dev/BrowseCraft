@@ -87,6 +87,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A user name and password in an address (`https://user:password@host/`) are dropped before loading, in the engine (every request and redirect) and in the web view: they are never sent, shown or recorded, and `https://bank.example@evil.example/` shows as `evil.example`.
 - The history skips addresses longer than 8 KB, so a page cannot fill it with megabyte-long URLs.
 - `file:///C:` (a drive with no folder) is refused instead of listing the drive's current folder, which also panicked the loader thread in debug builds.
+- Engine selector matching splits each element's classes once and charges class and attribute checks for the bytes they read, and a compound selector may have at most 256 class and attribute tests; a 1 MB `class` attribute tested by a selector with thousands of classes no longer stalls styling.
+- Engine inline layout keeps only the floats beside the current line (at most 1,024) instead of rescanning every float of the paragraph for each word and line.
+- Engine painting stops after 64 times the window area of work per repaint, so thousands of stacked full-screen boxes or huge text no longer make every repaint slow.
+- A rounded box 2^31 pixels wide or more no longer overflows an integer in paint (a panic in debug builds).
 - Windows screenshot capture rejects overflowing or excessive dimensions before allocation, validates bitmap selection/restoration, and releases native resources on error paths.
 - Ad blocking now checks every engine HTTP redirect destination and uses native WebView2 interception for parser-initiated resources and redirects. JavaScript fallback fetch hooks handle URL and Request objects with one native conversion.
 - Cancelled engine loads stop scheduling document/stylesheet/import/image work and publishing stale events. Background loads use a bounded two-worker queue and whole-load deadlines.

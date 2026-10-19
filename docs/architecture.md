@@ -146,7 +146,11 @@ tree, including nested pseudo-selector lists. Matching also caps recursion at
 64 parts and shares memoized successes/failures across `:is()`/`:not()` calls,
 keyed by selector suffix identity and DOM node. A 100,000-step budget covers
 state visits and class/attribute/pseudo checks, shared by all candidate
-selectors for one element (or one standalone test-helper match).
+selectors for one element (or one standalone test-helper match). A step that
+reads text is charged one more step per 64 bytes, and each element's `class`
+attribute is split into a set once per match, so the budget also bounds the
+bytes scanned. A compound selector may have at most 256 class and attribute
+tests.
 Exhaustion propagates as an error, so `:not()` cannot invert it into a match;
 styling stops evaluating further candidates for that element. The cascade
 retains at most 65,536 declarations per element, gathered in rule source order,
@@ -174,7 +178,7 @@ children and filled in once the box's height is known, so they paint
 underneath.
 
 - **Block flow:** vertical stacking with sibling margin collapsing and auto-margin centering.
-- **Inline flow:** text is split into words and spaces according to `white-space`. Lines are filled greedily and placed one at a time, so floats placed earlier narrow later lines.
+- **Inline flow:** text is split into words and spaces according to `white-space`. Lines are filled greedily and placed one at a time, so floats placed earlier narrow later lines. Only floats that still reach beside the current line are kept (at most 1,024; more are drawn but text does not flow around them), with their widths summed as they are added and removed.
 - **Shrink-to-fit:** inline-blocks, floats, tables and flex items use cached min/max-content widths.
 - **Flexbox:** single-pass hypothetical sizes, wrapping, grow/shrink with minimums, auto margins, `justify-content` and `align-items`.
 - **Tables:** the CSS auto table layout algorithm, simplified, with colspan; cells stretch to the row height.
@@ -190,7 +194,9 @@ guards release the memory DC before its bitmap on every exit path.
 
 `paint::paint_items` draws only the items that intersect the viewport into a
 `u32` buffer, using alpha blending, anti-aliased rounded rectangles and cached
-glyph bitmaps. On the engine chrome path the browser draws its toolbar and
+glyph bitmaps. One paint may do 64 times the canvas area of work: each drawn
+item is charged for the pixels it covers (text for its length, scaled by glyph
+size), and items past the budget are skipped while clips stay balanced. On the engine chrome path the browser draws its toolbar and
 sidebar with the same `Canvas`, then copies the frame to the window with
 softbuffer. On the egui path only the page is rasterized and uploaded as a
 texture.
