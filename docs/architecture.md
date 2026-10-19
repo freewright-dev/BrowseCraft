@@ -90,10 +90,14 @@ over IPC and keys pressed inside iframes are covered too.
 ## Loading
 
 `loader::spawn` submits to two persistent background workers with a queue of
-at most 16 loads. New navigation removes stale queued generations. Each active
+at most 16 loads. New navigation removes stale queued generations. Internal
+pages (`about:`, `browsecraft:`) read no network and skip the queue: each runs
+on its own short-lived thread, so slow web pages never hold up the settings,
+history or password pages. Each active
 load uses at most six workers for stylesheets or images, including its calling
 worker. A 60-second deadline includes queue time; individual HTTP operations
-are capped at 30 seconds or the remaining deadline. Already-started blocking
+are capped at 30 seconds or the remaining deadline, with 10 seconds to connect,
+10 seconds for the response headers and 20 seconds for the body. Already-started blocking
 I/O can finish or time out, but cancellation stops subsequent requests,
 redirect hops, imports, parser tokens/rules and stale page/image events.
 `LoadEvent::Page` reaches the UI through winit's `EventLoopProxy`; images follow
