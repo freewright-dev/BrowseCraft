@@ -1501,6 +1501,10 @@ impl Browser {
     }
 
     fn start_load(&mut self, mut request: Request, push: bool, restore: Option<f32>) {
+        // A user name and password in the URL are never sent, shown or kept.
+        if let Some(clean) = crate::net::without_userinfo(request.url()) {
+            request = request.with_url(clean);
+        }
         let url = request.url().to_string();
         // Main-frame ad filtering: blocked pages show an engine notice but
         // keep the original URL in the address bar.
@@ -2046,6 +2050,18 @@ impl Browser {
                     if request_in_webview(&url) {
                         let _ = nav_proxy.send_event(UserMessage::WebExternal(url));
                     }
+                    return false;
+                }
+                // A user name and password in the URL are never sent: load the
+                // same address without them.
+                if is_web_url(&url)
+                    && let Some(clean) = crate::net::without_userinfo(&url)
+                {
+                    let _ = nav_proxy.send_event(UserMessage::WebOpen {
+                        epoch: nav_epoch.load(Ordering::SeqCst),
+                        url: clean,
+                        popup: false,
+                    });
                     return false;
                 }
                 // Main-frame navigations the ad filter blocks become an engine

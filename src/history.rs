@@ -12,6 +12,11 @@ use crate::internal;
 /// Most recent entries kept; older ones are dropped.
 const MAX_ENTRIES: usize = 500;
 
+/// Longer URLs are not recorded: a page could otherwise fill the history
+/// with megabyte-long addresses (500 of them), and the history page with
+/// twice that.
+const MAX_URL_LEN: usize = 8 * 1024;
+
 #[derive(Clone)]
 struct Entry {
     url: String,
@@ -24,9 +29,12 @@ fn store() -> &'static Mutex<Vec<Entry>> {
 }
 
 /// Records a visit. Consecutive visits to the same URL update the title
-/// instead of adding a duplicate row. Internal-only pages are ignored.
+/// instead of adding a duplicate row. Internal-only pages and very long URLs
+/// are ignored, and a user name and password in the URL are never kept.
 pub fn record(url: &str, title: &str) {
-    if url.is_empty() || is_internal(url) {
+    let clean = crate::net::without_userinfo(url);
+    let url = clean.as_deref().unwrap_or(url);
+    if url.is_empty() || url.len() > MAX_URL_LEN || is_internal(url) {
         return;
     }
     let Ok(mut entries) = store().lock() else {
@@ -112,6 +120,18 @@ mod tests {
         assert!(html.contains("Example Domain"));
         // Each row shows the URL twice (link + caption), so count the links.
         assert_eq!(html.matches("href=\"https://example.com/\"").count(), 1);
+    }
+
+    #[test]
+    fn long_urls_and_credentials_are_not_kept() {
+        let _guard = SERIAL.lock().unwrap();
+        let long = format!("https://long.test/?{}", "x".repeat(MAX_URL_LEN));
+        record(&long, "Long");
+        record("https://alice:secret@creds.test/", "Creds");
+        let html = page_html();
+        assert!(!html.contains("long.test"));
+        assert!(!html.contains("secret"));
+        assert!(html.contains("https://creds.test/"));
     }
 
     #[test]

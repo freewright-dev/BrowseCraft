@@ -157,6 +157,14 @@ impl Request {
             Request::Get(url) | Request::Post(url, _) => url,
         }
     }
+
+    /// The same request to `url`.
+    pub fn with_url(self, url: String) -> Request {
+        match self {
+            Request::Get(_) => Request::Get(url),
+            Request::Post(_, body) => Request::Post(url, body),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
