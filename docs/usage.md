@@ -90,7 +90,7 @@ When a web page goes fullscreen, for example a video's fullscreen button on YouT
 Click the key icon at the top right. The first time, choose how to protect your vault:
 
 - **A password**, or
-- **A key file**: a small file with random bytes that BrowseCraft creates for you. The vault cannot be opened without it. Keep it apart from the vault (a USB stick, say). If you lose it, the vault is gone for good.
+- **A key file**: a small file with random bytes that BrowseCraft creates for you. The vault cannot be opened without it. Keep it apart from the vault (a USB stick, say). If you lose it, the vault is gone for good. BrowseCraft creates it readable by your user account only, even in a shared folder.
 
 The vault is a standard KeePass 4 (`.kdbx`) file, so KeePassXC and other KeePass apps open it too. You can also open an existing vault. BrowseCraft locks the vault again after 15 minutes without use, and keeps which vault to use (never a password) in `passwords.cfg` in the [per-user settings folder](../README.md#settings), which is also where it suggests creating a new vault.
 

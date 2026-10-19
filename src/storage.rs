@@ -87,9 +87,110 @@ pub fn replace_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Writes `bytes` to a new file at `path` in one step, never replacing a
+/// file that is already there: the bytes go to a temporary file that is then
+/// moved into place without clobbering, so a file that appears at `path`
+/// meanwhile is kept and the call fails with `AlreadyExists`. Nothing is left
+/// behind on failure. With `owner_only`, only the current user can open the
+/// file, from before its first byte is written (Unix: tempfile creates files
+/// 0600; Windows: a protected access list).
+pub fn create_new(path: &Path, bytes: &[u8], owner_only: bool) -> std::io::Result<()> {
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    let mut file = tempfile::NamedTempFile::new_in(dir)?;
+    #[cfg(windows)]
+    if owner_only {
+        current_user_only(file.path())?;
+    }
+    #[cfg(not(windows))]
+    let _ = owner_only;
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    file.persist_noclobber(path).map_err(|e| e.error)?;
+    Ok(())
+}
+
+/// Replaces the access list of `path` with one entry, full access for the
+/// current user, and stops it inheriting from its folder (which may be
+/// shared).
+#[cfg(windows)]
+fn current_user_only(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Foundation::{GENERIC_ALL, HLOCAL, LocalFree};
+    use windows::Win32::Security::Authorization::{
+        EXPLICIT_ACCESS_W, SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW, SetNamedSecurityInfoW,
+        TRUSTEE_IS_NAME, TRUSTEE_IS_USER, TRUSTEE_W,
+    };
+    use windows::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, NO_INHERITANCE, PROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    use windows::core::{PCWSTR, PWSTR};
+
+    // "CURRENT_USER" is the trustee name Windows reserves for the caller.
+    let mut user: Vec<u16> = "CURRENT_USER".encode_utf16().chain([0]).collect();
+    let access = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: GENERIC_ALL.0,
+        grfAccessMode: SET_ACCESS,
+        grfInheritance: NO_INHERITANCE,
+        Trustee: TRUSTEE_W {
+            TrusteeForm: TRUSTEE_IS_NAME,
+            TrusteeType: TRUSTEE_IS_USER,
+            ptstrName: PWSTR(user.as_mut_ptr()),
+            ..Default::default()
+        },
+    };
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut acl: *mut ACL = std::ptr::null_mut();
+    // SAFETY: `user` and `name` are NUL-terminated and outlive the calls;
+    // `acl` is allocated by SetEntriesInAclW and freed with LocalFree.
+    unsafe {
+        SetEntriesInAclW(Some(&[access]), None, &mut acl).ok()?;
+        let result = SetNamedSecurityInfoW(
+            PCWSTR(name.as_ptr()),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            Some(acl),
+            None,
+        );
+        let _ = LocalFree(Some(HLOCAL(acl.cast())));
+        result.ok()?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn creating_never_replaces_and_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key.keyx");
+        create_new(&path, b"secret", true).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"secret");
+        let err = create_new(&path, b"other", false).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&path).unwrap(), b"secret");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no temporary file left");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        #[cfg(windows)]
+        {
+            // One explicit entry and nothing inherited from the folder.
+            let out = std::process::Command::new("icacls").arg(&path).output().unwrap();
+            let text = String::from_utf8_lossy(&out.stdout);
+            let entries = text.lines().filter(|l| l.contains(":(")).count();
+            assert_eq!(entries, 1, "{text}");
+            assert!(!text.contains("(I)"), "{text}");
+        }
+    }
 
     #[test]
     fn atomic_replacement_does_not_truncate_alias_targets() {

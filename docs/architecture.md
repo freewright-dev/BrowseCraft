@@ -244,7 +244,13 @@ all read it. Only `http(s)` pages are bookmarkable.
 `vault.rs` wraps a KeePass 4 (`.kdbx`) database from the `keepass` crate,
 unlocked with a password or a key file it generates. Saves encrypt into memory
 and replace the file through `storage::replace_atomic`, so a crash or a planted
-temporary-file symlink cannot leave or redirect a half-written vault.
+temporary-file symlink cannot leave or redirect a half-written vault. A new
+vault and a new key file go through `storage::create_new` instead, which moves
+the temporary file into place without clobbering (`persist_noclobber`), so a
+file that appears at the path meanwhile is kept and creation fails; the key
+file is also made owner-only (0600 on Unix, a protected one-entry access list
+for the current user on Windows) before its key is written. A key file made for
+a vault that could not be created is removed.
 `passwords.rs` holds the unlocked vault (auto-locked after 15 minutes),
 `passwords.cfg` (which vault and key file, never-save sites; no secrets), the
 save/update offer and the fill script, and renders `browsecraft://passwords`.

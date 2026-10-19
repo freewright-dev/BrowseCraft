@@ -11,7 +11,6 @@
 //! This module only deals with the file and the credentials in it. The
 //! `passwords` module owns the unlocked vault and the pages and prompts.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
@@ -71,6 +70,8 @@ fn config() -> DatabaseConfig {
     }
 }
 
+const VAULT_EXISTS: &str = "A file already exists at that path. Pick a new name, or open it instead.";
+
 /// The text of a KeePass XML (version 1) key file holding `key`.
 fn keyfile_xml(key: &[u8; 32]) -> String {
     format!(
@@ -79,24 +80,19 @@ fn keyfile_xml(key: &[u8; 32]) -> String {
     )
 }
 
-/// Writes a new random key file. Refuses to overwrite an existing file.
+/// Writes a new random key file that only the current user can read, since
+/// it is all it takes to open the vault. Refuses to overwrite an existing
+/// file.
 fn write_new_keyfile(path: &Path) -> Result<Vec<u8>, String> {
     let mut key = [0u8; 32];
     getrandom::fill(&mut key).map_err(|_| "Could not get random bytes from the system.".to_string())?;
     let text = keyfile_xml(&key);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::AlreadyExists => {
-                "A file already exists at the key file path. Pick a new name.".to_string()
-            }
-            _ => format!("Could not create the key file: {e}"),
-        })?;
-    file.write_all(text.as_bytes())
-        .and_then(|_| file.sync_all())
-        .map_err(|e| format!("Could not write the key file: {e}"))?;
+    crate::storage::create_new(path, text.as_bytes(), true).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => {
+            "A file already exists at the key file path. Pick a new name.".to_string()
+        }
+        _ => format!("Could not create the key file: {e}"),
+    })?;
     Ok(text.into_bytes())
 }
 
@@ -192,41 +188,48 @@ fn registrable_domain(host: &str) -> Option<&str> {
 
 impl Vault {
     /// Creates a new, empty vault file protected as asked. Never overwrites
-    /// an existing vault.
+    /// an existing file, even one that appears while the vault is created,
+    /// and on failure removes only the key file it made itself.
     pub fn create(path: &Path, protection: NewProtection) -> Result<Vault, String> {
+        // A quick check for a clear message; `save_new` is what guarantees it.
         if path.exists() {
-            return Err("A file already exists at that path. Pick a new name, or open it instead.".into());
+            return Err(VAULT_EXISTS.into());
         }
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
             && !dir.is_dir()
         {
             return Err("The folder for the vault does not exist.".into());
         }
-        let key = match protection {
+        let (key, new_keyfile) = match protection {
             NewProtection::Password(password) => {
                 if password.chars().count() < 8 {
                     return Err("Use a password of at least 8 characters.".into());
                 }
-                DatabaseKey::new().with_password(&password)
+                (Ok(DatabaseKey::new().with_password(&password)), None)
             }
             NewProtection::KeyFile(key_path) => {
                 if key_path == path {
                     return Err("The key file must be a different file from the vault.".into());
                 }
                 let bytes = write_new_keyfile(&key_path)?;
-                key_from_keyfile(&bytes)?
+                (key_from_keyfile(&bytes), Some(key_path))
             }
         };
-        let vault = Vault {
-            path: path.to_path_buf(),
-            db: Database::new(config()),
-            key,
-        };
-        vault.save().inspect_err(|_| {
-            // Do not leave a half-made vault behind.
-            let _ = std::fs::remove_file(path);
-        })?;
-        Ok(vault)
+        let vault = key.and_then(|key| {
+            let vault = Vault {
+                path: path.to_path_buf(),
+                db: Database::new(config()),
+                key,
+            };
+            vault.save_new().map(|()| vault)
+        });
+        if vault.is_err()
+            && let Some(key_path) = new_keyfile
+        {
+            // A key file for a vault that does not exist is of no use.
+            let _ = std::fs::remove_file(key_path);
+        }
+        vault
     }
 
     /// Opens and decrypts a vault file.
@@ -340,15 +343,30 @@ impl Vault {
 
     /// Encrypts and writes the vault. The file is replaced atomically, so a
     /// crash cannot leave a half-written vault.
-    fn save(&self) -> Result<(), String> {
+    fn encrypted(&self) -> Result<Vec<u8>, String> {
         let mut buffer = Vec::new();
         self.db
             .save(&mut buffer, self.key.clone())
             .map_err(|e| format!("Could not encrypt the vault: {e}"))?;
+        Ok(buffer)
+    }
+
+    fn save(&self) -> Result<(), String> {
+        let buffer = self.encrypted()?;
         // An exclusively created, randomly named temporary file: a planted
         // `<vault>.tmp` symlink cannot redirect the write.
         crate::storage::replace_atomic(&self.path, &buffer)
             .map_err(|e| format!("Could not write the vault: {e}"))
+    }
+
+    /// The first save of a new vault: fails, without touching it, if a file
+    /// is at the path by then.
+    fn save_new(&self) -> Result<(), String> {
+        let buffer = self.encrypted()?;
+        crate::storage::create_new(&self.path, &buffer, false).map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => VAULT_EXISTS.to_string(),
+            _ => format!("Could not write the vault: {e}"),
+        })
     }
 }
 
