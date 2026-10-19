@@ -31,16 +31,16 @@ pub struct Credential {
     pub url: String,
 }
 
-/// How a new vault is protected.
+/// How a new vault is protected. The password is wiped when dropped.
 pub enum NewProtection {
-    Password(String),
+    Password(Zeroizing<String>),
     /// Creates a new random key file at this path (it must not exist).
     KeyFile(PathBuf),
 }
 
-/// How an existing vault is unlocked.
+/// How an existing vault is unlocked. The password is wiped when dropped.
 pub enum Unlock {
-    Password(String),
+    Password(Zeroizing<String>),
     KeyFile(PathBuf),
 }
 
@@ -406,11 +406,11 @@ mod tests {
     fn password_vault_roundtrip() {
         let dir = temp_dir("pw");
         let path = dir.join("v.kdbx");
-        let mut vault = Vault::create(&path, NewProtection::Password("correct horse".into())).unwrap();
+        let mut vault = Vault::create(&path, NewProtection::Password("correct horse".to_string().into())).unwrap();
         let id = vault.add("Example", "https://www.example.com/login", "alice", "s3cret!").unwrap();
         assert_eq!(vault.password(&id).as_deref().map(String::as_str), Some("s3cret!"));
 
-        let reopened = Vault::open(&path, &Unlock::Password("correct horse".into())).unwrap();
+        let reopened = Vault::open(&path, &Unlock::Password("correct horse".to_string().into())).unwrap();
         let list = reopened.credentials();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "Example");
@@ -418,7 +418,7 @@ mod tests {
         assert_eq!(reopened.password(&list[0].id).as_deref().map(String::as_str), Some("s3cret!"));
 
         assert_eq!(
-            Vault::open(&path, &Unlock::Password("wrong password".into())).err().as_deref(),
+            Vault::open(&path, &Unlock::Password("wrong password".to_string().into())).err().as_deref(),
             Some("Wrong password.")
         );
         let _ = std::fs::remove_dir_all(dir);
@@ -443,7 +443,7 @@ mod tests {
             Vault::open(&path, &Unlock::KeyFile(other)).err().as_deref(),
             Some("That key file does not open this vault.")
         );
-        assert!(Vault::open(&path, &Unlock::Password("anything".into())).is_err());
+        assert!(Vault::open(&path, &Unlock::Password("anything".to_string().into())).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -452,7 +452,7 @@ mod tests {
         let dir = temp_dir("over");
         let path = dir.join("v.kdbx");
         std::fs::write(&path, b"precious").unwrap();
-        assert!(Vault::create(&path, NewProtection::Password("long enough pw".into())).is_err());
+        assert!(Vault::create(&path, NewProtection::Password("long enough pw".to_string().into())).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"precious");
 
         let key = dir.join("k.keyx");
@@ -467,9 +467,9 @@ mod tests {
     #[test]
     fn rejects_weak_passwords_and_missing_folders() {
         let dir = temp_dir("weak");
-        assert!(Vault::create(&dir.join("a.kdbx"), NewProtection::Password("short".into())).is_err());
+        assert!(Vault::create(&dir.join("a.kdbx"), NewProtection::Password("short".to_string().into())).is_err());
         assert!(
-            Vault::create(&dir.join("nope").join("a.kdbx"), NewProtection::Password("long enough pw".into()))
+            Vault::create(&dir.join("nope").join("a.kdbx"), NewProtection::Password("long enough pw".to_string().into()))
                 .is_err()
         );
         assert!(Vault::create(&dir.join("a.kdbx"), NewProtection::KeyFile(dir.join("a.kdbx"))).is_err());
@@ -480,8 +480,8 @@ mod tests {
     fn update_and_delete_are_saved() {
         let dir = temp_dir("edit");
         let path = dir.join("v.kdbx");
-        let pw = Unlock::Password("a good password".into());
-        let mut vault = Vault::create(&path, NewProtection::Password("a good password".into())).unwrap();
+        let pw = Unlock::Password("a good password".to_string().into());
+        let mut vault = Vault::create(&path, NewProtection::Password("a good password".to_string().into())).unwrap();
         let a = vault.add("A", "https://a.test/", "u", "one").unwrap();
         let b = vault.add("B", "https://b.test/", "u", "two").unwrap();
         vault.set_password(&a, "uno").unwrap();
@@ -497,7 +497,7 @@ mod tests {
     #[test]
     fn logins_are_matched_by_site() {
         let dir = temp_dir("site");
-        let mut vault = Vault::create(&dir.join("v.kdbx"), NewProtection::Password("a good password".into())).unwrap();
+        let mut vault = Vault::create(&dir.join("v.kdbx"), NewProtection::Password("a good password".to_string().into())).unwrap();
         vault.add("Ex", "https://example.com/", "me", "pw").unwrap();
         vault.add("Other", "https://other.org/", "me", "pw").unwrap();
         let hits = vault.for_site("https://login.example.com/signin?x=1");

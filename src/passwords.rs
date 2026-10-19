@@ -351,13 +351,19 @@ pub fn offer_login(page_url: &str, username: &str, password: &str, kind: FormKin
         return false;
     }
     let mut update_id = None;
-    if let Some(vault) = &s.vault {
-        for login in vault.for_site(page_url).into_iter().filter(|c| c.username == username) {
-            if vault.password(&login.id).is_some_and(|saved| saved.as_str() == password) {
-                return false;
-            }
-            update_id = Some(login.id);
+    if let Some(vault) = &s.vault
+        && let Some(login) = vault.for_site(page_url).into_iter().find(|c| c.username == username)
+    {
+        // Decided by the username, never by comparing the password with the
+        // saved one: the save bar changes the page's height, so a page could
+        // otherwise post guesses and learn which one is the saved password.
+        // A login form for a saved username is taken as signing in with it;
+        // a new password is offered as an update from change-password and
+        // sign-up forms.
+        if kind == FormKind::Login {
+            return false;
         }
+        update_id = Some(login.id);
     }
     s.offer = Some(Offer {
         host,
@@ -486,7 +492,7 @@ pub fn parse_page_message(body: &str) -> Option<PageMessage> {
 
 // ---- the page ----
 
-fn field<'a>(pairs: &'a [(String, String)], name: &str) -> &'a str {
+fn field<'a>(pairs: &'a [(String, Zeroizing<String>)], name: &str) -> &'a str {
     pairs
         .iter()
         .find(|(k, _)| k == name)
@@ -626,7 +632,7 @@ pub fn handle(query: &str, post_body: Option<&str>) {
             let Some(path) = path_field(field(&pairs, "path")) else {
                 return s.fail("Choose where to save the vault.");
             };
-            match Vault::create(&path, NewProtection::Password(password.to_string())) {
+            match Vault::create(&path, NewProtection::Password(Zeroizing::new(password.to_string()))) {
                 Ok(vault) => {
                     s.unlocked(vault, &path, Mode::Password, None);
                     s.ok("Vault created and unlocked. It is a standard KeePass file you can also open in KeePassXC.");
@@ -660,7 +666,7 @@ pub fn handle(query: &str, post_body: Option<&str>) {
             let password = field(&pairs, "password");
             let (unlock, mode) = match (&keyfile, password.is_empty()) {
                 (Some(k), _) => (Unlock::KeyFile(k.clone()), Mode::KeyFile),
-                (None, false) => (Unlock::Password(password.to_string()), Mode::Password),
+                (None, false) => (Unlock::Password(Zeroizing::new(password.to_string())), Mode::Password),
                 (None, true) => {
                     return s.fail("Enter the password, or the path of the key file.");
                 }
@@ -1188,9 +1194,14 @@ mod tests {
         assert_eq!(save_offer().unwrap(), "Saved the login for shop.test.");
         assert!(current_offer().is_none());
         assert_eq!(logins_for("https://www.shop.test/cart").len(), 1);
-        // Same login again: no offer. Changed password: an update offer.
+        // A login form for a saved username makes no offer, whether or not
+        // the password matches: the page cannot test guesses (audit B-14).
         assert!(!offer_login("https://shop.test/login", "me@x.test", "pw-12345", FormKind::Login));
-        assert!(offer_login("https://shop.test/login", "me@x.test", "new-pw-999", FormKind::Login));
+        assert!(!offer_login("https://shop.test/login", "me@x.test", "new-pw-999", FormKind::Login));
+        assert!(current_offer().is_none());
+        // A change-password form offers an update, even to the same password.
+        assert!(offer_login("https://shop.test/account", "me@x.test", "pw-12345", FormKind::ChangePassword));
+        assert!(offer_login("https://shop.test/account", "me@x.test", "new-pw-999", FormKind::ChangePassword));
         assert!(current_offer().unwrap().update_id.is_some());
         assert_eq!(save_offer().unwrap(), "Updated the password for shop.test.");
         assert_eq!(logins_for("https://shop.test/").len(), 1);
