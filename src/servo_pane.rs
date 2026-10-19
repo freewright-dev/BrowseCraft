@@ -297,6 +297,11 @@ mod imp {
             let servo = ServoBuilder::default()
                 .event_loop_waker(Box::new(Waker(Mutex::new(proxy.clone()))))
                 .build();
+            // When tracing, Servo's own log goes to stderr (filtered by
+            // RUST_LOG): uncaught page exceptions are reported there.
+            if std::env::var_os("BROWSECRAFT_SERVO_TRACE").is_some() {
+                servo.setup_logging();
+            }
             let delegate = Rc::new(Delegate { proxy, epoch, frame_ready: Cell::new(false) });
             let view = WebViewBuilder::new(&servo, context.clone())
                 .delegate(delegate.clone())
