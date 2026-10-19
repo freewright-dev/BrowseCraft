@@ -94,6 +94,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Engine pages share one stylesheet budget: 16 MiB of CSS text, charged before parsing, and 200,000 rules, where the parser stops instead of allocating more. A page with 18 MiB of inline CSS peaked at 1,989 MB in `--screenshot` mode; it now peaks at 363 MB.
 - Engine pages fetch at most 1,024 images, stop downloading once the page's image pixels are spent, and an image that does not decode no longer uses up that budget.
 - Internal pages (`browsecraft://passwords`, settings, history, `about:` pages) no longer wait behind slow web pages in the engine's load queue, and engine requests give up after 10 seconds without a connection or response headers (20 seconds for the body) instead of 30.
+- Files read at startup have size limits: filter lists 32 MB each, `flags.txt`, `bookmarks.txt` and `passwords.cfg` 1 MB, key files 16 MB; a larger file is refused instead of read in full.
+- Bookmarks and element-hiding rules are de-duplicated with hash sets, and bookmark parsing stops at its 2,000-entry cap, so a crafted `bookmarks.txt` or filter list no longer stalls startup.
+- An element-hiding rule containing `/*`, `*/`, an unclosed quote or a trailing backslash is skipped instead of commenting out or swallowing the hiding rules after it.
 - Windows screenshot capture rejects overflowing or excessive dimensions before allocation, validates bitmap selection/restoration, and releases native resources on error paths.
 - Ad blocking now checks every engine HTTP redirect destination and uses native WebView2 interception for parser-initiated resources and redirects. JavaScript fallback fetch hooks handle URL and Request objects with one native conversion.
 - Cancelled engine loads stop scheduling document/stylesheet/import/image work and publishing stale events. Background loads use a bounded two-worker queue and whole-load deadlines.

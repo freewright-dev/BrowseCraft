@@ -68,7 +68,7 @@ fn load_from_mut(flags: &mut Flags) {
     let Ok(path) = file_path() else {
         return;
     };
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(text) = crate::storage::read_text_limited(&path, crate::storage::MAX_SETTINGS_FILE) else {
         return;
     };
     for line in text.lines() {

@@ -230,9 +230,8 @@ impl AdBlocker {
                 }
             }
         }
-        hide.into_iter()
-            .filter(|s| !allow.iter().any(|a| a == s))
-            .collect()
+        let allow: std::collections::HashSet<String> = allow.into_iter().collect();
+        hide.into_iter().filter(|s| !allow.contains(s)).collect()
     }
 
     /// A `<style>` body for engine-rendered pages.
@@ -270,7 +269,9 @@ impl AdBlocker {
         for sel in self.cosmetic_selectors("") {
             generic_css.push(quote(&sel));
         }
-        let mut scoped: Vec<(String, Vec<String>)> = Vec::new();
+        // Selectors per host, sorted by host, each selector once.
+        let mut scoped: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        let mut seen = std::collections::HashSet::new();
         for c in &self.cosmetic {
             if let (Some(h), false) = (&c.host, c.allow) {
                 let key = if h.neg {
@@ -278,16 +279,11 @@ impl AdBlocker {
                 } else {
                     h.host.clone()
                 };
-                if let Some(entry) = scoped.iter_mut().find(|entry| entry.0 == key) {
-                    if !entry.1.contains(&c.selector) {
-                        entry.1.push(c.selector.clone());
-                    }
-                } else {
-                    scoped.push((key, vec![c.selector.clone()]));
+                if seen.insert((key.clone(), c.selector.clone())) {
+                    scoped.entry(key).or_default().push(c.selector.clone());
                 }
             }
         }
-        scoped.sort_by(|a, b| a.0.cmp(&b.0));
         let mut scoped_js = Vec::new();
         for (host, sels) in scoped {
             if !sels.is_empty() {
@@ -437,6 +433,9 @@ pub fn load_default() -> AdBlocker {
     ab
 }
 
+/// The largest filter list read; the big public lists are a few megabytes.
+const MAX_FILTER_FILE: u64 = 32 << 20;
+
 fn load_directory(path: &Path) -> Vec<Result<String, String>> {
     let mut out = Vec::new();
     let Ok(rd) = std::fs::read_dir(path) else {
@@ -451,7 +450,7 @@ fn load_directory(path: &Path) -> Vec<Result<String, String>> {
             .unwrap_or("")
             .eq_ignore_ascii_case("txt")
         {
-            out.push(std::fs::read_to_string(e.path()).map_err(|e| e.to_string()));
+            out.push(crate::storage::read_text_limited(&e.path(), MAX_FILTER_FILE).map_err(|e| e.to_string()));
         }
     }
     out
@@ -830,15 +829,39 @@ fn parse_options(txt: &str) -> Option<Options> {
     if saw_unsupported { None } else { Some(o) }
 }
 
+/// Whether `selector` can go into a stylesheet as `selector { display: none }`
+/// without touching the rules around it: no braces (which would close the
+/// rule and add rules of its own), no comment markers (`/*` would comment
+/// out the rules after it), and no unclosed string or trailing escape (which
+/// would run into them).
+fn self_contained_selector(selector: &str) -> bool {
+    if selector.is_empty() || selector.contains(['{', '}']) || selector.contains("/*") || selector.contains("*/") {
+        return false;
+    }
+    let mut quote = None;
+    let mut chars = selector.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (_, '\\') => {
+                if chars.next().is_none() {
+                    return false;
+                }
+            }
+            (Some(q), c) if c == q => quote = None,
+            (None, '"' | '\'') => quote = Some(c),
+            _ => {}
+        }
+    }
+    quote.is_none()
+}
+
 fn parse_cosmetic(line: &str) -> Option<Cosmetic> {
     let allow = line.contains("#@#");
     let marker = if allow { "#@#" } else { "##" };
     let pos = line.find(marker)?;
     let hosts = &line[..pos];
     let selector = &line[pos + marker.len()..];
-    // The selector goes into a stylesheet as `selector { display: none }`;
-    // braces would let it close that rule and add rules of its own.
-    if selector.is_empty() || selector.contains(['{', '}']) {
+    if !self_contained_selector(selector) {
         return None;
     }
     let host = if hosts.trim().is_empty() {
@@ -1330,6 +1353,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn cosmetic_selectors_cannot_reach_other_rules() {
+        // `/*`, `*/`, an unclosed string or a trailing escape would swallow
+        // the hiding rules after it in the joined stylesheet (audit B-27).
+        for line in ["##.a/*", "##.a*/", "##a[href=\"x", "##a[title='x]", "##.a\\", "##a{b}"] {
+            assert!(parse_cosmetic(line).is_none(), "{line}");
+        }
+        for line in ["##.ad", "example.com##a[title=\"x\\\"y\"]", "##a[href*=\"@\"]", "##.a\\:b"] {
+            assert!(parse_cosmetic(line).is_some(), "{line}");
+        }
+    }
+
+    #[test]
+    fn many_cosmetic_rules_dedup_in_linear_time() {
+        let mut list = String::new();
+        for i in 0..20_000 {
+            list += &format!("##.g{i}\n#@#.g{}\nsite{}.test##.s{i}\nsite{}.test##.s{i}\n", i * 2, i % 50, i % 50);
+        }
+        let ab = blocker(&[&list]);
+        let start = std::time::Instant::now();
+        assert_eq!(ab.cosmetic_selectors("").len(), 10_000);
+        let script = ab.page_script_with_network(false);
+        assert!(script.contains("site7.test"));
+        assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
     }
 
     #[test]

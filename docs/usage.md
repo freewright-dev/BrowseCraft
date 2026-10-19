@@ -106,7 +106,9 @@ On a page with a login form the key menu lists the logins saved for that site: c
 
 BrowseCraft blocks ads and trackers with a small built-in filter list plus every
 `.txt` file in a `filters` folder in the working directory or next to the
-executable (EasyList / uBlock Origin syntax). A blocked page shows a "This page
+executable (EasyList / uBlock Origin syntax), up to 32 MB per file. Element
+hiding rules whose selector contains `/*`, `*/` or an unclosed quote are
+skipped, since they would break the rules after them. A blocked page shows a "This page
 was blocked" notice while the address bar keeps the original address, and a
 blocked pop-up shows a short notice under the page.
 

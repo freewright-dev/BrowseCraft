@@ -70,6 +70,10 @@ fn config() -> DatabaseConfig {
     }
 }
 
+/// KeePass hashes any file used as a key file; BrowseCraft's own are a few
+/// hundred bytes. Larger files are refused rather than read in full.
+const MAX_KEYFILE: u64 = 16 << 20;
+
 const VAULT_EXISTS: &str = "A file already exists at that path. Pick a new name, or open it instead.";
 
 /// The text of a KeePass XML (version 1) key file holding `key`.
@@ -237,7 +241,7 @@ impl Vault {
         let key = match unlock {
             Unlock::Password(password) => DatabaseKey::new().with_password(password),
             Unlock::KeyFile(key_path) => {
-                let bytes = std::fs::read(key_path)
+                let bytes = crate::storage::read_limited(key_path, MAX_KEYFILE)
                     .map_err(|e| format!("Could not read the key file: {e}"))?;
                 key_from_keyfile(&bytes)?
             }
