@@ -142,4 +142,6 @@ These apply to forms on engine pages. Click a text field to type in it. `Enter` 
 
 ## Links and new windows
 
-Links with `target="_blank"` and pop-ups from WebView2 pages open in the current tab. On engine pages, `javascript:`, `mailto:` and `tel:` links are ignored. BrowseCraft has a single window; new pages open in tabs.
+Links with `target="_blank"` and pop-ups from WebView2 pages open in the current tab, but only when you opened them (a click, not a script running on its own), only to web pages, and at most one a second. A tab keeps its last 100 Back and Forward entries. On engine pages, `javascript:`, `mailto:` and `tel:` links are ignored. BrowseCraft has a single window; new pages open in tabs.
+
+BrowseCraft does not hand links to other apps: a page (or a frame in it) that opens a `mailto:` link or an app's own scheme gets a "Blocked a link that opens another app" notice instead of the system prompt. A page cannot close its tab with `window.close()`.

@@ -29,7 +29,7 @@ use wry::dpi::{
     PhysicalPosition as WryPhysicalPosition, PhysicalSize as WryPhysicalSize, Position as WryPosition,
     Size as WrySize,
 };
-use wry::{NewWindowResponse, PageLoadEvent, WebView, WebViewBuilder};
+use wry::{PageLoadEvent, WebView, WebViewBuilder};
 
 use crate::adblock;
 use crate::address;
@@ -98,15 +98,24 @@ pub enum UserMessage {
     WebStart(String),
     /// The WebView2 page finished loading this URL.
     WebLoad(String),
-    /// The WebView2 pane wants to open this URL (pop-ups, blocked pages).
-    WebOpen(String),
+    /// The WebView2 pane wants the tab to open `url`: a blocked page's
+    /// notice, or (`popup`) a pop-up the user opened. `epoch` is the web view
+    /// epoch it was sent in; if the tab or page has changed since, it is
+    /// dropped.
+    WebOpen { epoch: u64, url: String, popup: bool },
+    /// The page tried to open another app (`mailto:`, an app's own scheme);
+    /// the launch was refused.
+    WebExternal(String),
+    /// The page closed itself (`window.close()`), which destroys the web view.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    WebClosed,
     /// A shortcut pressed inside the WebView2 pane (`AcceleratorKeyPressed`).
     #[cfg_attr(not(windows), allow(dead_code))]
     WebKey(Shortcut),
     /// A page inside the WebView2 pane entered or left element fullscreen
     /// (a video's fullscreen button, `requestFullscreen()`).
     #[cfg_attr(not(windows), allow(dead_code))]
-    WebFullscreen(bool),
+    WebFullscreen { epoch: u64, on: bool },
     /// The page script reported a form or a submitted login. `sender` is the
     /// URL of the document that sent it, as WebView2 reports it (the page
     /// cannot choose it).
@@ -238,6 +247,12 @@ pub struct Browser {
     fonts: Fonts,
     proxy: EventLoopProxy<UserMessage>,
     generation: Arc<AtomicU64>,
+    /// Bumped whenever the web view stops showing the page it showed (a new
+    /// navigation, a tab switch, a new web view), so its late events are
+    /// recognised as stale.
+    web_epoch: Arc<AtomicU64>,
+    /// When the last pop-up was followed, to follow at most one a second.
+    last_popup: Option<Instant>,
     tabs: Vec<TabState>,
     active: usize,
     history: Vec<HistoryEntry>,
@@ -391,12 +406,45 @@ fn popup_allowed(url: &str) -> bool {
     is_web_url(url)
 }
 
-/// Whether the web view may navigate its main frame to `url`. The browser
-/// never loads its internal pages (`browsecraft:`, `about:`, `view-source:`)
-/// in the web view, only the `about:blank` it uses to unload a page, so a
-/// page script setting `location` to one of them is refused.
+/// Back and Forward entries kept per tab; the oldest are dropped.
+const MAX_TAB_HISTORY: usize = 100;
+
+/// Appends `entry`, drops the oldest entries beyond `MAX_TAB_HISTORY`, and
+/// returns the new entry's index.
+fn push_capped(history: &mut Vec<HistoryEntry>, entry: HistoryEntry) -> usize {
+    history.push(entry);
+    let excess = history.len().saturating_sub(MAX_TAB_HISTORY);
+    history.drain(..excess);
+    history.len() - 1
+}
+
+/// The shortest time between two pop-ups the browser follows.
+const POPUP_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Whether the web view may navigate its main frame to `url`: web pages and
+/// the schemes the browser itself loads there (`file:`, `data:`, `blob:`, and
+/// the `about:blank` it uses to unload a page). Internal pages
+/// (`browsecraft:`, other `about:` pages, `view-source:`) belong to the
+/// engine, and any other scheme would hand the URL to another app.
 fn navigation_allowed(url: &str) -> bool {
-    request_in_webview(url) || url.trim().eq_ignore_ascii_case("about:blank")
+    let lower = url.trim().to_ascii_lowercase();
+    is_web_url(&lower)
+        || lower == "about:blank"
+        || ["file:", "data:", "blob:"].iter().any(|s| lower.starts_with(s))
+}
+
+/// A notice for a refused link to another app, naming its scheme when it is
+/// a plausible one.
+fn external_notice(url: &str) -> String {
+    let scheme = url.trim_start().split(':').next().unwrap_or("");
+    let plausible = !scheme.is_empty()
+        && scheme.len() <= 32
+        && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    if plausible {
+        format!("Blocked a link that opens another app ({}:)", scheme.to_ascii_lowercase())
+    } else {
+        "Blocked a link that opens another app".to_string()
+    }
 }
 
 /// A page title fit for the window title and history: control and
@@ -701,7 +749,7 @@ fn attach_webview_shortcuts(wv: &WebView, proxy: EventLoopProxy<UserMessage>) {
 /// pane. This is WebView2's own `ContainsFullScreenElementChanged` event, so a
 /// page cannot fake it, and it covers fullscreen requested from iframes too.
 #[cfg(windows)]
-fn attach_webview_fullscreen(wv: &WebView, proxy: EventLoopProxy<UserMessage>) {
+fn attach_webview_fullscreen(wv: &WebView, proxy: EventLoopProxy<UserMessage>, epoch: Arc<AtomicU64>) {
     use webview2_com::ContainsFullScreenElementChangedEventHandler;
     use wry::WebViewExtWindows;
 
@@ -713,10 +761,78 @@ fn attach_webview_fullscreen(wv: &WebView, proxy: EventLoopProxy<UserMessage>) {
         };
         let mut flag = Default::default();
         unsafe { sender.ContainsFullScreenElement(&mut flag)? };
-        let _ = proxy.send_event(UserMessage::WebFullscreen(flag.as_bool()));
+        let epoch = epoch.load(Ordering::SeqCst);
+        let _ = proxy.send_event(UserMessage::WebFullscreen { epoch, on: flag.as_bool() });
         Ok(())
     }));
     let _ = unsafe { webview.add_ContainsFullScreenElementChanged(&handler, &mut token) };
+}
+
+/// Guards the WebView2 pane with its native events, which say more than wry
+/// passes on:
+/// - pop-ups (`NewWindowRequested`): wry refuses every new window; the tab
+///   follows one only when the user opened it (a click, not a script), and
+///   only to a web page;
+/// - links to other apps (`LaunchingExternalUriScheme`, from any frame): the
+///   launch is cancelled and a notice says so;
+/// - `window.close()` (`WindowCloseRequested`): wry destroys the web view's
+///   window, so the browser builds a new web view.
+#[cfg(windows)]
+fn attach_webview_guards(wv: &WebView, proxy: EventLoopProxy<UserMessage>, epoch: Arc<AtomicU64>) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_18;
+    use webview2_com::{
+        LaunchingExternalUriSchemeEventHandler, NewWindowRequestedEventHandler,
+        WindowCloseRequestedEventHandler, take_pwstr,
+    };
+    use windows::core::{Interface, PWSTR};
+    use wry::WebViewExtWindows;
+
+    let webview = wv.webview();
+    let mut token = 0i64;
+
+    let popups = proxy.clone();
+    let handler = NewWindowRequestedEventHandler::create(Box::new(move |_, args| {
+        let Some(args) = args else {
+            return Ok(());
+        };
+        unsafe {
+            args.SetHandled(true)?;
+            let mut user = Default::default();
+            args.IsUserInitiated(&mut user)?;
+            let mut uri = PWSTR::null();
+            args.Uri(&mut uri)?;
+            let url = take_pwstr(uri);
+            if user.as_bool() && popup_allowed(&url) {
+                let epoch = epoch.load(Ordering::SeqCst);
+                let _ = popups.send_event(UserMessage::WebOpen { epoch, url, popup: true });
+            }
+        }
+        Ok(())
+    }));
+    let _ = unsafe { webview.add_NewWindowRequested(&handler, &mut token) };
+
+    if let Ok(view) = webview.cast::<ICoreWebView2_18>() {
+        let external = proxy.clone();
+        let handler = LaunchingExternalUriSchemeEventHandler::create(Box::new(move |_, args| {
+            let Some(args) = args else {
+                return Ok(());
+            };
+            unsafe {
+                args.SetCancel(true)?;
+                let mut uri = PWSTR::null();
+                args.Uri(&mut uri)?;
+                let _ = external.send_event(UserMessage::WebExternal(take_pwstr(uri)));
+            }
+            Ok(())
+        }));
+        let _ = unsafe { view.add_LaunchingExternalUriScheme(&handler, &mut token) };
+    }
+
+    let handler = WindowCloseRequestedEventHandler::create(Box::new(move |_, _| {
+        let _ = proxy.send_event(UserMessage::WebClosed);
+        Ok(())
+    }));
+    let _ = unsafe { webview.add_WindowCloseRequested(&handler, &mut token) };
 }
 
 /// Applies an editing key to a text field. Returns `true` when the key was an
@@ -951,6 +1067,8 @@ impl Browser {
             fonts,
             proxy,
             generation: Arc::new(AtomicU64::new(0)),
+            web_epoch: Arc::new(AtomicU64::new(0)),
+            last_popup: None,
             tabs: vec![TabState::default()],
             active: 0,
             history: Vec::new(),
@@ -1194,6 +1312,7 @@ impl Browser {
         // Every tab shares the one WebView; a parked web tab reloads its URL
         // when it becomes active again.
         self.unload_webview();
+        self.web_epoch.fetch_add(1, Ordering::SeqCst);
         self.web_leaving = self.web_url.clone();
         self.web_document.clear();
         let title = self.live_title();
@@ -1326,6 +1445,11 @@ impl Browser {
         self.tab.as_ref().map_or(0.0, |t| t.scroll_y)
     }
 
+    /// Adds `entry` after the current one and makes it current.
+    fn push_history(&mut self, entry: HistoryEntry) {
+        self.index = push_capped(&mut self.history, entry);
+    }
+
     /// Loads `request` as a new history entry (when `push`) in the active tab.
     fn load(&mut self, request: Request, push: bool) {
         self.start_load(request, push, None);
@@ -1338,6 +1462,8 @@ impl Browser {
         if is_web_url(&url) && adblock::blocked_page(&url, "") {
             request = Request::Get(format!("about:blocked:{url}"));
         }
+        // Events still on their way from the page being left are stale.
+        self.web_epoch.fetch_add(1, Ordering::SeqCst);
         if push {
             let scroll = self.live_scroll();
             if let Some(entry) = self.history.get_mut(self.index) {
@@ -1358,8 +1484,7 @@ impl Browser {
             if same_page {
                 self.history[self.index] = entry;
             } else {
-                self.history.push(entry);
-                self.index = self.history.len() - 1;
+                self.push_history(entry);
             }
         }
         self.focus = Focus::Page;
@@ -1746,11 +1871,10 @@ impl Browser {
             if !self.history.is_empty() {
                 self.history.truncate(self.index + 1);
             }
-            self.history.push(HistoryEntry {
+            self.push_history(HistoryEntry {
                 request: Request::Get(url.clone()),
                 scroll: 0.0,
             });
-            self.index = self.history.len() - 1;
         }
         self.web_url = url.clone();
         self.web_document = url.clone();
@@ -1773,15 +1897,50 @@ impl Browser {
     }
 
     /// A pop-up or a blocked main-frame navigation asked to open `url`.
-    fn web_open(&mut self, url: String) {
-        if !self.web_page {
+    fn web_open(&mut self, epoch: u64, url: String, popup: bool) {
+        if !self.web_page || epoch != self.web_epoch.load(Ordering::SeqCst) {
             return; // from a page that is no longer shown
+        }
+        if popup {
+            let now = Instant::now();
+            if self.last_popup.is_some_and(|at| now.duration_since(at) < POPUP_INTERVAL) {
+                return;
+            }
+            self.last_popup = Some(now);
         }
         if is_web_url(&url) && adblock::blocked_page(&url, "") {
             self.set_notice("Blocked a pop-up (ad filter)");
             return;
         }
         self.load(Request::Get(url), true);
+    }
+
+    /// The page closed itself (`window.close()`). wry destroys the web
+    /// view's window when that happens, which would leave every web tab
+    /// blank, so build a new web view and show the page again.
+    fn web_closed(&mut self) {
+        let Some(window) = self.gfx.as_ref().map(|g| g.window.clone()) else {
+            return;
+        };
+        if self.web_fullscreen {
+            self.set_web_fullscreen(false);
+        }
+        self.web_epoch.fetch_add(1, Ordering::SeqCst);
+        self.webview = None;
+        self.web_visible = false;
+        self.web_bounds = None;
+        self.web_document.clear();
+        self.create_webview(&window);
+        if self.web_page {
+            self.web_expect = true;
+            self.web_committed = false;
+            self.loading = true;
+            if let Some(wv) = &self.webview {
+                let _ = wv.load_url(&self.web_url);
+                let _ = wv.zoom(self.user_zoom as f64);
+            }
+        }
+        self.set_notice("The page tried to close its tab");
     }
 
     // ---- the WebView2 pane ----
@@ -1810,7 +1969,9 @@ impl Browser {
             return;
         }
         let nav_proxy = self.proxy.clone();
-        let popup_proxy = self.proxy.clone();
+        let nav_epoch = self.web_epoch.clone();
+        #[cfg(not(windows))]
+        let (popup_proxy, popup_epoch) = (self.proxy.clone(), self.web_epoch.clone());
         let title_proxy = self.proxy.clone();
         let load_proxy = self.proxy.clone();
         let ipc_proxy = self.proxy.clone();
@@ -1834,26 +1995,25 @@ impl Browser {
                 }
             })
             .with_navigation_handler(move |url| {
-                // Web content cannot open the engine's internal pages.
+                // Web content cannot open the engine's internal pages, nor
+                // hand a URL to another app.
                 if !navigation_allowed(&url) {
+                    if request_in_webview(&url) {
+                        let _ = nav_proxy.send_event(UserMessage::WebExternal(url));
+                    }
                     return false;
                 }
                 // Main-frame navigations the ad filter blocks become an engine
                 // notice page instead.
                 if is_web_url(&url) && adblock::blocked_page(&url, "") {
-                    let _ =
-                        nav_proxy.send_event(UserMessage::WebOpen(format!("about:blocked:{url}")));
+                    let _ = nav_proxy.send_event(UserMessage::WebOpen {
+                        epoch: nav_epoch.load(Ordering::SeqCst),
+                        url: format!("about:blocked:{url}"),
+                        popup: false,
+                    });
                     return false;
                 }
                 true
-            })
-            .with_new_window_req_handler(move |url, _features| {
-                // Pop-ups open as a new navigation in the browser, but only
-                // to web pages: never to internal, file or view-source URLs.
-                if popup_allowed(&url) {
-                    let _ = popup_proxy.send_event(UserMessage::WebOpen(url));
-                }
-                NewWindowResponse::Deny
             })
             .with_document_title_changed_handler(move |title| {
                 let _ = title_proxy.send_event(UserMessage::WebTitle(title));
@@ -1865,6 +2025,18 @@ impl Browser {
                 };
                 let _ = load_proxy.send_event(message);
             });
+        // On Windows, `attach_webview_guards` handles pop-ups natively, where
+        // WebView2 says whether the user opened them.
+        #[cfg(not(windows))]
+        let builder = builder.with_new_window_req_handler(move |url, _features| {
+            // Pop-ups open as a new navigation in the browser, but only to
+            // web pages: never to internal, file or view-source URLs.
+            if popup_allowed(&url) {
+                let epoch = popup_epoch.load(Ordering::SeqCst);
+                let _ = popup_proxy.send_event(UserMessage::WebOpen { epoch, url, popup: true });
+            }
+            wry::NewWindowResponse::Deny
+        });
         #[cfg(windows)]
         let builder = {
             use wry::WebViewBuilderExtWindows;
@@ -1883,8 +2055,13 @@ impl Browser {
                         return;
                     }
                     attach_webview_shortcuts(&wv, self.proxy.clone());
-                    attach_webview_fullscreen(&wv, self.proxy.clone());
+                    attach_webview_fullscreen(&wv, self.proxy.clone(), self.web_epoch.clone());
+                    attach_webview_guards(&wv, self.proxy.clone(), self.web_epoch.clone());
                 }
+                // Chromium lets a script close a window whose history has a
+                // single entry, and wry then destroys the web view. Starting on
+                // about:blank means a page is never that single entry.
+                let _ = wv.load_url("about:blank");
                 self.webview = Some(wv);
             }
             Err(e) => eprintln!("browsecraft: WebView2 is unavailable ({e}); using the engine for every page"),
@@ -3834,9 +4011,17 @@ impl Browser {
             UserMessage::WebStart(url) => self.web_started(url),
             UserMessage::WebLoad(url) => self.web_loaded(url),
             UserMessage::WebTitle(title) => self.web_titled(title),
-            UserMessage::WebOpen(url) => self.web_open(url),
+            UserMessage::WebOpen { epoch, url, popup } => self.web_open(epoch, url, popup),
+            UserMessage::WebExternal(url) => self.set_notice(external_notice(&url)),
+            UserMessage::WebClosed => self.web_closed(),
             UserMessage::WebKey(shortcut) => self.web_key(shortcut),
-            UserMessage::WebFullscreen(on) => self.set_web_fullscreen(on),
+            UserMessage::WebFullscreen { epoch, on } => {
+                // Leaving fullscreen always applies; entering it only for the
+                // page still shown.
+                if !on || epoch == self.web_epoch.load(Ordering::SeqCst) {
+                    self.set_web_fullscreen(on);
+                }
+            }
             UserMessage::Page { sender, message } => self.page_message(sender, message),
             UserMessage::Stop => self.stop(),
         }
@@ -4129,9 +4314,26 @@ mod tests {
             "about:home",
             "about:blocked:https://bank.example",
             "view-source:https://attacker.example/",
+            "mailto:someone@example.com",
+            "tel:+41000000000",
+            "steam://run/1",
+            "bctest:probe",
+            "javascript:alert(1)",
         ] {
             assert!(!navigation_allowed(url), "{url}");
         }
+        assert_eq!(external_notice("MailTo:x"), "Blocked a link that opens another app (mailto:)");
+
+        // A page that opens pop-ups in a loop cannot grow a tab's history.
+        let mut history = Vec::new();
+        let mut index = 0;
+        for i in 0..150 {
+            let request = Request::Get(format!("https://example.com/{i}"));
+            index = push_capped(&mut history, HistoryEntry { request, scroll: 0.0 });
+        }
+        assert_eq!((history.len(), index), (MAX_TAB_HISTORY, MAX_TAB_HISTORY - 1));
+        assert_eq!(history[0].request.url(), "https://example.com/50");
+        assert_eq!(external_notice("\u{202E}evil:x"), "Blocked a link that opens another app");
     }
 
     #[test]

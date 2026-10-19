@@ -55,8 +55,21 @@ The engine handles these internal URLs in `loader::load_page`:
 `browsecraft://flags`, `browsecraft://history`, `browsecraft://bookmarks` and
 `browsecraft://passwords`. They share one stylesheet from `internal.rs`, generated
 for the current theme. WebView2 events (`WebStart`, `WebLoad`, `WebTitle`,
-`WebOpen`, `WebKey`, `WebFullscreen`) reach the UI thread as `UserMessage`s.
-Pop-ups are denied and reopened in the current tab.
+`WebOpen`, `WebExternal`, `WebClosed`, `WebKey`, `WebFullscreen`) reach the UI
+thread as `UserMessage`s. `WebOpen` and `WebFullscreen` carry the web view epoch
+they were sent in, which every navigation and tab switch bumps, so a late
+event from a page that is gone is dropped.
+
+Pop-ups are denied; on Windows a native `NewWindowRequested` handler
+(`attach_webview_guards`) reopens one in the current tab only when WebView2
+reports it as user-initiated, only to an http(s) URL, and at most once a second.
+Tabs keep at most 100 history entries. The main frame may navigate only to
+http(s), `file:`, `data:`, `blob:` and `about:blank`; the same guard cancels
+`LaunchingExternalUriScheme` from any frame, so no URL is handed to another app.
+The web view starts on `about:blank`, so a page is never the single history
+entry that Chromium lets `window.close()` close; if the web view is closed
+anyway (`WindowCloseRequested`, after which wry destroys its window), the
+browser builds a new one and reloads the page.
 
 The web view gets two initialization scripts: the ad blocker's (see "Ad
 blocking") and `passwords.js`. The page's IPC channel accepts only the password
