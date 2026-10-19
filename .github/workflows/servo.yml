@@ -13,6 +13,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# A new push makes the previous build of the same branch moot.
+concurrency:
+  group: servo-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-24.04

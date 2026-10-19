@@ -7,6 +7,13 @@ version = 2
 ignore = [
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: unmaintained, build-time only via GTK/glib on Linux/BSD; tracked in docs/dependencies.md" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser: unmaintained, via fontdue; tracked in docs/dependencies.md" },
+    # Only through the experimental `servo` feature (Linux, off by default).
+    { id = "RUSTSEC-2025-0141", reason = "bincode: unmaintained, servo feature only; tracked in docs/dependencies.md" },
+    { id = "RUSTSEC-2025-0081", reason = "unic-char-property: unmaintained, servo feature only; tracked in docs/dependencies.md" },
+    { id = "RUSTSEC-2025-0075", reason = "unic-char-range: unmaintained, servo feature only; tracked in docs/dependencies.md" },
+    { id = "RUSTSEC-2025-0080", reason = "unic-common: unmaintained, servo feature only; tracked in docs/dependencies.md" },
+    { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident: unmaintained, servo feature only; tracked in docs/dependencies.md" },
+    { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version: unmaintained, servo feature only; tracked in docs/dependencies.md" },
 ]
 
 [licenses]
