@@ -166,6 +166,7 @@ same folder, which is also the suggested place for a new `.kdbx` vault.
 BrowseCraft builds its blocker from a built-in starter list plus every `filters/*.txt`
 file it finds next to the executable or in the working directory. To block
 more, add a list such as [EasyList](https://easylist.to/) to `filters/`.
+At most 200,000 rules are loaded in all; lines past that are skipped.
 
 Some uBlock Origin features aren't supported: regex filters, `$redirect`,
 `$csp`, `$replace`, scriptlets and procedural filters. Rules that use them are
