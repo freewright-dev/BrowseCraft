@@ -101,6 +101,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On Windows, the native ad filter still checks a request when WebView2 cannot report its resource type or sender, instead of letting it through.
 - Back, Forward and Reload on engine pages never resubmit a web form: the history keeps a plain visit to the form's address.
 - `data:` URLs accept `;base64` in any letter case; a text resource's charset is taken only from its header, a leading `@charset` (CSS) or a `<meta>` tag (HTML); a folder that cannot be read shows an error instead of an empty listing; a bracketed IPv6 address typed in the address bar (`[::1]:3000`) is opened instead of searched; and loader results survive a poisoned lock.
+- Saving a login offered while the vault was locked updates the saved login for that user name instead of adding a second one.
+- The vault is not saved over changes another program (KeePassXC) made to the file since BrowseCraft opened it; lock and unlock to load them.
+- A password shown on `browsecraft://passwords` is hidden again on the next render instead of until Hide or Lock, and vault and key-file paths with a line break are refused instead of adding lines to `passwords.cfg`.
 - Windows screenshot capture rejects overflowing or excessive dimensions before allocation, validates bitmap selection/restoration, and releases native resources on error paths.
 - Ad blocking now checks every engine HTTP redirect destination and uses native WebView2 interception for parser-initiated resources and redirects. JavaScript fallback fetch hooks handle URL and Request objects with one native conversion.
 - Cancelled engine loads stop scheduling document/stylesheet/import/image work and publishing stale events. Background loads use a bounded two-worker queue and whole-load deadlines.

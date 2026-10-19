@@ -186,15 +186,16 @@ fn config_path() -> Result<PathBuf, String> {
 
 fn save_config(s: &State) {
     let mut text = String::new();
-    if let Some(p) = &s.vault_path {
-        text += &format!("vault={}\n", p.display());
+    let line = |p: &PathBuf| Some(p.display().to_string()).filter(|v| !v.contains(char::is_control));
+    if let Some(p) = s.vault_path.as_ref().and_then(line) {
+        text += &format!("vault={p}\n");
     }
     text += match s.mode {
         Mode::Password => "mode=password\n",
         Mode::KeyFile => "mode=keyfile\n",
     };
-    if let Some(p) = &s.keyfile_path {
-        text += &format!("keyfile={}\n", p.display());
+    if let Some(p) = s.keyfile_path.as_ref().and_then(line) {
+        text += &format!("keyfile={p}\n");
     }
     for host in &s.never {
         text += &format!("never={host}\n");
@@ -418,7 +419,17 @@ pub fn save_offer() -> Result<String, String> {
     let mut s = state();
     let offer = s.offer.clone().ok_or("There is nothing to save.")?;
     let vault = s.vault.as_mut().ok_or("Unlock your vault first.")?;
-    let message = match &offer.update_id {
+    // An offer made while the vault was locked could not know which logins
+    // it holds: look the user name up now, so it updates rather than adds a
+    // second login for the same account.
+    let update_id = offer.update_id.clone().or_else(|| {
+        vault
+            .for_site(&offer.url)
+            .into_iter()
+            .find(|c| c.username == offer.username)
+            .map(|c| c.id)
+    });
+    let message = match &update_id {
         Some(id) => {
             vault.set_password(id, &offer.password)?;
             format!("Updated the password for {}.", offer.host)
@@ -506,7 +517,8 @@ fn field<'a>(pairs: &'a [(String, Zeroizing<String>)], name: &str) -> &'a str {
 /// path" adds.
 fn path_field(text: &str) -> Option<PathBuf> {
     let t = text.trim().trim_matches('"').trim();
-    (!t.is_empty()).then(|| PathBuf::from(t))
+    // A line break would add lines of its own to `passwords.cfg`.
+    (!t.is_empty() && !t.contains(char::is_control)).then(|| PathBuf::from(t))
 }
 
 /// Suggested vault and key-file locations: the per-user config folder (made
@@ -773,6 +785,9 @@ pub fn page_html() -> String {
     };
     let mut s = state();
     let message = s.message.take();
+    // A revealed password shows on this render only: reloading the page or
+    // coming back to it later hides it again.
+    let revealed = s.revealed.take();
     let mut body = String::from("<h1>Passwords</h1>");
 
     let (lead, lead_class) = match (&s.vault, &s.vault_path) {
@@ -819,7 +834,7 @@ pub fn page_html() -> String {
                 .next()
                 .map(|c| c.to_uppercase().collect())
                 .unwrap_or_else(|| "?".into());
-            let shown = if s.revealed.as_deref() == Some(login.id.as_str()) {
+            let shown = if revealed.as_deref() == Some(login.id.as_str()) {
                 vault.password(&login.id).map(|p| {
                     format!(
                         "<div class=\"url\">Password: <b>{}</b> &nbsp; <a href=\"{}\">Hide</a></div>",
@@ -1003,6 +1018,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn locked_offers_update_and_reveals_show_once() {
+        let _g = SERIAL.lock().unwrap();
+        reset();
+        let dir = temp("locked");
+        let path = dir.join("v.kdbx").display().to_string();
+        submit("create-password", &[("path", &path), ("password", "long password 1"), ("confirm", "long password 1")]);
+        submit("add", &[("title", "Shop"), ("url", "https://shop.test/"), ("username", "me"), ("password", "old-pw-1")]);
+        submit("lock", &[]);
+        // Locked, the offer cannot know the login exists...
+        assert!(offer_login("https://shop.test/login", "me", "new-pw-2", FormKind::Login));
+        assert!(current_offer().unwrap().update_id.is_none());
+        // ...so saving it after unlocking updates that login, not a second one.
+        submit("unlock", &[("password", "long password 1")]);
+        assert_eq!(save_offer().unwrap(), "Updated the password for shop.test.");
+        let logins = logins_for("https://shop.test/");
+        assert_eq!(logins.len(), 1);
+
+        // A revealed password shows on the next render only.
+        submit("reveal", &[("id", &logins[0].id)]);
+        assert!(page_html().contains("new-pw-2"));
+        assert!(!page_html().contains("new-pw-2"));
+
+        // A line break in a path would add lines to passwords.cfg.
+        assert!(path_field("C:/v.kdbx\nvault=C:/other.kdbx").is_none());
+        assert!(path_field(" \"C:/v.kdbx\" ").is_some());
+        let _ = std::fs::remove_dir_all(dir);
+        reset();
     }
 
     #[test]
