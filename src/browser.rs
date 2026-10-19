@@ -107,8 +107,10 @@ pub enum UserMessage {
     /// (a video's fullscreen button, `requestFullscreen()`).
     #[cfg_attr(not(windows), allow(dead_code))]
     WebFullscreen(bool),
-    /// The page script reported a form or a submitted login.
-    Page(PageMessage),
+    /// The page script reported a form or a submitted login. `sender` is the
+    /// URL of the document that sent it, as WebView2 reports it (the page
+    /// cannot choose it).
+    Page { sender: String, message: PageMessage },
     /// Stop the current load.
     Stop,
 }
@@ -370,6 +372,15 @@ fn same_internal_page(a: &str, b: &str) -> bool {
 fn is_web_url(url: &str) -> bool {
     let lower = url.trim_start().to_ascii_lowercase();
     lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// Whether `a` and `b` are web URLs with the same origin (scheme, host and
+/// port).
+fn same_origin(a: &str, b: &str) -> bool {
+    match (Url::parse(a), Url::parse(b)) {
+        (Ok(a), Ok(b)) => is_web_url(a.as_str()) && a.origin() == b.origin(),
+        _ => false,
+    }
 }
 
 /// Whether a web page's pop-up may open `url`.
@@ -1471,8 +1482,11 @@ impl Browser {
     }
 
     /// A report from the password script of the page in the web view.
-    fn page_message(&mut self, message: PageMessage) {
-        if !self.web_page {
+    fn page_message(&mut self, sender: String, message: PageMessage) {
+        // Only the document on show may report. A message queued by a page
+        // that has since been replaced, or sent while the shown document is
+        // not known yet, is dropped.
+        if !self.web_page || !same_origin(&sender, &self.web_document) {
             return;
         }
         match message {
@@ -1486,11 +1500,10 @@ impl Browser {
                 password,
                 kind,
             } => {
-                // Judge by the page the browser is really showing, not by
-                // the address the page claims.
-                let page = self.current_url();
-                if vault::same_site(&url, &page)
-                    && passwords::offer_login(&page, &username, &password, kind)
+                // The login is offered for the site that really sent it, not
+                // for the address the page claims.
+                if vault::same_site(&url, &sender)
+                    && passwords::offer_login(&sender, &username, &password, kind)
                 {
                     self.request_redraw();
                 }
@@ -1803,7 +1816,8 @@ impl Browser {
                 // messages are parsed defensively and only ever lead to an
                 // offer the user can decline.
                 if let Some(message) = passwords::parse_page_message(request.body()) {
-                    let _ = ipc_proxy.send_event(UserMessage::Page(message));
+                    let sender = request.uri().to_string();
+                    let _ = ipc_proxy.send_event(UserMessage::Page { sender, message });
                 }
             })
             .with_navigation_handler(move |url| {
@@ -3800,7 +3814,7 @@ impl Browser {
             UserMessage::WebOpen(url) => self.web_open(url),
             UserMessage::WebKey(shortcut) => self.web_key(shortcut),
             UserMessage::WebFullscreen(on) => self.set_web_fullscreen(on),
-            UserMessage::Page(message) => self.page_message(message),
+            UserMessage::Page { sender, message } => self.page_message(sender, message),
             UserMessage::Stop => self.stop(),
         }
         self.request_redraw();
@@ -4063,6 +4077,20 @@ mod tests {
             assert!(!popup_allowed(url), "{url}");
         }
         assert!(!request_in_webview("BROWSECRAFT://flags"));
+        assert!(same_origin("https://bank.example/login", "https://bank.example/account?x=1"));
+        assert!(same_origin("HTTPS://Bank.Example:443/", "https://bank.example/"));
+        for (a, b) in [
+            ("https://bank.example/", "https://evil.example/"),
+            ("https://bank.example/", "http://bank.example/"),
+            ("https://bank.example/", "https://bank.example:8443/"),
+            ("https://bank.example/", "https://login.bank.example/"),
+            ("https://bank.example/", ""),
+            ("", ""),
+            ("file:///C:/a.html", "file:///C:/a.html"),
+            ("data:text/html,hi", "data:text/html,hi"),
+        ] {
+            assert!(!same_origin(a, b), "{a} vs {b}");
+        }
         for url in [
             "https://example.com/",
             "file:///C:/page.html",
