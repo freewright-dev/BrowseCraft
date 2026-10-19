@@ -288,7 +288,9 @@ pub fn js_string(text: &str) -> String {
 
 /// The script that fills login `id` into the page at `page_url`. `None`
 /// unless the vault is unlocked and the login belongs to that site. The
-/// script holds the password, so it is wiped when dropped.
+/// script only fills a document whose origin is still `page_url`'s, so it
+/// does nothing if another page has replaced it in the meantime. It holds
+/// the password, so it is wiped when dropped.
 pub fn fill_script(id: &str, page_url: &str) -> Option<Zeroizing<String>> {
     let mut s = state();
     s.touch_if_unlocked();
@@ -297,15 +299,21 @@ pub fn fill_script(id: &str, page_url: &str) -> Option<Zeroizing<String>> {
     if !vault::same_site(&login.url, page_url) {
         return None;
     }
+    let origin = url::Url::parse(page_url)
+        .ok()
+        .filter(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())?
+        .origin()
+        .ascii_serialization();
     let password = vault.password(id)?;
     let password = Zeroizing::new(js_string(&password));
     let username = js_string(&login.username);
+    let guard = format!("if(location.origin==={})", js_string(&origin));
     // Sized up front so the buffer never reallocates and leaves a copy behind.
     let (head, tail) = ("window.__bcFill&&window.__bcFill(", ");");
     let mut script = Zeroizing::new(String::with_capacity(
-        head.len() + username.len() + 1 + password.len() + tail.len(),
+        guard.len() + head.len() + username.len() + 1 + password.len() + tail.len(),
     ));
-    for part in [head, &username, ",", &password, tail] {
+    for part in [&guard, head, &username, ",", &password, tail] {
         script.push_str(part);
     }
     Some(script)
@@ -1129,6 +1137,12 @@ mod tests {
         let script = fill_script(&id, "https://login.example.com/").unwrap();
         assert!(script.contains("\"alice\"") && script.contains("\"pw\\\"quote\""));
         assert_eq!(script.capacity(), script.len(), "built without reallocating");
+        assert!(
+            script.starts_with("if(location.origin===\"https://login.example.com\")"),
+            "only fills the document it was judged for: {}",
+            script.as_str()
+        );
+        assert!(fill_script(&id, "file:///C:/login.html").is_none());
         assert!(fill_script(&id, "https://evil.test/").is_none());
         assert!(fill_script(&id, "https://example.com.evil.test/").is_none());
         assert!(fill_script("no-such-id", "https://example.com/").is_none());

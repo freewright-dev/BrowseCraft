@@ -277,6 +277,12 @@ pub struct Browser {
     /// The URL the WebView was showing when we started that navigation.
     /// Until it commits, late events for this URL belong to the old page.
     web_leaving: String,
+    /// The URL of the document the WebView is showing now. Unlike `web_url`,
+    /// which follows our navigations and load completion, it changes when a
+    /// document commits (its scripts can run from then on), and is empty
+    /// while we do not know which document is shown. Password features judge
+    /// the site by it, never by `web_url`.
+    web_document: String,
     /// Our navigation has started in the WebView (so titles are its own).
     web_committed: bool,
     web_visible: bool,
@@ -967,6 +973,7 @@ impl Browser {
             last_dark: None,
             web_expect: false,
             web_leaving: String::new(),
+            web_document: String::new(),
             web_committed: false,
             web_visible: false,
             last_screenshot: None,
@@ -1167,6 +1174,7 @@ impl Browser {
         // when it becomes active again.
         self.unload_webview();
         self.web_leaving = self.web_url.clone();
+        self.web_document.clear();
         let title = self.live_title();
         let state = TabState {
             history: std::mem::take(&mut self.history),
@@ -1350,6 +1358,9 @@ impl Browser {
                 self.web_leaving = std::mem::take(&mut self.web_url);
             }
             self.web_url = target.clone();
+            // Until the new document commits, the shown one is not known
+            // to be either page: password features stay off.
+            self.web_document.clear();
             self.web_expect = true;
             self.web_committed = false;
             self.title.clear();
@@ -1366,6 +1377,7 @@ impl Browser {
         self.unload_webview();
         self.web_page = false;
         self.web_url.clear();
+        self.web_document.clear();
         self.web_expect = false;
         self.pending_restore = restore;
         let shown = loader::blocked_notice_target(&target)
@@ -1496,7 +1508,7 @@ impl Browser {
     }
 
     fn fill_login(&mut self, id: &str) {
-        let page = self.current_url();
+        let page = self.web_document.clone();
         match passwords::fill_script(id, &page) {
             Some(script) if self.run_in_page(&script) => self.set_notice("Filled the login"),
             _ => self.set_notice("Could not fill this login on this page"),
@@ -1671,6 +1683,10 @@ impl Browser {
         if url != "about:blank" {
             self.web_committed = true;
         }
+        // The page load "started" event is WebView2's ContentLoading: the new
+        // document has committed and its scripts run from now on, while
+        // `web_url` still names the previous page until the load completes.
+        self.web_document = url.clone();
         self.loading = true;
         // A new page: forget the form kind (the script reports it again) and
         // a save offer that was for another site.
@@ -1711,6 +1727,7 @@ impl Browser {
             self.index = self.history.len() - 1;
         }
         self.web_url = url.clone();
+        self.web_document = url.clone();
         if !self.address_focused() {
             self.address.set(&url);
         }
@@ -3446,7 +3463,10 @@ impl Browser {
         let pw_offer = passwords::current_offer().filter(|_| self.web_page);
         let pw_forms = self.page_forms;
         let on_web_page = self.web_page;
-        let page_host = vault::host_key(&page_url);
+        // Logins are listed for the document actually shown, which can differ
+        // from the address we navigated to (see `web_document`).
+        let doc_url = self.web_document.clone();
+        let page_host = vault::host_key(&doc_url);
 
         // Toolbar.
         if !fullscreen {
@@ -3485,7 +3505,7 @@ impl Browser {
                             egui::Popup::menu(&key).align(egui::RectAlign::BOTTOM_END).width(300.0).show(|ui| {
                                 // Only while the menu is open: the vault is not queried every frame.
                                 let pw_logins = if pw_unlocked && on_web_page {
-                                    passwords::logins_for(&page_url)
+                                    passwords::logins_for(&doc_url)
                                 } else {
                                     Vec::new()
                                 };
