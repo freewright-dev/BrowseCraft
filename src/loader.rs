@@ -585,8 +585,8 @@ fn may_fetch(from: &Url, url: &Url) -> bool {
 }
 
 enum SheetSource {
-    Inline(String, Option<String>),
-    Link(Url, Option<String>),
+    Inline(String, Option<Arc<css::Media>>),
+    Link(Url, Option<Arc<css::Media>>),
 }
 
 fn sheet_sources(doc: &Document, base: Option<&Url>) -> Vec<SheetSource> {
@@ -598,14 +598,11 @@ fn sheet_sources(doc: &Document, base: Option<&Url>) -> Vec<SheetSource> {
         let media = el
             .attr("media")
             .map(str::trim)
-            .filter(|m| !m.is_empty() && *m != "all")
-            .map(str::to_string);
-        if media
-            .as_deref()
-            .is_some_and(|m| m.eq_ignore_ascii_case("print"))
-        {
+            .filter(|m| !m.is_empty() && *m != "all");
+        if media.is_some_and(|m| m.eq_ignore_ascii_case("print")) {
             continue;
         }
+        let media = media.map(|m| css::Media::new(m, None));
         match el.tag.as_str() {
             "style" => out.push(SheetSource::Inline(doc.text_content(node), media)),
             "link" => {
@@ -625,15 +622,9 @@ fn sheet_sources(doc: &Document, base: Option<&Url>) -> Vec<SheetSource> {
     out
 }
 
-fn with_media(mut sheet: Stylesheet, media: Option<&str>) -> Stylesheet {
-    if let Some(media) = media {
-        for rule in &mut sheet.rules {
-            rule.media = Some(match &rule.media {
-                Some(inner) => format!("{media}&&{inner}"),
-                None => media.to_string(),
-            });
-        }
-    }
+/// Applies a `media` attribute to a sheet. Imported sheets share it.
+fn with_media(mut sheet: Stylesheet, media: Option<&Arc<css::Media>>) -> Stylesheet {
+    sheet.media = media.cloned();
     sheet
 }
 
@@ -642,7 +633,7 @@ fn inline_sheets(doc: &Document) -> Vec<Stylesheet> {
         .into_iter()
         .filter_map(|s| match s {
             SheetSource::Inline(text, media) => {
-                Some(with_media(css::parse_stylesheet(&text), media.as_deref()))
+                Some(with_media(css::parse_stylesheet(&text), media.as_ref()))
             }
             SheetSource::Link(..) => None,
         })
@@ -704,9 +695,9 @@ fn load_stylesheets_checked(
                     else {
                         break;
                     };
-                    with_imports(sheet, base, media.as_deref(), 0, &mut ctx)
+                    with_imports(sheet, base, media.as_ref(), 0, &mut ctx)
                 }
-                SheetSource::Link(url, media) => fetch_sheet(url, media.as_deref(), 0, &mut ctx),
+                SheetSource::Link(url, media) => fetch_sheet(url, media.as_ref(), 0, &mut ctx),
             };
             if let Ok(mut slot) = results[i].lock() {
                 *slot = sheets;
@@ -744,7 +735,7 @@ impl SheetContext<'_> {
 
 fn fetch_sheet(
     url: &Url,
-    media: Option<&str>,
+    media: Option<&Arc<css::Media>>,
     depth: u32,
     ctx: &mut SheetContext,
 ) -> Vec<Stylesheet> {
@@ -780,7 +771,7 @@ fn fetch_sheet(
 fn with_imports(
     sheet: Stylesheet,
     base: &Url,
-    media: Option<&str>,
+    media: Option<&Arc<css::Media>>,
     depth: u32,
     ctx: &mut SheetContext,
 ) -> Vec<Stylesheet> {
@@ -909,6 +900,29 @@ fn decode_image(bytes: &[u8], budget: &AtomicU64) -> Option<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_attributes_apply_to_whole_sheets() {
+        let doc = html::parse(
+            concat!(
+                "<style media=\"(max-width: 600px)\">p{color:red}</style>",
+                "<style media=\"screen\">@media (min-width: 1px){i{color:blue}}</style>",
+                "<style media=\"print\">i{color:red}</style><p>p</p><i>i</i>",
+            ),
+        );
+        let sheets = inline_sheets(&doc);
+        assert_eq!(sheets.len(), 2);
+        let color = |viewport_width: f32, tag: &str| {
+            let ctx = crate::style::StyleContext { zoom: 1.0, viewport_width, viewport_height: 800.0 };
+            let styles = crate::style::compute_styles(&doc, &sheets, &ctx);
+            styles[doc.find_tag(tag).unwrap()].color
+        };
+        assert_eq!(color(500.0, "p"), css::Color::rgb(255, 0, 0));
+        assert_eq!(color(1000.0, "p"), css::Color::BLACK);
+        assert_eq!(color(1000.0, "i"), css::Color::rgb(0, 0, 255));
+        let wide = crate::style::media_signature(&sheets, 1000.0);
+        assert_ne!(crate::style::media_signature(&sheets, 500.0), wide);
+    }
 
     #[test]
     fn new_tab_loads_its_embedded_logo() {

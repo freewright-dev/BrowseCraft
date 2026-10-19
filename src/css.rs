@@ -2,6 +2,7 @@
 //! style system understands.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::dom::{Document, NodeId};
 
@@ -11,14 +12,59 @@ pub struct Stylesheet {
     pub rules: Vec<Rule>,
     /// URLs from `@import`, in order.
     pub imports: Vec<String>,
+    /// The `media` attribute of the `<style>` or `<link>` the sheet came
+    /// from. It applies to every rule, so it is kept once here.
+    pub media: Option<Arc<Media>>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Rule {
     pub selectors: Vec<Selector>,
     pub declarations: Vec<Declaration>,
-    /// The `@media` query this rule sits under, if any.
-    pub media: Option<String>,
+    /// The `@media` block this rule sits under, if any. All rules of a block
+    /// share it.
+    pub media: Option<Arc<Media>>,
+}
+
+/// An `@media` condition and the block it is nested in, if any; all of them
+/// must match. Blocks are shared rather than copied into each rule, so their
+/// memory stays proportional to the stylesheet's size.
+#[derive(Debug)]
+pub struct Media {
+    pub condition: Box<str>,
+    pub outer: Option<Arc<Media>>,
+}
+
+impl Media {
+    pub fn new(condition: &str, outer: Option<Arc<Media>>) -> Arc<Media> {
+        Arc::new(Media { condition: condition.into(), outer })
+    }
+}
+
+/// Evaluates `@media` blocks against one viewport width. Each block is
+/// evaluated once, however many rules and nested blocks share it.
+pub struct MediaEval<'a> {
+    width: f32,
+    /// Results by block address; the borrow keeps every block alive.
+    seen: HashMap<*const Media, bool>,
+    blocks: std::marker::PhantomData<&'a Media>,
+}
+
+impl<'a> MediaEval<'a> {
+    pub fn new(viewport_width: f32) -> Self {
+        MediaEval { width: viewport_width, seen: HashMap::new(), blocks: std::marker::PhantomData }
+    }
+
+    pub fn matches(&mut self, media: &'a Media) -> bool {
+        let key = std::ptr::from_ref(media);
+        if let Some(&ok) = self.seen.get(&key) {
+            return ok;
+        }
+        let ok = media.outer.as_deref().is_none_or(|outer| self.matches(outer))
+            && media_matches(&media.condition, self.width);
+        self.seen.insert(key, ok);
+        ok
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -174,7 +220,7 @@ std::thread_local! {
     static PRELUDE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-fn parse_rules(mut s: &str, media: Option<&str>, sheet: &mut Stylesheet, depth: u32, live: &dyn Fn() -> bool) {
+fn parse_rules(mut s: &str, media: Option<&Arc<Media>>, sheet: &mut Stylesheet, depth: u32, live: &dyn Fn() -> bool) {
     loop {
         if !live() { return; }
         s = s.trim_start();
@@ -209,11 +255,8 @@ fn parse_rules(mut s: &str, media: Option<&str>, sheet: &mut Stylesheet, depth: 
             match keyword.to_ascii_lowercase().as_str() {
                 _ if depth >= MAX_NESTING => {}
                 "media" => {
-                    let combined = match media {
-                        Some(outer) => format!("{outer}&&{condition}"),
-                        None => condition.to_string(),
-                    };
-                    parse_rules(body, Some(&combined), sheet, depth + 1, live);
+                    let block = Media::new(condition, media.cloned());
+                    parse_rules(body, Some(&block), sheet, depth + 1, live);
                 }
                 "supports" if !condition.trim_start().starts_with("not") => {
                     parse_rules(body, media, sheet, depth + 1, live)
@@ -244,7 +287,7 @@ fn parse_rules(mut s: &str, media: Option<&str>, sheet: &mut Stylesheet, depth: 
             sheet.rules.push(Rule {
                 selectors,
                 declarations,
-                media: media.map(str::to_string),
+                media: media.cloned(),
             });
         }
     }
@@ -789,13 +832,10 @@ fn pseudo_matches<'a>(
 }
 
 /// Evaluates a media query list against the viewport width in CSS pixels.
-/// Nested `@media` blocks are joined with `&&`.
 pub fn media_matches(query: &str, viewport_width: f32) -> bool {
-    query.split("&&").all(|q| {
-        split_top_level(q, ',')
-            .iter()
-            .any(|q| single_media_matches(q, viewport_width))
-    })
+    split_top_level(query, ',')
+        .iter()
+        .any(|q| single_media_matches(q, viewport_width))
 }
 
 fn single_media_matches(query: &str, width: f32) -> bool {
@@ -1270,6 +1310,32 @@ mod tests {
         assert_eq!(parse_selector(&nested).unwrap().specificity.1, u16::MAX);
     }
 
+    fn condition(rule: &Rule) -> Option<&str> {
+        rule.media.as_deref().map(|m| &*m.condition)
+    }
+
+    #[test]
+    fn media_blocks_are_shared_not_copied() {
+        // A long condition over many rules is stored once (audit B-04).
+        let long = "screen,".repeat(1500) + "screen";
+        let rules = "a{b:c}".repeat(20_000);
+        let sheet = parse_stylesheet(&format!("@media {long}{{{rules}@media (min-width: 1px){{p{{x:y}}}}}}"));
+        assert_eq!(sheet.rules.len(), 20_001);
+        let first = sheet.rules[0].media.as_ref().unwrap();
+        assert!(sheet.rules[..20_000].iter().all(|r| Arc::ptr_eq(r.media.as_ref().unwrap(), first)));
+        let nested = sheet.rules[20_000].media.as_ref().unwrap();
+        assert_eq!(&*nested.condition, "(min-width: 1px)");
+        assert!(Arc::ptr_eq(nested.outer.as_ref().unwrap(), first));
+
+        // A nested block matches only when the blocks around it do too.
+        let mut eval = MediaEval::new(500.0);
+        assert!(eval.matches(nested));
+        let outer = Media::new("print", None);
+        let inner = Media::new("(min-width: 1px)", Some(outer.clone()));
+        assert!(!MediaEval::new(500.0).matches(&inner));
+        assert!(!MediaEval::new(500.0).matches(&outer));
+    }
+
     #[test]
     fn parses_rules_and_media() {
         let sheet = parse_stylesheet(
@@ -1278,7 +1344,7 @@ mod tests {
         assert_eq!(sheet.rules.len(), 2);
         assert_eq!(sheet.rules[0].selectors.len(), 2);
         assert!(sheet.rules[0].declarations[0].important);
-        assert_eq!(sheet.rules[1].media.as_deref(), Some("(max-width: 600px)"));
+        assert_eq!(condition(&sheet.rules[1]), Some("(max-width: 600px)"));
         assert!(media_matches("(max-width: 600px)", 500.0));
         assert!(!media_matches("(max-width: 600px)", 700.0));
         assert!(!media_matches("print", 700.0));
@@ -1324,7 +1390,7 @@ mod tests {
         assert_eq!(sheet.rules.len(), 2);
         assert_eq!(sheet.rules[0].declarations[0].value, "red");
         assert_eq!(sheet.rules[1].declarations[0].value, "blue");
-        assert_eq!(sheet.rules[1].media.as_deref(), Some("screen"));
+        assert_eq!(condition(&sheet.rules[1]), Some("screen"));
         assert!(
             parse_stylesheet("@unknown \"unterminated;{p{color:red}")
                 .rules

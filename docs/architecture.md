@@ -136,7 +136,10 @@ sorting and value expansion. These limits apply to the custom engine.
 
 Styles depend on the viewport only through media queries and viewport units,
 so the browser restyles only when the set of matching `@media` queries or the
-zoom changes.
+zoom changes. An `@media` block is stored once and shared by its rules (a nested
+block points to the one around it), and a `media` attribute is stored once on
+its stylesheet, so a long condition over many rules is never copied. Each block
+is evaluated once per style pass.
 
 ## Layout
 
