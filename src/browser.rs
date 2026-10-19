@@ -107,8 +107,10 @@ pub enum UserMessage {
     /// (a video's fullscreen button, `requestFullscreen()`).
     #[cfg_attr(not(windows), allow(dead_code))]
     WebFullscreen(bool),
-    /// The page script reported a form or a submitted login.
-    Page(PageMessage),
+    /// The page script reported a form or a submitted login. `sender` is the
+    /// URL of the document that sent it, as WebView2 reports it (the page
+    /// cannot choose it).
+    Page { sender: String, message: PageMessage },
     /// Stop the current load.
     Stop,
 }
@@ -266,6 +268,9 @@ pub struct Browser {
     egui_page: Option<Rect>,
     cheatsheet: bool,
     notice: Option<(String, Instant)>,
+    /// The notice is the "press F11 or Esc to exit" hint shown when a page
+    /// goes fullscreen; other notices do not replace it while it shows.
+    fullscreen_hint: bool,
     // ---- state added when rebuilding the shell ----
     drag: Drag,
     quit: bool,
@@ -277,6 +282,12 @@ pub struct Browser {
     /// The URL the WebView was showing when we started that navigation.
     /// Until it commits, late events for this URL belong to the old page.
     web_leaving: String,
+    /// The URL of the document the WebView is showing now. Unlike `web_url`,
+    /// which follows our navigations and load completion, it changes when a
+    /// document commits (its scripts can run from then on), and is empty
+    /// while we do not know which document is shown. Password features judge
+    /// the site by it, never by `web_url`.
+    web_document: String,
     /// Our navigation has started in the WebView (so titles are its own).
     web_committed: bool,
     web_visible: bool,
@@ -364,6 +375,15 @@ fn same_internal_page(a: &str, b: &str) -> bool {
 fn is_web_url(url: &str) -> bool {
     let lower = url.trim_start().to_ascii_lowercase();
     lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// Whether `a` and `b` are web URLs with the same origin (scheme, host and
+/// port).
+fn same_origin(a: &str, b: &str) -> bool {
+    match (Url::parse(a), Url::parse(b)) {
+        (Ok(a), Ok(b)) => is_web_url(a.as_str()) && a.origin() == b.origin(),
+        _ => false,
+    }
 }
 
 /// Whether a web page's pop-up may open `url`.
@@ -961,12 +981,14 @@ impl Browser {
             egui_page: None,
             cheatsheet: false,
             notice: None,
+            fullscreen_hint: false,
             drag: Drag::None,
             quit: false,
             epoch: Instant::now(),
             last_dark: None,
             web_expect: false,
             web_leaving: String::new(),
+            web_document: String::new(),
             web_committed: false,
             web_visible: false,
             last_screenshot: None,
@@ -1039,7 +1061,9 @@ impl Browser {
     }
 
     fn notice_h(&self) -> f32 {
-        if self.notice_active() && !self.web_fullscreen {
+        // Shown in page fullscreen too: the strip is drawn by the browser,
+        // outside the page, so it says which site is full screen.
+        if self.notice_active() {
             (NOTICE_HEIGHT * self.scale()).round()
         } else {
             0.0
@@ -1047,6 +1071,10 @@ impl Browser {
     }
 
     fn set_notice(&mut self, message: impl Into<String>) {
+        if self.web_fullscreen && self.fullscreen_hint && self.notice_active() {
+            return;
+        }
+        self.fullscreen_hint = false;
         self.notice = Some((message.into(), Instant::now()));
         self.request_redraw();
     }
@@ -1167,6 +1195,7 @@ impl Browser {
         // when it becomes active again.
         self.unload_webview();
         self.web_leaving = self.web_url.clone();
+        self.web_document.clear();
         let title = self.live_title();
         let state = TabState {
             history: std::mem::take(&mut self.history),
@@ -1350,6 +1379,9 @@ impl Browser {
                 self.web_leaving = std::mem::take(&mut self.web_url);
             }
             self.web_url = target.clone();
+            // Until the new document commits, the shown one is not known
+            // to be either page: password features stay off.
+            self.web_document.clear();
             self.web_expect = true;
             self.web_committed = false;
             self.title.clear();
@@ -1366,6 +1398,7 @@ impl Browser {
         self.unload_webview();
         self.web_page = false;
         self.web_url.clear();
+        self.web_document.clear();
         self.web_expect = false;
         self.pending_restore = restore;
         let shown = loader::blocked_notice_target(&target)
@@ -1459,8 +1492,11 @@ impl Browser {
     }
 
     /// A report from the password script of the page in the web view.
-    fn page_message(&mut self, message: PageMessage) {
-        if !self.web_page {
+    fn page_message(&mut self, sender: String, message: PageMessage) {
+        // Only the document on show may report. A message queued by a page
+        // that has since been replaced, or sent while the shown document is
+        // not known yet, is dropped.
+        if !self.web_page || !same_origin(&sender, &self.web_document) {
             return;
         }
         match message {
@@ -1474,11 +1510,10 @@ impl Browser {
                 password,
                 kind,
             } => {
-                // Judge by the page the browser is really showing, not by
-                // the address the page claims.
-                let page = self.current_url();
-                if vault::same_site(&url, &page)
-                    && passwords::offer_login(&page, &username, &password, kind)
+                // The login is offered for the site that really sent it, not
+                // for the address the page claims.
+                if vault::same_site(&url, &sender)
+                    && passwords::offer_login(&sender, &username, &password, kind)
                 {
                     self.request_redraw();
                 }
@@ -1496,7 +1531,7 @@ impl Browser {
     }
 
     fn fill_login(&mut self, id: &str) {
-        let page = self.current_url();
+        let page = self.web_document.clone();
         match passwords::fill_script(id, &page) {
             Some(script) if self.run_in_page(&script) => self.set_notice("Filled the login"),
             _ => self.set_notice("Could not fill this login on this page"),
@@ -1538,7 +1573,10 @@ impl Browser {
 
     /// F11: the whole window fullscreen, independent of page fullscreen.
     fn toggle_window_fullscreen(&mut self) {
+        // In page fullscreen F11 leaves it, whatever the page does with Esc.
         if self.web_fullscreen {
+            self.run_in_page("document.exitFullscreen&&document.exitFullscreen().catch(function(){})");
+            self.set_web_fullscreen(false);
             return;
         }
         if let Some(g) = &self.gfx {
@@ -1671,6 +1709,10 @@ impl Browser {
         if url != "about:blank" {
             self.web_committed = true;
         }
+        // The page load "started" event is WebView2's ContentLoading: the new
+        // document has committed and its scripts run from now on, while
+        // `web_url` still names the previous page until the load completes.
+        self.web_document = url.clone();
         self.loading = true;
         // A new page: forget the form kind (the script reports it again) and
         // a save offer that was for another site.
@@ -1711,6 +1753,7 @@ impl Browser {
             self.index = self.history.len() - 1;
         }
         self.web_url = url.clone();
+        self.web_document = url.clone();
         if !self.address_focused() {
             self.address.set(&url);
         }
@@ -1786,7 +1829,8 @@ impl Browser {
                 // messages are parsed defensively and only ever lead to an
                 // offer the user can decline.
                 if let Some(message) = passwords::parse_page_message(request.body()) {
-                    let _ = ipc_proxy.send_event(UserMessage::Page(message));
+                    let sender = request.uri().to_string();
+                    let _ = ipc_proxy.send_event(UserMessage::Page { sender, message });
                 }
             })
             .with_navigation_handler(move |url| {
@@ -1884,6 +1928,17 @@ impl Browser {
     fn set_web_fullscreen(&mut self, on: bool) {
         if on == self.web_fullscreen {
             return;
+        }
+        if on {
+            // The page fills the screen and can draw anything, including a
+            // fake toolbar: say which site it is and how to leave.
+            let host = vault::host_key(&self.web_document);
+            let site = if host.is_empty() { "This page".to_string() } else { host };
+            self.set_notice(format!("{site} is full screen. Press F11 or Esc to exit"));
+            self.fullscreen_hint = true;
+        } else if self.fullscreen_hint {
+            self.notice = None;
+            self.fullscreen_hint = false;
         }
         self.web_fullscreen = on;
         if let Some(g) = &self.gfx {
@@ -3446,7 +3501,10 @@ impl Browser {
         let pw_offer = passwords::current_offer().filter(|_| self.web_page);
         let pw_forms = self.page_forms;
         let on_web_page = self.web_page;
-        let page_host = vault::host_key(&page_url);
+        // Logins are listed for the document actually shown, which can differ
+        // from the address we navigated to (see `web_document`).
+        let doc_url = self.web_document.clone();
+        let page_host = vault::host_key(&doc_url);
 
         // Toolbar.
         if !fullscreen {
@@ -3485,7 +3543,7 @@ impl Browser {
                             egui::Popup::menu(&key).align(egui::RectAlign::BOTTOM_END).width(300.0).show(|ui| {
                                 // Only while the menu is open: the vault is not queried every frame.
                                 let pw_logins = if pw_unlocked && on_web_page {
-                                    passwords::logins_for(&page_url)
+                                    passwords::logins_for(&doc_url)
                                 } else {
                                     Vec::new()
                                 };
@@ -3654,7 +3712,6 @@ impl Browser {
 
         // Notice strip.
         if self.notice_active()
-            && !fullscreen
             && let Some((message, _)) = self.notice.clone()
         {
             egui::Panel::bottom("notice")
@@ -3780,7 +3837,7 @@ impl Browser {
             UserMessage::WebOpen(url) => self.web_open(url),
             UserMessage::WebKey(shortcut) => self.web_key(shortcut),
             UserMessage::WebFullscreen(on) => self.set_web_fullscreen(on),
-            UserMessage::Page(message) => self.page_message(message),
+            UserMessage::Page { sender, message } => self.page_message(sender, message),
             UserMessage::Stop => self.stop(),
         }
         self.request_redraw();
@@ -4043,6 +4100,20 @@ mod tests {
             assert!(!popup_allowed(url), "{url}");
         }
         assert!(!request_in_webview("BROWSECRAFT://flags"));
+        assert!(same_origin("https://bank.example/login", "https://bank.example/account?x=1"));
+        assert!(same_origin("HTTPS://Bank.Example:443/", "https://bank.example/"));
+        for (a, b) in [
+            ("https://bank.example/", "https://evil.example/"),
+            ("https://bank.example/", "http://bank.example/"),
+            ("https://bank.example/", "https://bank.example:8443/"),
+            ("https://bank.example/", "https://login.bank.example/"),
+            ("https://bank.example/", ""),
+            ("", ""),
+            ("file:///C:/a.html", "file:///C:/a.html"),
+            ("data:text/html,hi", "data:text/html,hi"),
+        ] {
+            assert!(!same_origin(a, b), "{a} vs {b}");
+        }
         for url in [
             "https://example.com/",
             "file:///C:/page.html",

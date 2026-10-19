@@ -81,7 +81,7 @@ The key menu, the bookmarks bar and the save-login bar belong to the GPU interfa
 
 ## Fullscreen
 
-When a web page goes fullscreen, for example a video's fullscreen button on YouTube, the whole window goes fullscreen and the toolbar, bookmarks bar and tabs are hidden, so the page fills the screen. Press `Esc` (or use the page's own button) to leave; the window returns to how it was. `F11` makes the window fullscreen on its own.
+When a web page goes fullscreen, for example a video's fullscreen button on YouTube, the whole window goes fullscreen and the toolbar, bookmarks bar and tabs are hidden, so the page fills the screen. For the first few seconds a strip at the bottom, drawn by BrowseCraft rather than the page, names the site and how to leave. Press `Esc`, `F11` or the page's own button to leave; `F11` always works, even if the page handles `Esc`. The window returns to how it was. Outside page fullscreen, `F11` makes the window fullscreen on its own.
 
 ## Password manager
 
