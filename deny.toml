@@ -1,8 +1,13 @@
-# Dependency policy: no blanket advisory exceptions. Outstanding maintenance
-# and target-specific findings are tracked in docs/dependencies.md.
+# Dependency policy: no blanket advisory exceptions. Each ignore below names
+# one advisory that is tracked, with its replacement plan, in
+# docs/dependencies.md; remove it when the dependency is gone. Everything else,
+# including any new advisory, fails `cargo deny check` (run in CI).
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: unmaintained, build-time only via GTK/glib on Linux/BSD; tracked in docs/dependencies.md" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser: unmaintained, via fontdue; tracked in docs/dependencies.md" },
+]
 
 [licenses]
 version = 2

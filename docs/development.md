@@ -94,7 +94,8 @@ cargo test
 
 CI (`.github/workflows/ci.yml`) runs `cargo build --locked` and
 `cargo test --locked` on `windows-latest` for every pull request and every
-push to `main`.
+push to `main`. `.github/workflows/deny.yml` runs `cargo deny check` on the
+same events and once a week.
 
 Unit tests live next to the code: HTML parsing (`html.rs`), sibling metadata
 and cache invalidation (`dom.rs`), selectors, values
@@ -148,7 +149,8 @@ cache design are described in [architecture](architecture.md#parsing-and-sibling
 ## Common changes
 
 For dependency upgrades, run `cargo audit` and `cargo deny check` as well as
-the build/tests. See [dependency maintenance](dependencies.md) for the current
+the build/tests. CI also runs `cargo deny check` on every pull request and
+weekly. See [dependency maintenance](dependencies.md) for the current
 target-specific advisories and license/source policy.
 
 - **Default styles:** `src/ua.css`.
