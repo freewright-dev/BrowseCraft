@@ -212,6 +212,30 @@ pub fn spawn(
         send: send.clone(),
         deadline: Instant::now() + LOAD_TIMEOUT,
     };
+    // Internal pages never wait behind slow web pages: each runs on its own
+    // short-lived thread (the queue is the fallback if none can be started).
+    let job = if is_internal(&url) {
+        let slot = Arc::new(Mutex::new(Some(job)));
+        let taken = slot.clone();
+        let started = std::thread::Builder::new()
+            .name("internal-page".into())
+            .spawn(move || {
+                if let Some(job) = taken.lock().ok().and_then(|mut j| j.take()) {
+                    job.run();
+                }
+            })
+            .is_ok();
+        if started {
+            return;
+        }
+        // The thread never ran, so the job is still in the slot.
+        let Some(job) = slot.lock().ok().and_then(|mut j| j.take()) else {
+            return;
+        };
+        job
+    } else {
+        job
+    };
     let result = QUEUE
         .get_or_init(LoadQueue::start)
         .as_ref()
@@ -223,6 +247,14 @@ pub fn spawn(
             send(generation, LoadEvent::Finished);
         }
     }
+}
+
+/// Pages the engine makes itself (`about:`, `browsecraft:`): they read no
+/// network, so they need not wait in the load queue. `view-source:` fetches
+/// the page it shows, so it does.
+fn is_internal(url: &str) -> bool {
+    let lower = url.trim_start().to_ascii_lowercase();
+    lower.starts_with("about:") || lower.starts_with("browsecraft:")
 }
 
 /// Loads a page and all its images on the calling thread.
@@ -1236,6 +1268,40 @@ mod tests {
         broken.truncate(40);
         assert!(decode_image(&broken, &budget).is_none());
         assert_eq!(budget.load(Ordering::SeqCst), 5_000);
+    }
+
+    #[test]
+    fn internal_pages_do_not_wait_behind_slow_loads() {
+        // A server that accepts connections and never answers ties up every
+        // loader thread (audit B-17).
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming().flatten() {
+                held.push(stream);
+            }
+        });
+        let slow = Arc::new(AtomicU64::new(1));
+        for _ in 0..MAX_ACTIVE_LOADS {
+            spawn(Request::Get(format!("http://{addr}/")), 1, slow.clone(), |_, _| {});
+        }
+        std::thread::sleep(Duration::from_millis(300));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = Mutex::new(tx);
+        spawn(Request::Get("about:home".into()), 1, Arc::new(AtomicU64::new(1)), move |_, event| {
+            if let LoadEvent::Page(page) = event
+                && let Ok(tx) = tx.lock()
+            {
+                let _ = tx.send(page.url);
+            }
+        });
+        let url = rx.recv_timeout(Duration::from_secs(5));
+        slow.store(2, Ordering::SeqCst);
+        assert_eq!(url.as_deref(), Ok("about:home"));
+        assert!(is_internal("BrowseCraft://passwords") && is_internal("about:blank"));
+        assert!(!is_internal("view-source:https://example.com/") && !is_internal("https://x/"));
     }
 
     #[test]

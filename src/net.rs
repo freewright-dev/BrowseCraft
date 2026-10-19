@@ -27,6 +27,11 @@ fn agent() -> &'static ureq::Agent {
         ureq::Agent::config_builder()
             .http_status_as_error(false)
             .timeout_global(Some(Duration::from_secs(30)))
+            // A server that does not connect or start answering gives up its
+            // loader thread after 10 s rather than 30 s; a body may take 20 s.
+            .timeout_connect(Some(Duration::from_secs(10)))
+            .timeout_recv_response(Some(Duration::from_secs(10)))
+            .timeout_recv_body(Some(Duration::from_secs(20)))
             .user_agent(USER_AGENT)
             // Every redirect destination is checked before a connection.
             .max_redirects(0)
