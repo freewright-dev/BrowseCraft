@@ -49,6 +49,16 @@ pub struct Vault {
     path: PathBuf,
     db: Database,
     key: DatabaseKey,
+    /// The file's size and modification time when this vault last read or
+    /// wrote it. A different file on disk means another program (KeePassXC)
+    /// saved it meanwhile, and saving over it would lose those changes.
+    on_disk: Option<(u64, std::time::SystemTime)>,
+}
+
+/// The size and modification time of `path`, if it can be read.
+fn disk_stamp(meta: std::io::Result<std::fs::Metadata>) -> Option<(u64, std::time::SystemTime)> {
+    let meta = meta.ok()?;
+    Some((meta.len(), meta.modified().ok()?))
 }
 
 /// Key derivation settings. Strong by default (Argon2id, 64 MiB), cheap in
@@ -73,6 +83,9 @@ fn config() -> DatabaseConfig {
 /// KeePass hashes any file used as a key file; BrowseCraft's own are a few
 /// hundred bytes. Larger files are refused rather than read in full.
 const MAX_KEYFILE: u64 = 16 << 20;
+
+const CHANGED_ON_DISK: &str = "The vault file was changed by another program since BrowseCraft opened it. \
+     Lock the vault and unlock it again to load those changes; nothing was saved.";
 
 const VAULT_EXISTS: &str = "A file already exists at that path. Pick a new name, or open it instead.";
 
@@ -220,10 +233,11 @@ impl Vault {
             }
         };
         let vault = key.and_then(|key| {
-            let vault = Vault {
+            let mut vault = Vault {
                 path: path.to_path_buf(),
                 db: Database::new(config()),
                 key,
+                on_disk: None,
             };
             vault.save_new().map(|()| vault)
         });
@@ -248,6 +262,7 @@ impl Vault {
         };
         let mut file =
             std::fs::File::open(path).map_err(|e| format!("Could not open the vault file: {e}"))?;
+        let on_disk = disk_stamp(file.metadata());
         let db = Database::open(&mut file, key.clone()).map_err(|e| match e {
             keepass::error::DatabaseOpenError::Key(keepass::error::DatabaseKeyError::IncorrectKey) => {
                 match unlock {
@@ -261,6 +276,7 @@ impl Vault {
             path: path.to_path_buf(),
             db,
             key,
+            on_disk,
         })
     }
 
@@ -355,22 +371,29 @@ impl Vault {
         Ok(buffer)
     }
 
-    fn save(&self) -> Result<(), String> {
+    fn save(&mut self) -> Result<(), String> {
+        if self.on_disk.is_some() && disk_stamp(std::fs::metadata(&self.path)) != self.on_disk {
+            return Err(CHANGED_ON_DISK.into());
+        }
         let buffer = self.encrypted()?;
         // An exclusively created, randomly named temporary file: a planted
         // `<vault>.tmp` symlink cannot redirect the write.
         crate::storage::replace_atomic(&self.path, &buffer)
-            .map_err(|e| format!("Could not write the vault: {e}"))
+            .map_err(|e| format!("Could not write the vault: {e}"))?;
+        self.on_disk = disk_stamp(std::fs::metadata(&self.path));
+        Ok(())
     }
 
     /// The first save of a new vault: fails, without touching it, if a file
     /// is at the path by then.
-    fn save_new(&self) -> Result<(), String> {
+    fn save_new(&mut self) -> Result<(), String> {
         let buffer = self.encrypted()?;
         crate::storage::create_new(&self.path, &buffer, false).map_err(|e| match e.kind() {
             std::io::ErrorKind::AlreadyExists => VAULT_EXISTS.to_string(),
             _ => format!("Could not write the vault: {e}"),
-        })
+        })?;
+        self.on_disk = disk_stamp(std::fs::metadata(&self.path));
+        Ok(())
     }
 }
 
@@ -448,6 +471,22 @@ mod tests {
             Some("That key file does not open this vault.")
         );
         assert!(Vault::open(&path, &Unlock::Password("anything".to_string().into())).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn changes_made_by_another_program_are_not_overwritten() {
+        let dir = temp_dir("changed");
+        let path = dir.join("v.kdbx");
+        let mut vault = Vault::create(&path, NewProtection::Password("long enough pw".to_string().into())).unwrap();
+        vault.add("A", "https://a.test/", "u", "pw-1").unwrap();
+        // Another program (KeePassXC) saves the file meanwhile.
+        let mut other = Vault::open(&path, &Unlock::Password("long enough pw".to_string().into())).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        other.add("B", "https://b.test/", "v", "pw-2").unwrap();
+        assert_eq!(vault.add("C", "https://c.test/", "w", "pw-3").err().as_deref(), Some(CHANGED_ON_DISK));
+        let reopened = Vault::open(&path, &Unlock::Password("long enough pw".to_string().into())).unwrap();
+        assert_eq!(reopened.count(), 2, "B is kept and C was not written over it");
         let _ = std::fs::remove_dir_all(dir);
     }
 
