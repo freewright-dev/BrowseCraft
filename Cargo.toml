@@ -41,6 +41,14 @@ psl = "2"
 unwrap_used = "deny"
 expect_used = "deny"
 
+[features]
+# Experimental (issue #65): render web pages with Servo on Linux, where there
+# is no system web view. Off by default; other platforms ignore it.
+servo = ["dep:servo"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+servo = { version = "0.6", optional = true }
+
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
 windows = { version = "0.61", features = ["Win32_System_Com", "Win32_Security_Authorization"] }
