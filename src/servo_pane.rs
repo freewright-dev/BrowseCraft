@@ -166,6 +166,18 @@ mod imp {
         }
     }
 
+    /// For evaluating the slice: with `BROWSECRAFT_SERVO_TRACE` set, load
+    /// progress, titles and crashes are printed with the time since start.
+    fn trace(what: &str) {
+        use std::sync::OnceLock;
+        use std::time::Instant;
+        static START: OnceLock<Option<Instant>> = OnceLock::new();
+        let start = START.get_or_init(|| std::env::var_os("BROWSECRAFT_SERVO_TRACE").map(|_| Instant::now()));
+        if let Some(start) = start {
+            eprintln!("servo-trace {:.2}s {what}", start.elapsed().as_secs_f32());
+        }
+    }
+
     impl WebViewDelegate for Delegate {
         fn notify_new_frame_ready(&self, _webview: WebView) {
             self.frame_ready.set(true);
@@ -174,6 +186,7 @@ mod imp {
 
         fn notify_load_status_changed(&self, webview: WebView, status: LoadStatus) {
             let url = webview.url().map(String::from).unwrap_or_default();
+            trace(&format!("load {status:?} {url}"));
             match status {
                 // The new document exists from here on, like WebView2's
                 // ContentLoading, which `WebStart` stands for.
@@ -184,6 +197,7 @@ mod imp {
         }
 
         fn notify_page_title_changed(&self, _webview: WebView, title: Option<String>) {
+            trace(&format!("title {}", title.as_deref().unwrap_or("")));
             self.send(UserMessage::WebTitle(title.unwrap_or_default()));
         }
 
@@ -225,6 +239,7 @@ mod imp {
 
         fn notify_crashed(&self, _webview: WebView, reason: String, _backtrace: Option<String>) {
             eprintln!("browsecraft: a Servo page crashed: {reason}");
+            trace("crashed");
             self.send(UserMessage::ServoCrashed(reason));
         }
     }
@@ -268,6 +283,7 @@ mod imp {
                 }
             };
             context.make_current().ok()?;
+            trace("servo started");
             let servo = ServoBuilder::default()
                 .event_loop_waker(Box::new(Waker(Mutex::new(proxy.clone()))))
                 .build();
