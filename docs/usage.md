@@ -47,7 +47,9 @@ This matters for input. BrowseCraft's shortcuts below also work while a WebView2
 | `browsecraft://passwords`   | The password vault (see Password manager below)                   |
 | `view-source:<url>`   | The raw source of an `http:`, `https:` or `file:` page            |
 
-History is kept in memory only (up to 500 entries) and is lost when BrowseCraft quits. Built-in pages are not recorded. When the engine renders a `file://` URL that points at a folder, it shows a directory listing.
+History is kept in memory only (up to 500 entries) and is lost when BrowseCraft quits. Built-in pages and addresses longer than 8 KB are not recorded. When the engine renders a `file://` URL that points at a folder, it shows a directory listing; a drive on its own (`file:///C:`) is refused, use `file:///C:/` for its root.
+
+BrowseCraft drops a user name and password written into an address (`https://user:password@example.com/`) before loading it: they are never sent, shown in the address bar or kept in the history. A site that needs them asks for them instead (WebView2 shows its sign-in prompt). This also unmasks addresses such as `https://bank.example@evil.example/`, which loads `evil.example`.
 
 ## Toolbar
 

@@ -35,6 +35,35 @@ fn agent() -> &'static ureq::Agent {
     })
 }
 
+/// Removes the user name and password from `url` (`https://user:pw@host/`).
+/// BrowseCraft never sends, shows or records them: ureq would send them as a
+/// Basic `Authorization` header, and `https://bank.example@evil.example/`
+/// only looks like the bank.
+pub fn strip_userinfo(url: &mut Url) {
+    if !url.username().is_empty() || url.password().is_some() {
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+    }
+}
+
+/// `url` without its user name and password, or `None` when it has none
+/// (or does not parse).
+pub fn without_userinfo(url: &str) -> Option<String> {
+    let mut parsed = Url::parse(url.trim()).ok()?;
+    if parsed.username().is_empty() && parsed.password().is_none() {
+        return None;
+    }
+    strip_userinfo(&mut parsed);
+    Some(parsed.into())
+}
+
+/// `file:///C:` names a drive but no folder on it, which Windows reads as
+/// that drive's current folder rather than its root (and url's conversion
+/// asserts against it in debug builds). Such URLs are refused.
+fn drive_without_root(url: &Url) -> bool {
+    cfg!(windows) && url.path_segments().is_some_and(|segments| segments.count() < 2)
+}
+
 /// Fetches `url`, sending `form` as an urlencoded POST body when given.
 #[cfg(test)]
 pub fn fetch(url: &Url, form: Option<&str>, accept: &str) -> Result<Response, String> {
@@ -55,6 +84,7 @@ pub fn fetch_checked(
     match url.scheme() {
         "http" | "https" => {
             let mut current = url.clone();
+            strip_userinfo(&mut current);
             let mut form = form;
             for redirects in 0..=10 {
                 check_active(&current, check, deadline)?;
@@ -101,6 +131,7 @@ pub fn fetch_checked(
                             form = None;
                         }
                         current = next;
+                        strip_userinfo(&mut current);
                         continue;
                     }
                 }
@@ -127,6 +158,9 @@ pub fn fetch_checked(
             // that host over SMB with the user's credentials.
             if url.host_str().is_some_and(|h| !h.is_empty()) {
                 return Err("file URLs on other computers are not supported".into());
+            }
+            if drive_without_root(url) {
+                return Err("invalid file path".into());
             }
             let path = url
                 .to_file_path()
@@ -509,6 +543,21 @@ mod tests {
     use std::net::TcpListener;
 
     #[test]
+    fn url_credentials_are_removed() {
+        assert_eq!(
+            without_userinfo("https://bank.example@evil.example/login").as_deref(),
+            Some("https://evil.example/login")
+        );
+        assert_eq!(
+            without_userinfo("http://alice:secret@router.test:8080/a?b#c").as_deref(),
+            Some("http://router.test:8080/a?b#c")
+        );
+        assert_eq!(without_userinfo("https://example.com/@x"), None);
+        assert_eq!(without_userinfo("about:home"), None);
+        assert_eq!(without_userinfo("not a url"), None);
+    }
+
+    #[test]
     fn file_urls_stay_on_this_computer() {
         for remote in [
             "file://attacker.example/share/x.png",
@@ -534,6 +583,15 @@ mod tests {
         assert_eq!(fetch(&local, None, "*/*").unwrap().body, b"<p>hi");
         let listing = fetch(&Url::from_directory_path(&dir).unwrap(), None, "*/*").unwrap();
         assert!(String::from_utf8_lossy(&listing.body).contains("page.html"));
+        // A drive with no folder is refused, not read as the drive's current
+        // folder (and url does not get to assert on it).
+        #[cfg(windows)]
+        for drive in ["file:///C:", "file:///c%3A"] {
+            let err = fetch(&Url::parse(drive).unwrap(), None, "*/*").err();
+            assert_eq!(err.as_deref(), Some("invalid file path"), "{drive}");
+        }
+        #[cfg(windows)]
+        assert!(fetch(&Url::parse("file:///C:/").unwrap(), None, "*/*").is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
