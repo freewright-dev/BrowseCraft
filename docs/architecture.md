@@ -118,7 +118,10 @@ Each rule contributes its declarations once, using the greatest specificity
 among its matching selectors and the rule's source order.
 Declarations are sorted by importance, origin (UA, HTML hints, author, inline),
 specificity and order. Custom properties resolve first so `var()` can be
-substituted, then shorthands expand into longhands. Lengths come out in
+substituted, then shorthands expand into longhands. An element keeps only the
+custom properties it changes, layered over its parent's, and they point to the
+declaration's own strings, so a long value is stored once however many
+elements use it. Lengths come out in
 **device pixels** (CSS px × scale factor × zoom); percentages stay for layout
 to resolve.
 

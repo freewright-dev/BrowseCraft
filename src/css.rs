@@ -69,8 +69,10 @@ impl<'a> MediaEval<'a> {
 
 #[derive(Clone, Debug)]
 pub struct Declaration {
-    pub name: String,
-    pub value: String,
+    /// Shared, not copied, by the custom properties of every element the
+    /// declaration applies to.
+    pub name: Arc<str>,
+    pub value: Arc<str>,
     pub important: bool,
 }
 
@@ -350,8 +352,8 @@ pub fn parse_declarations(s: &str) -> Vec<Declaration> {
                 value = value[..i].trim_end();
             }
             (!name.is_empty() && !value.is_empty() && !value.contains('{')).then(|| Declaration {
-                name,
-                value: value.to_string(),
+                name: name.into(),
+                value: value.into(),
                 important,
             })
         })
@@ -1289,14 +1291,6 @@ fn named_color(name: &str) -> Option<Color> {
     Some(Color::rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8))
 }
 
-/// Pulls the URL out of `url(...)`.
-pub fn parse_url(s: &str) -> Option<String> {
-    let start = s.find("url(")? + 4;
-    let end = start + s[start..].find(')')?;
-    let url = s[start..end].trim().trim_matches(['"', '\'']);
-    (!url.is_empty()).then(|| url.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1362,7 +1356,7 @@ mod tests {
                 PRELUDE_VISITS.with(|visits| visits.set(0));
                 let sheet = parse_stylesheet(&source);
                 assert_eq!(sheet.rules.len(), 1);
-                assert_eq!(sheet.rules[0].declarations[0].value, "red");
+                assert_eq!(sheet.rules[0].declarations[0].value, "red".into());
                 let visited = PRELUDE_VISITS.with(|visits| visits.get());
                 assert!(visited >= count);
                 assert!(
@@ -1388,8 +1382,8 @@ mod tests {
             ["a;{b}.css", "data:text/css,p%7Bcolor:red%7D"]
         );
         assert_eq!(sheet.rules.len(), 2);
-        assert_eq!(sheet.rules[0].declarations[0].value, "red");
-        assert_eq!(sheet.rules[1].declarations[0].value, "blue");
+        assert_eq!(sheet.rules[0].declarations[0].value, "red".into());
+        assert_eq!(sheet.rules[1].declarations[0].value, "blue".into());
         assert_eq!(condition(&sheet.rules[1]), Some("screen"));
         assert!(
             parse_stylesheet("@unknown \"unterminated;{p{color:red}")

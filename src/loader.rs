@@ -1127,7 +1127,7 @@ mod tests {
         let sheets = load_stylesheets(&html::parse(&markup), &base);
         assert_eq!(sheets.len(), MAX_SHEETS);
         for (i, sheet) in sheets.iter().enumerate() {
-            assert_eq!(sheet.rules[0].declarations[0].value, i.to_string());
+            assert_eq!(sheet.rules[0].declarations[0].value, i.to_string().into());
         }
     }
 
