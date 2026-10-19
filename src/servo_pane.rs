@@ -241,8 +241,7 @@ mod imp {
         /// web features a broken site is missing.
         fn show_console_message(&self, _webview: WebView, level: ConsoleLogLevel, message: String) {
             if matches!(level, ConsoleLogLevel::Error | ConsoleLogLevel::Warn) {
-                let line: String = message.chars().take(300).map(|c| if c == '
-' { ' ' } else { c }).collect();
+                let line: String = message.chars().take(300).map(|c| if c == '\n' { ' ' } else { c }).collect();
                 trace(&format!("console {level:?} {line}"));
             }
         }
