@@ -97,6 +97,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Files read at startup have size limits: filter lists 32 MB each, `flags.txt`, `bookmarks.txt` and `passwords.cfg` 1 MB, key files 16 MB; a larger file is refused instead of read in full.
 - Bookmarks and element-hiding rules are de-duplicated with hash sets, and bookmark parsing stops at its 2,000-entry cap, so a crafted `bookmarks.txt` or filter list no longer stalls startup.
 - An element-hiding rule containing `/*`, `*/`, an unclosed quote or a trailing backslash is skipped instead of commenting out or swallowing the hiding rules after it.
+- Page titles and the user name shown in the save bar drop invisible and formatting characters (zero-width spaces, word joiners, the Arabic letter mark, interlinear annotation marks), and the user name is cut to 64 characters.
+- On Windows, the native ad filter still checks a request when WebView2 cannot report its resource type or sender, instead of letting it through.
+- Back, Forward and Reload on engine pages never resubmit a web form: the history keeps a plain visit to the form's address.
+- `data:` URLs accept `;base64` in any letter case; a text resource's charset is taken only from its header, a leading `@charset` (CSS) or a `<meta>` tag (HTML); a folder that cannot be read shows an error instead of an empty listing; a bracketed IPv6 address typed in the address bar (`[::1]:3000`) is opened instead of searched; and loader results survive a poisoned lock.
 - Windows screenshot capture rejects overflowing or excessive dimensions before allocation, validates bitmap selection/restoration, and releases native resources on error paths.
 - Ad blocking now checks every engine HTTP redirect destination and uses native WebView2 interception for parser-initiated resources and redirects. JavaScript fallback fetch hooks handle URL and Request objects with one native conversion.
 - Cancelled engine loads stop scheduling document/stylesheet/import/image work and publishing stale events. Background loads use a bounded two-worker queue and whole-load deadlines.

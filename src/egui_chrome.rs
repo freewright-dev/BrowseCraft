@@ -686,10 +686,14 @@ pub fn save_login_bar(
     emit: &mut dyn FnMut(SaveBarEvent),
 ) {
     use crate::passwords::Status;
-    let who = if offer.username.is_empty() {
+    // The page chose the user name: show it cleaned and short.
+    let name = crate::browser::display_text(&offer.username, 64);
+    let who = if name.is_empty() {
         String::new()
+    } else if name.chars().count() < offer.username.chars().count() && name.chars().count() == 64 {
+        format!(" ({name}…)")
     } else {
-        format!(" ({})", offer.username)
+        format!(" ({name})")
     };
     let (text, action_label, action) = match status {
         Status::Unlocked { .. } if offer.update_id.is_some() => (

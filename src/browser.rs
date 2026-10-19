@@ -374,14 +374,16 @@ fn extra_bars_h(scale: f32, egui_chrome: bool, bookmarks_bar: bool, save_bar: bo
     h
 }
 
-/// The request a history entry keeps. A form post to the passwords page
-/// carries typed passwords, so the entry keeps a plain visit to the page
-/// instead: Back, Forward and Reload never resubmit or retain them.
+/// The request a history entry keeps. A form post is kept as a plain visit
+/// to its address: Back, Forward and Reload never resubmit a form (an order,
+/// a payment) without asking, and never retain what was typed in it. For
+/// the passwords page the query is dropped too.
 fn history_request(request: &Request) -> Request {
     match request {
         Request::Post(url, _) if url.starts_with("browsecraft://") => {
             Request::Get(url.split('?').next().unwrap_or(url).to_string())
         }
+        Request::Post(url, _) => Request::Get(url.clone()),
         other => other.clone(),
     }
 }
@@ -465,17 +467,36 @@ fn external_notice(url: &str) -> String {
 /// bidirectional-formatting characters (which can disguise the rest) are
 /// dropped, whitespace is collapsed, and it is at most 300 characters.
 fn clean_title(title: &str) -> String {
-    let words: String = title
+    display_text(title, 300)
+}
+
+/// Page-supplied text fit for the browser's own interface: control,
+/// bidirectional-formatting and invisible characters (which can disguise
+/// the rest) are dropped, whitespace is collapsed, and it is cut to
+/// `max_chars` characters.
+pub(crate) fn display_text(text: &str, max_chars: usize) -> String {
+    let words: String = text
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
-        .filter(|c| !matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'))
+        .filter(|c| {
+            !matches!(
+                c,
+                '\u{061C}'
+                    | '\u{200B}'..='\u{200F}'
+                    | '\u{202A}'..='\u{202E}'
+                    | '\u{2060}'..='\u{2064}'
+                    | '\u{2066}'..='\u{2069}'
+                    | '\u{FEFF}'
+                    | '\u{FFF9}'..='\u{FFFB}'
+            )
+        })
         .collect();
     words
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .chars()
-        .take(300)
+        .take(max_chars)
         .collect()
 }
 
@@ -4288,6 +4309,16 @@ mod tests {
     }
 
     #[test]
+    fn history_never_resubmits_forms() {
+        let post = Request::Post("https://shop.test/order?x=1".into(), zeroize::Zeroizing::new("card=1".into()));
+        assert!(matches!(history_request(&post), Request::Get(url) if url == "https://shop.test/order?x=1"));
+        let internal = Request::Post("browsecraft://passwords?token=t".into(), zeroize::Zeroizing::new("password=p".into()));
+        assert!(matches!(history_request(&internal), Request::Get(url) if url == "browsecraft://passwords"));
+        let get = Request::Get("https://a.test/".into());
+        assert!(matches!(history_request(&get), Request::Get(url) if url == "https://a.test/"));
+    }
+
+    #[test]
     fn same_internal_page_ignores_the_query() {
         assert!(same_internal_page("browsecraft://flags", "browsecraft://flags?token=x&theme=dark"));
         assert!(same_internal_page("browsecraft://flags/?a=1", "browsecraft://flags"));
@@ -4343,6 +4374,10 @@ mod tests {
             "Agnp.exe B"
         );
         assert_eq!(clean_title(&"x".repeat(1000)).len(), 300);
+        assert_eq!(
+            clean_title("Pay\u{200B}Pal\u{FEFF}\u{2060} \u{061C}login\u{FFF9}"),
+            "PayPal login"
+        );
         assert!(popup_allowed("https://example.com/"));
         assert!(popup_allowed(" HTTP://example.com/"));
         for url in [

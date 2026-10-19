@@ -61,8 +61,11 @@ fn install_filter(
             if !matches!(url.scheme(), "http" | "https") {
                 return Ok(());
             }
+            // From here on every request is checked: a failed lookup only
+            // leaves its detail at the default rather than skipping the
+            // filter.
             let mut kind = COREWEBVIEW2_WEB_RESOURCE_CONTEXT::default();
-            args.ResourceContext(&mut kind)?;
+            let _ = args.ResourceContext(&mut kind);
             let mut type_bits = resource_type(kind);
             let mut source = String::new();
             if let Ok(headers) = request.Headers() {
@@ -86,9 +89,9 @@ fn install_filter(
             if source.is_empty() {
                 if let Some(sender) = sender {
                     let mut value = PWSTR::null();
-                    let result = sender.Source(&mut value);
-                    source = take_pwstr(value);
-                    result?;
+                    if sender.Source(&mut value).is_ok() {
+                        source = take_pwstr(value);
+                    }
                 }
             }
             let source = url::Url::parse(&source).ok();

@@ -3,7 +3,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use url::Url;
@@ -272,12 +272,10 @@ pub fn load_blocking(request: &Request) -> (Page, Vec<(String, Image)>) {
         &document_host(&page),
         &control,
         |src, image| {
-            if let Ok(mut images) = images.lock() {
-                images.push((src, image));
-            }
+            images.lock().unwrap_or_else(PoisonError::into_inner).push((src, image));
         },
     );
-    (page, images.into_inner().unwrap_or_default())
+    (page, images.into_inner().unwrap_or_else(PoisonError::into_inner))
 }
 
 /// Runs `work` on up to `workers` threads, the calling thread included, so
@@ -315,7 +313,7 @@ fn fetch_images(
         // Once the pixel budget is spent, no image could be shown: stop
         // downloading them.
         while control.active() && budget.load(Ordering::SeqCst) > 0 {
-            let Some((src, url)) = queue.lock().ok().and_then(|mut q| q.pop()) else {
+            let Some((src, url)) = queue.lock().unwrap_or_else(PoisonError::into_inner).pop() else {
                 break;
             };
             if let Some(image) = fetch_image(&url, &budget, doc_host, control) {
@@ -755,15 +753,13 @@ fn load_stylesheets_checked(
                 },
                 SheetSource::Link(url, media) => fetch_sheet(url, media.as_ref(), 0, &mut ctx),
             };
-            if let Ok(mut slot) = results[i].lock() {
-                *slot = sheets;
-            }
+            *results[i].lock().unwrap_or_else(PoisonError::into_inner) = sheets;
         }
     });
     // Document order, whichever worker finished first.
     results
         .into_iter()
-        .flat_map(|r| r.into_inner().unwrap_or_default())
+        .flat_map(|r| r.into_inner().unwrap_or_else(PoisonError::into_inner))
         .collect()
 }
 
