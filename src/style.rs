@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use crate::css::{self, Color, Declaration, Length, Selector, SelectorKey, Stylesheet};
 use crate::dom::{Document, Element, NodeId, NodeKind};
@@ -414,13 +414,13 @@ impl<'a> RuleIndex<'a> {
         let all = ua
             .map(|s| (ORIGIN_UA, s))
             .chain(sheets.iter().map(|s| (ORIGIN_AUTHOR, s)));
+        let mut media = css::MediaEval::new(viewport_css_width);
         for (origin, sheet) in all {
+            if sheet.media.as_deref().is_some_and(|m| !media.matches(m)) {
+                continue;
+            }
             for rule in &sheet.rules {
-                if rule
-                    .media
-                    .as_ref()
-                    .is_some_and(|m| !css::media_matches(m, viewport_css_width))
-                {
+                if rule.media.as_deref().is_some_and(|m| !media.matches(m)) {
                     continue;
                 }
                 // Rule identity/source order is shared by its selector list.
@@ -493,13 +493,13 @@ impl<'a> RuleIndex<'a> {
 /// A fingerprint of which `@media` queries match, so callers can skip a
 /// restyle when a resize does not cross a breakpoint.
 pub fn media_signature(sheets: &[Stylesheet], viewport_css_width: f32) -> Vec<bool> {
-    let mut seen: HashSet<&str> = HashSet::new();
+    let mut media = css::MediaEval::new(viewport_css_width);
+    let mut seen = HashSet::new();
     sheets
         .iter()
-        .flat_map(|s| &s.rules)
-        .filter_map(|rule| rule.media.as_deref())
-        .filter(|m| seen.insert(m))
-        .map(|m| css::media_matches(m, viewport_css_width))
+        .flat_map(|s| s.media.iter().chain(s.rules.iter().filter_map(|rule| rule.media.as_ref())))
+        .filter(|m| seen.insert(Arc::as_ptr(m)))
+        .map(|m| media.matches(m))
         .collect()
 }
 
