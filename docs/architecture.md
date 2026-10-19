@@ -99,6 +99,13 @@ redirect hops, imports, parser tokens/rules and stale page/image events.
 `LoadEvent::Page` reaches the UI through winit's `EventLoopProxy`; images follow
 as `LoadEvent::Image`, each triggering a relayout.
 
+Each page has budgets for what it loads. Stylesheets: 256 `<style>`/`<link>`
+elements, 128 requests (`@import`s included), 16 MiB of decoded CSS text
+(charged before parsing; a sheet that does not fit is skipped) and 200,000
+rules (the parser stops at the rules that are left). Images: 1,024 sources, at
+most 16 Mpx each and 64 Mpx together; downloads stop once the pixels are spent,
+and an image that does not decode gives its pixels back.
+
 HTTP redirects are followed manually (at most ten), checking the ad-block
 policy before each destination. Resource type and the document host are
 retained across stylesheet/image redirects. POST becomes GET for 301/302/303;

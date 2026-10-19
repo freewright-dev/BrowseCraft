@@ -26,6 +26,14 @@ const IMAGE_WORKERS: usize = 6;
 const MAX_SHEETS: usize = 256;
 /// Stylesheet requests per page, `@import`s included.
 const MAX_SHEET_FETCHES: usize = 128;
+/// CSS text one page may parse, `@import`s and `<style>` included, counted
+/// after decoding. A sheet that does not fit is skipped.
+const MAX_PAGE_CSS_BYTES: usize = 16 << 20;
+/// Rules one page may keep. A parsed `a{b:c}` costs about 450 bytes, so
+/// this bounds what the byte budget alone does not.
+const MAX_PAGE_CSS_RULES: usize = 200_000;
+/// `<img>` and `<input type=image>` sources one page may fetch.
+const MAX_PAGE_IMAGES: usize = 1024;
 const SHEET_WORKERS: usize = 6;
 const MAX_ACTIVE_LOADS: usize = 2;
 const MAX_QUEUED_LOADS: usize = 16;
@@ -272,7 +280,9 @@ fn fetch_images(
     let queue = Mutex::new(sources);
     let budget = AtomicU64::new(budget);
     run_workers(IMAGE_WORKERS, || {
-        while control.active() {
+        // Once the pixel budget is spent, no image could be shown: stop
+        // downloading them.
+        while control.active() && budget.load(Ordering::SeqCst) > 0 {
             let Some((src, url)) = queue.lock().ok().and_then(|mut q| q.pop()) else {
                 break;
             };
@@ -690,6 +700,7 @@ fn load_stylesheets_checked(
     sources.truncate(MAX_SHEETS);
 
     let fetches = AtomicUsize::new(MAX_SHEET_FETCHES);
+    let budget = SheetBudget::new();
     let next = AtomicUsize::new(0);
     let results: Vec<Mutex<Vec<Stylesheet>>> = sources.iter().map(|_| Mutex::default()).collect();
     run_workers(SHEET_WORKERS.min(sources.len()), || {
@@ -700,18 +711,16 @@ fn load_stylesheets_checked(
             };
             let mut ctx = SheetContext {
                 doc_host: &host,
+                budget: &budget,
                 fetches: &fetches,
                 seen: HashSet::new(),
                 control,
             };
             let sheets = match source {
-                SheetSource::Inline(text, media) => {
-                    let Some(sheet) = css::parse_stylesheet_cancellable(text, &|| control.active())
-                    else {
-                        break;
-                    };
-                    with_imports(sheet, base, media.as_ref(), 0, &mut ctx)
-                }
+                SheetSource::Inline(text, media) => match budget.parse(text, control) {
+                    Some(sheet) => with_imports(sheet, base, media.as_ref(), 0, &mut ctx),
+                    None => Vec::new(),
+                },
                 SheetSource::Link(url, media) => fetch_sheet(url, media.as_ref(), 0, &mut ctx),
             };
             if let Ok(mut slot) = results[i].lock() {
@@ -726,10 +735,44 @@ fn load_stylesheets_checked(
         .collect()
 }
 
+/// CSS bytes and rules left for the whole page.
+struct SheetBudget {
+    bytes: AtomicUsize,
+    rules: AtomicUsize,
+}
+
+impl SheetBudget {
+    fn new() -> Self {
+        SheetBudget {
+            bytes: AtomicUsize::new(MAX_PAGE_CSS_BYTES),
+            rules: AtomicUsize::new(MAX_PAGE_CSS_RULES),
+        }
+    }
+
+    /// Parses `text` if it fits in what is left: its bytes are charged
+    /// before parsing, and the parser stops at the rules that are left.
+    /// Workers parsing at the same time may each use what was left when
+    /// they started, so the rule cap can be exceeded by at most that.
+    fn parse(&self, text: &str, control: &Control) -> Option<Stylesheet> {
+        self.bytes
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(text.len()))
+            .ok()?;
+        let max_rules = self.rules.load(Ordering::SeqCst);
+        let sheet = css::parse_stylesheet_limited(text, &|| control.active(), max_rules)?;
+        let used = sheet.rules.len();
+        let _ = self
+            .rules
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| Some(left.saturating_sub(used)));
+        Some(sheet)
+    }
+}
+
 /// What one `<style>` or `<link>` and its `@import`s may still fetch.
 struct SheetContext<'a> {
     control: &'a Control<'a>,
     doc_host: &'a str,
+    /// CSS bytes and rules left for the whole page.
+    budget: &'a SheetBudget,
     /// Stylesheet requests left for the whole page.
     fetches: &'a AtomicUsize,
     /// URLs this sheet's `@import` tree has already fetched, so that `N`
@@ -740,6 +783,7 @@ struct SheetContext<'a> {
 impl SheetContext<'_> {
     fn claim(&mut self, url: &Url) -> bool {
         self.control.active()
+            && self.budget.bytes.load(Ordering::SeqCst) > 0
             && self.seen.insert(url.clone())
             && self
                 .fetches
@@ -772,8 +816,7 @@ fn fetch_sheet(
     ) {
         Ok(resp) if resp.status < 400 => {
             let text = net::decode_text(&resp.body, &resp.content_type);
-            let Some(sheet) = css::parse_stylesheet_cancellable(&text, &|| ctx.control.active())
-            else {
+            let Some(sheet) = ctx.budget.parse(&text, ctx.control) else {
                 return Vec::new();
             };
             with_imports(sheet, &resp.url, media, depth, ctx)
@@ -843,6 +886,9 @@ fn image_sources(page: &Page) -> Vec<(String, Url)> {
             && !crate::adblock::blocked_subresource(url.as_str(), crate::adblock::TYPE_IMAGE, &host)
         {
             out.push((src.to_string(), url));
+            if out.len() == MAX_PAGE_IMAGES {
+                break;
+            }
         }
     }
     // Workers pop from the end; load images in document order.
@@ -900,7 +946,12 @@ fn decode_image(bytes: &[u8], budget: &AtomicU64) -> Option<Image> {
     {
         return None;
     }
-    let rgba = reader()?.decode().ok()?.to_rgba8();
+    // An image that turns out not to decode gives its pixels back.
+    let Some(decoded) = reader().and_then(|r| r.decode().ok()) else {
+        budget.fetch_add(area, Ordering::SeqCst);
+        return None;
+    };
+    let rgba = decoded.to_rgba8();
     let pixels = rgba
         .pixels()
         .map(|p| (p[3] as u32) << 24 | (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32)
@@ -1178,6 +1229,36 @@ mod tests {
         assert!(decode_image(&small, &budget).is_some());
         assert!(decode_image(&small, &budget).is_none());
         assert_eq!(budget.load(Ordering::SeqCst), 5_000);
+
+        // An image whose header reads but whose data does not decode gives
+        // its pixels back.
+        let mut broken = png(50, 50);
+        broken.truncate(40);
+        assert!(decode_image(&broken, &budget).is_none());
+        assert_eq!(budget.load(Ordering::SeqCst), 5_000);
+    }
+
+    #[test]
+    fn image_sources_are_capped_per_page() {
+        let markup: String = (0..MAX_PAGE_IMAGES + 500).map(|i| format!("<img src=i{i}.png>")).collect();
+        let mut page = internal_page("https://images.test/", &markup);
+        page.base = Url::parse("https://images.test/").unwrap();
+        let sources = image_sources(&page);
+        assert_eq!(sources.len(), MAX_PAGE_IMAGES);
+        // Workers pop from the end: the first image in the document is last.
+        assert_eq!(sources.last().map(|(src, _)| src.as_str()), Some("i0.png"));
+    }
+
+    #[test]
+    fn stylesheets_share_a_page_budget() {
+        // Two 9 MiB sheets do not both fit in 16 MiB, and the one that does
+        // stops at the rule cap instead of allocating 1.5 million rules.
+        let big = "p{x:y}".repeat((9 << 20) / 6);
+        let markup = format!("<style>{big}</style><style>{big}</style>");
+        let base = Url::parse("about:blank").unwrap();
+        let sheets = load_stylesheets(&html::parse(&markup), &base);
+        let parsed: Vec<usize> = sheets.iter().map(|s| s.rules.len()).filter(|&n| n > 0).collect();
+        assert_eq!(parsed, [MAX_PAGE_CSS_RULES]);
     }
 
     const MARKUP: &str = r#"<base href="file:///C:/">
@@ -1247,8 +1328,10 @@ mod tests {
         let imported = |from: &str| {
             let sheet = css::parse_stylesheet(&import);
             let fetches = AtomicUsize::new(MAX_SHEET_FETCHES);
+            let budget = SheetBudget::new();
             let mut ctx = SheetContext {
                 doc_host: "",
+                budget: &budget,
                 control: &Control {
                     live: &|| true,
                     deadline: None,
