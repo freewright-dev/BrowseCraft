@@ -4,6 +4,8 @@
 
 <p align="center">Part of <a href="https://github.com/freewright-dev">Freewright</a></p>
 
+<p align="center"><a href="https://discord.gg/SAy3t4BvJj"><img src="https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white" alt="Join the Freewright Discord"></a></p>
+
 An experimental open-source desktop browser written in Rust, with tabs,
 a built-in ad blocker and a custom HTML/CSS renderer.
 
@@ -187,3 +189,4 @@ code adapted by the ad blocker.
 - [Dependency maintenance](docs/dependencies.md): advisory tracking and license/source policy
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
+- [Discord](https://discord.gg/SAy3t4BvJj): questions, ideas and chat with the Freewright community
