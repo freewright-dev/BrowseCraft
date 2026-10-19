@@ -121,7 +121,10 @@ specificity and order. Custom properties resolve first so `var()` can be
 substituted, then shorthands expand into longhands. An element keeps only the
 custom properties it changes, layered over its parent's, and they point to the
 declaration's own strings, so a long value is stored once however many
-elements use it. Lengths come out in
+elements use it. `var()` work is budgeted: each value read costs its length
+(fallbacks included, used or not) and each lookup the layers it may walk. One
+declaration may spend 64 KiB and a whole style pass 64 MiB; a declaration that
+runs out is dropped. Lengths come out in
 **device pixels** (CSS px × scale factor × zoom); percentages stay for layout
 to resolve.
 

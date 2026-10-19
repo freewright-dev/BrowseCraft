@@ -2,6 +2,7 @@
 //! style. Lengths come out in device pixels (CSS pixels times zoom), except
 //! percentages, which layout resolves.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -240,6 +241,8 @@ pub struct Style {
 pub struct Vars {
     own: HashMap<Arc<str>, Arc<str>>,
     parent: Option<Rc<Vars>>,
+    /// Layers in this chain, which bounds what a lookup walks.
+    layers: usize,
 }
 
 /// Custom properties one element may declare; more are ignored.
@@ -259,19 +262,30 @@ impl Vars {
 
     /// `parent` plus `declared`, in cascade order (later wins). Declarations
     /// that repeat the inherited value add nothing, so `* { --x: 1 }` costs
-    /// one entry for the whole document rather than one per element.
+    /// one entry for the whole document rather than one per element. Looking
+    /// a name up in the parent's layers is charged to `budget`; once it runs
+    /// out, further declarations are ignored.
     fn layered<'a>(
         parent: &Rc<Vars>,
         declared: impl Iterator<Item = (&'a Arc<str>, &'a Arc<str>)>,
+        budget: &mut usize,
     ) -> Rc<Vars> {
         let mut own: HashMap<Arc<str>, Arc<str>> = HashMap::new();
         for (name, value) in declared {
-            if own.get(name).is_none_or(|v| v != value)
-                && (own.contains_key(name) || parent.get(name) != Some(&**value))
-                && (own.len() < MAX_OWN_VARS || own.contains_key(name))
-            {
-                own.insert(name.clone(), value.clone());
+            match own.get(name) {
+                Some(v) if v == value => continue,
+                Some(_) => {}
+                None if own.len() >= MAX_OWN_VARS => continue,
+                None => {
+                    if spend(budget, parent.layers + 1).is_none() {
+                        break;
+                    }
+                    if parent.get(name) == Some(&**value) {
+                        continue;
+                    }
+                }
             }
+            own.insert(name.clone(), value.clone());
         }
         if own.is_empty() {
             return parent.clone();
@@ -279,6 +293,7 @@ impl Vars {
         Rc::new(Vars {
             own,
             parent: Some(parent.clone()),
+            layers: parent.layers + 1,
         })
     }
 }
@@ -513,7 +528,10 @@ pub fn compute_styles(doc: &Document, sheets: &[Stylesheet], ctx: &StyleContext)
     let index = RuleIndex::new(sheets, ctx.viewport_width / ctx.zoom, doc.quirks);
     let root_style = Rc::new(Style::initial(ctx.zoom));
     let mut styles: Vec<Rc<Style>> = vec![root_style.clone(); doc.nodes.len()];
-    let mut root_font = 16.0 * ctx.zoom;
+    let mut pass = Pass {
+        root_font: 16.0 * ctx.zoom,
+        var_budget: DOCUMENT_VAR_BUDGET,
+    };
 
     // Nodes are created in document order, so parents come before children.
     for id in 1..doc.nodes.len() {
@@ -522,9 +540,9 @@ pub fn compute_styles(doc: &Document, sheets: &[Stylesheet], ctx: &StyleContext)
             .map_or(root_style.clone(), |p| styles[p].clone());
         styles[id] = match &doc.nodes[id].kind {
             NodeKind::Element(el) => {
-                let style = compute_element(doc, id, el, &parent, &index, ctx, root_font);
+                let style = compute_element(doc, id, el, &parent, &index, ctx, &mut pass);
                 if doc.tag(id) == "html" {
-                    root_font = style.font_size;
+                    pass.root_font = style.font_size;
                 }
                 Rc::new(style)
             }
@@ -534,6 +552,13 @@ pub fn compute_styles(doc: &Document, sheets: &[Stylesheet], ctx: &StyleContext)
     styles
 }
 
+/// State carried from element to element through one style pass.
+struct Pass {
+    root_font: f32,
+    /// `var()` work left for the rest of the document.
+    var_budget: usize,
+}
+
 fn compute_element(
     doc: &Document,
     node: NodeId,
@@ -541,7 +566,7 @@ fn compute_element(
     parent: &Style,
     index: &RuleIndex,
     ctx: &StyleContext,
-    root_font: f32,
+    pass: &mut Pass,
 ) -> Style {
     let mut entries = index.cascade(doc, node);
     let hints = presentational_hints(doc, node, el);
@@ -565,6 +590,7 @@ fn compute_element(
             .map(|e| e.4)
             .filter(|d| d.name.starts_with("--"))
             .map(|d| (&d.name, &d.value)),
+        &mut pass.var_budget,
     );
 
     let mut specified: HashMap<String, String> = HashMap::new();
@@ -572,8 +598,15 @@ fn compute_element(
         if d.name.starts_with("--") {
             continue;
         }
-        let Some(value) = substitute_vars(&d.value, &vars, 0, &mut VAR_BUDGET.clone()) else {
-            continue;
+        let value = if d.value.contains("var(") {
+            let start = VAR_BUDGET.min(pass.var_budget);
+            let mut budget = start;
+            let value = substitute_vars(&d.value, &vars, 0, &mut budget);
+            pass.var_budget -= start - budget;
+            let Some(value) = value else { continue };
+            Cow::Owned(value)
+        } else {
+            Cow::Borrowed(&*d.value)
         };
         for (name, value) in expand_shorthand(&d.name, &value) {
             specified.insert(name, value);
@@ -585,7 +618,7 @@ fn compute_element(
     let resolver = Resolver {
         parent,
         ctx,
-        root_font,
+        root_font: pass.root_font,
     };
 
     // Font size and color first: other values depend on them.
@@ -1068,17 +1101,24 @@ fn parse_family(v: &str) -> Option<Family> {
     None
 }
 
-/// How much work one declaration's `var()` substitution may do: each
-/// reference costs 1 and each byte of literal text it copies costs 1. Without
-/// a cap, `--v1: var(--v0) var(--v0) …` chains grow exponentially.
+/// How much work one declaration's `var()` substitution may do: each value
+/// it reads costs its length plus one (scanning it, fallbacks included, and
+/// copying its text), and each lookup costs the layers it may walk. Without a
+/// cap, `--v1: var(--v0) var(--v0) …` chains grow exponentially.
 const VAR_BUDGET: usize = 64 * 1024;
+
+/// `var()` work for a whole style pass: custom property lookups and
+/// substitution on every element. Once it is spent, declarations that use
+/// `var()` are dropped, so a page cannot make styling take unbounded time by
+/// repeating cheap-looking references on many elements.
+const DOCUMENT_VAR_BUDGET: usize = 64 << 20;
 
 /// Replaces `var(--name, fallback)` references. Returns `None` when a
 /// variable is missing and has no fallback, or when `budget` runs out, which
 /// makes the declaration invalid.
 fn substitute_vars(value: &str, vars: &Vars, depth: u32, budget: &mut usize) -> Option<String> {
+    spend(budget, value.len() + 1)?;
     if !value.contains("var(") {
-        spend(budget, value.len())?;
         return Some(value.to_string());
     }
     if depth > 8 {
@@ -1087,7 +1127,6 @@ fn substitute_vars(value: &str, vars: &Vars, depth: u32, budget: &mut usize) -> 
     let mut out = String::new();
     let mut rest = value;
     while let Some(start) = rest.find("var(") {
-        spend(budget, start + 1)?;
         out.push_str(&rest[..start]);
         let inner_start = start + 4;
         let mut depth_paren = 1;
@@ -1111,6 +1150,7 @@ fn substitute_vars(value: &str, vars: &Vars, depth: u32, budget: &mut usize) -> 
             Some((n, f)) => (n.trim(), Some(f.trim())),
             None => (inner.trim(), None),
         };
+        spend(budget, vars.layers + 1)?;
         let resolved = match vars.get(name) {
             Some(v) => substitute_vars(v, vars, depth + 1, budget)?,
             None => substitute_vars(fallback?, vars, depth + 1, budget)?,
@@ -1118,7 +1158,6 @@ fn substitute_vars(value: &str, vars: &Vars, depth: u32, budget: &mut usize) -> 
         out.push_str(&resolved);
         rest = &rest[end + 1..];
     }
-    spend(budget, rest.len())?;
     out.push_str(rest);
     Some(out)
 }
@@ -1536,6 +1575,37 @@ mod tests {
         let styles = compute_styles(&doc, &sheets, &ctx);
         let node = doc.find_tag(tag).unwrap();
         (*styles[node]).clone()
+    }
+
+    #[test]
+    fn var_work_is_charged_and_shared_by_the_document() {
+        // An unused 60 KB fallback read through a four-way fan-out: every
+        // reference scans it, so it is charged for those bytes (audit B-07).
+        let mut css = format!(":root{{--d:x;--c:red;--w0:var(--d, {});", "j".repeat(60_000));
+        for i in 1..=5 {
+            css += &format!("--w{i}:{};", format!("var(--w{})", i - 1).repeat(4));
+        }
+        css += "} p{color:var(--w5)} i{color:var(--c)}";
+        let sheets = vec![css::parse_stylesheet(&css)];
+        let ctx = StyleContext {
+            zoom: 1.0,
+            viewport_width: 1000.0,
+            viewport_height: 800.0,
+        };
+        let color = |markup: &str| {
+            let doc = html::parse(markup);
+            let styles = compute_styles(&doc, &sheets, &ctx);
+            styles[doc.find_tag("i").unwrap()].color
+        };
+        let start = std::time::Instant::now();
+        assert_eq!(color(&("<p>x</p>".repeat(200) + "<i>i</i>")), Color::rgb(255, 0, 0));
+        assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
+
+        // The budget is shared by the whole pass: once the paragraphs have
+        // spent it, later var() declarations are dropped.
+        let start = std::time::Instant::now();
+        assert_eq!(color(&("<p>x</p>".repeat(1300) + "<i>i</i>")), Color::BLACK);
+        assert!(start.elapsed() < std::time::Duration::from_secs(20), "{:?}", start.elapsed());
     }
 
     #[test]
