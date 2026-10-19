@@ -80,6 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pop-up and fullscreen events from a page that is no longer shown (after a tab switch or a new navigation) are ignored instead of acting on the current tab.
 - `Ctrl+Left` and `Ctrl+Right` in a web page move by a word in its text fields instead of going Back or Forward and losing what was typed; `Alt+Left` and `Alt+Right` still navigate.
 - The address bar's lock follows the page actually loaded: not typed text, not the engine's notice and error pages, and not a site whose WebView2 certificate warning was clicked through.
+- A new key file is readable only by the current user, even in a shared folder: 0600 on Unix, and on Windows an access list with a single entry for the current user and nothing inherited from the folder.
+- Creating a vault never overwrites a file that appears at its path while it is being created, never deletes a file it did not create, and removes the key file it made when the vault cannot be created.
 - Windows screenshot capture rejects overflowing or excessive dimensions before allocation, validates bitmap selection/restoration, and releases native resources on error paths.
 - Ad blocking now checks every engine HTTP redirect destination and uses native WebView2 interception for parser-initiated resources and redirects. JavaScript fallback fetch hooks handle URL and Request objects with one native conversion.
 - Cancelled engine loads stop scheduling document/stylesheet/import/image work and publishing stale events. Background loads use a bounded two-worker queue and whole-load deadlines.
