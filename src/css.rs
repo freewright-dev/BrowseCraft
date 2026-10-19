@@ -185,7 +185,18 @@ fn strip_comments(s: &str) -> String {
 fn block_end(s: &str) -> usize {
     let mut depth = 1;
     let mut quote = None;
+    // Escapes are honoured as in `prelude_delimiter`, so both agree on where
+    // a block ends (`\}` does not close it).
+    let mut escaped = false;
     for (i, c) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
         match (quote, c) {
             (Some(q), c) if c == q => quote = None,
             (Some(_), _) => {}
@@ -336,7 +347,9 @@ fn import_url(s: &str) -> Option<String> {
 /// Splits on `sep` outside parentheses, brackets and quotes.
 pub fn split_top_level(s: &str, sep: char) -> Vec<&str> {
     let mut parts = Vec::new();
-    let mut depth = 0i32;
+    // A stray `)` must not make the depth negative, or no later separator
+    // would ever be at the top level.
+    let mut depth = 0usize;
     let mut quote = None;
     let mut start = 0;
     for (i, c) in s.char_indices() {
@@ -345,7 +358,7 @@ pub fn split_top_level(s: &str, sep: char) -> Vec<&str> {
             (Some(_), _) => {}
             (None, '"' | '\'') => quote = Some(c),
             (None, '(' | '[') => depth += 1,
-            (None, ')' | ']') => depth -= 1,
+            (None, ')' | ']') => depth = depth.saturating_sub(1),
             (None, c) if c == sep && depth == 0 => {
                 parts.push(&s[start..i]);
                 start = i + c.len_utf8();
@@ -665,7 +678,10 @@ impl Selector {
 
     /// The most selective key of the subject, for rule bucketing.
     pub fn key(&self) -> SelectorKey {
-        let (subject, _) = &self.parts[0];
+        // The parser never makes an empty selector, but `parts` is public.
+        let Some((subject, _)) = self.parts.first() else {
+            return SelectorKey::Universal;
+        };
         if let Some(id) = &subject.id {
             SelectorKey::Id(id.clone())
         } else if let Some(class) = subject.classes.first() {
@@ -873,7 +889,7 @@ fn pseudo_matches<'a>(
         }
         Pseudo::Root => tag == "html",
         Pseudo::Link => tag == "a" && doc.element(node).is_some_and(|e| e.attr("href").is_some()),
-        Pseudo::Empty => doc.nodes[node].children.is_empty(),
+        Pseudo::Empty => doc.nodes()[node].children.is_empty(),
         Pseudo::Not(list) | Pseudo::Is(list) => {
             let mut found = false;
             for selector in list {
@@ -1461,6 +1477,20 @@ mod tests {
     }
 
     #[test]
+    fn scanners_agree_on_escapes_and_stray_parentheses() {
+        // An escaped brace does not end a block, so the rule after it parses.
+        let sheet = parse_stylesheet(r"p { x: a\} } i { color: blue }");
+        assert_eq!(sheet.rules.len(), 2);
+        assert_eq!(&*sheet.rules[0].declarations[0].value, r"a\}");
+        assert_eq!(block_end(r"a\} } b"), 4);
+        // A stray `)` does not hide every later separator.
+        assert_eq!(split_top_level("a), b, c", ','), ["a)", " b", " c"]);
+        // An empty selector (only possible by hand: `parts` is public).
+        let empty = Selector { parts: Vec::new(), specificity: (0, 0, 0) };
+        assert!(empty.key() == SelectorKey::Universal);
+    }
+
+    #[test]
     fn at_rule_delimiters_respect_quotes_escapes_and_arguments() {
         let source = r#"@import "a;{b}.css";
             @import url(data:text/css,p%7Bcolor:red%7D);
@@ -1598,7 +1628,7 @@ mod tests {
     #[test]
     fn nested_pseudos_share_memoized_results() {
         let doc = html::parse(&"<div>".repeat(64));
-        let node = (0..doc.nodes.len())
+        let node = (0..doc.nodes().len())
             .rfind(|&n| doc.tag(n) == "div")
             .unwrap();
         for (base, expected) in [(".missing", false), ("div", true)] {
@@ -1683,7 +1713,7 @@ mod tests {
                 .stack_size(2 << 20)
                 .spawn(|| {
                     let doc = html::parse(&"<i></i>".repeat(50_000));
-                    let last = (0..doc.nodes.len()).rfind(|&n| doc.tag(n) == "i").unwrap();
+                    let last = (0..doc.nodes().len()).rfind(|&n| doc.tag(n) == "i").unwrap();
                     assert!(parse_selector(&vec!["i"; 50_000].join("+")).is_none());
                     let accepted = vec!["i"; MAX_SELECTOR_PARTS].join("+");
                     assert!(parse_selector(&accepted).unwrap().matches(&doc, last));

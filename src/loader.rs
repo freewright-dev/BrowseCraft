@@ -893,7 +893,7 @@ fn image_sources(page: &Page) -> Vec<(String, Url)> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for node in doc.descendants(Document::ROOT) {
-        let NodeKind::Element(el) = &doc.nodes[node].kind else {
+        let NodeKind::Element(el) = &doc.nodes()[node].kind else {
             continue;
         };
         let is_image_input = el.tag == "input"

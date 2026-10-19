@@ -104,6 +104,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Saving a login offered while the vault was locked updates the saved login for that user name instead of adding a second one.
 - The vault is not saved over changes another program (KeePassXC) made to the file since BrowseCraft opened it; lock and unlock to load them.
 - A password shown on `browsecraft://passwords` is hidden again on the next render instead of until Hide or Lock, and vault and key-file paths with a line break are refused instead of adding lines to `passwords.cfg`.
+- Engine parsing: `</scriptx` no longer ends a `<script>` or `<style>`; a backslash-escaped `}` no longer ends a CSS block (matching the at-rule scanner); a stray `)` no longer stops CSS lists from splitting.
+- A table cell with `overflow: hidden` and `vertical-align` keeps its clip on the cell instead of moving it with the content.
+- Engine internals: `Document`'s node list is read-only outside `dom.rs`, so the cached sibling links cannot go stale; an empty selector built by hand no longer panics; column spans are summed without overflow on 32-bit targets; and the deep-nesting stack test also covers column flex, absolute positioning and inline-flex.
 - Windows screenshot capture rejects overflowing or excessive dimensions before allocation, validates bitmap selection/restoration, and releases native resources on error paths.
 - Ad blocking now checks every engine HTTP redirect destination and uses native WebView2 interception for parser-initiated resources and redirects. JavaScript fallback fetch hooks handle URL and Request objects with one native conversion.
 - Cancelled engine loads stop scheduling document/stylesheet/import/image work and publishing stale events. Background loads use a bounded two-worker queue and whole-load deadlines.

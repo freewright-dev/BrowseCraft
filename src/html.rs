@@ -402,8 +402,8 @@ impl Builder {
             self.ensure_body();
         }
         let parent = self.current();
-        if let Some(&last) = self.doc.nodes[parent].children.last()
-            && let NodeKind::Text(existing) = &mut self.doc.nodes[last].kind
+        if let Some(&last) = self.doc.nodes()[parent].children.last()
+            && let Some(existing) = self.doc.text_mut(last)
         {
             existing.push_str(&text);
             return;
@@ -490,7 +490,7 @@ impl Builder {
 
         let mut parent = self.current();
         if self.stack.len() >= MAX_DEPTH {
-            parent = self.doc.nodes[parent].parent.unwrap_or(parent);
+            parent = self.doc.nodes()[parent].parent.unwrap_or(parent);
         }
         self.skip_newline = matches!(tag.as_str(), "pre" | "textarea" | "listing");
         let is_void = VOID.contains(&tag.as_str());
@@ -545,12 +545,18 @@ fn merge_attrs(
 
 /// The byte offset of the first `</tag` in `s`, ignoring ASCII case, without
 /// lowercasing the rest of the document for every raw-text element.
+/// Where `</tag` closes a raw-text element: the name must end there
+/// (`</script>` or `</script ` does, `</scriptx` does not).
 fn find_end_tag(s: &str, tag: &str) -> Option<usize> {
     let bytes = s.as_bytes();
     s.match_indices("</").map(|(i, _)| i).find(|&i| {
+        let end = i + 2 + tag.len();
         bytes
-            .get(i + 2..i + 2 + tag.len())
+            .get(i + 2..end)
             .is_some_and(|name| name.eq_ignore_ascii_case(tag.as_bytes()))
+            && bytes
+                .get(end)
+                .is_none_or(|&b| b == b'>' || b == b'/' || b.is_ascii_whitespace())
     })
 }
 
@@ -697,7 +703,7 @@ mod tests {
     use super::*;
 
     fn tags(doc: &Document, parent: NodeId) -> Vec<String> {
-        doc.nodes[parent]
+        doc.nodes()[parent]
             .children
             .iter()
             .map(|&c| doc.tag(c).to_string())
@@ -706,7 +712,7 @@ mod tests {
 
     fn depth(doc: &Document, mut node: NodeId) -> usize {
         let mut d = 0;
-        while let Some(p) = doc.nodes[node].parent {
+        while let Some(p) = doc.nodes()[node].parent {
             node = p;
             d += 1;
         }
@@ -729,7 +735,7 @@ mod tests {
             "end"
         );
         let divs = "<div>".repeat(60_000) + "x";
-        assert!(parse(&divs).nodes.len() > 60_000);
+        assert!(parse(&divs).nodes().len() > 60_000);
         let attrs: String = (0..60_000).map(|i| format!(" a{i}=1")).collect();
         let doc = parse(&format!(
             "<p{attrs} a0=2 a59999=2>x</p><body{attrs} extra=1>"
@@ -807,7 +813,7 @@ mod tests {
         let n = MAX_DEPTH * 4;
         let markup = "<div>".repeat(n) + "<p>x</p>" + &"</div>".repeat(n) + "<span>after</span>";
         let doc = parse(&markup);
-        let deepest = (0..doc.nodes.len())
+        let deepest = (0..doc.nodes().len())
             .map(|id| depth(&doc, id))
             .max()
             .unwrap();
@@ -816,13 +822,13 @@ mod tests {
         assert_eq!(doc.text_content(p), "x");
         // The end tags still close the right elements.
         let span = doc.find_tag("span").unwrap();
-        assert_eq!(doc.tag(doc.nodes[span].parent.unwrap()), "body");
+        assert_eq!(doc.tag(doc.nodes()[span].parent.unwrap()), "body");
     }
 
     #[test]
     fn builds_implied_structure() {
         let doc = parse("<title>Hi</title><p>Hello");
-        let html = doc.nodes[Document::ROOT].children[0];
+        let html = doc.nodes()[Document::ROOT].children[0];
         assert_eq!(tags(&doc, html), ["head", "body"]);
         assert_eq!(doc.title(), "Hi");
         let body = doc.find_tag("body").unwrap();
@@ -843,6 +849,12 @@ mod tests {
         let doc = parse("<script>if (a < b && c) {}</script><p>x</p>");
         let script = doc.find_tag("script").unwrap();
         assert_eq!(doc.text_content(script), "if (a < b && c) {}");
+        assert!(doc.find_tag("p").is_some());
+
+        // `</scriptx` is not the end tag; `</SCRIPT >` is.
+        let doc = parse("<script>a</scriptx>b</SCRIPT ><p>y</p>");
+        let script = doc.find_tag("script").unwrap();
+        assert_eq!(doc.text_content(script), "a</scriptx>b");
         assert!(doc.find_tag("p").is_some());
     }
 
@@ -868,7 +880,7 @@ mod tests {
         let doc = parse("<table><tr><td>a<td>b<tr><td>c</table>");
         let table = doc.find_tag("table").unwrap();
         assert_eq!(tags(&doc, table), ["tr", "tr"]);
-        let tr = doc.nodes[table].children[0];
+        let tr = doc.nodes()[table].children[0];
         assert_eq!(tags(&doc, tr), ["td", "td"]);
     }
 }

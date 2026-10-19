@@ -125,10 +125,10 @@ impl FormState {
             return "";
         };
         match el.tag.as_str() {
-            "textarea" => doc.nodes[node]
+            "textarea" => doc.nodes()[node]
                 .children
                 .first()
-                .and_then(|&c| match &doc.nodes[c].kind {
+                .and_then(|&c| match &doc.nodes()[c].kind {
                     NodeKind::Text(t) => Some(t.as_str()),
                     _ => None,
                 })
@@ -158,7 +158,7 @@ pub struct LayoutInput<'a> {
 
 pub fn layout(input: &LayoutInput) -> Layout {
     let doc = input.doc;
-    let html = doc.nodes[Document::ROOT]
+    let html = doc.nodes()[Document::ROOT]
         .children
         .iter()
         .copied()
@@ -230,8 +230,9 @@ struct BoxSize {
     h: f32,
     mt: f32,
     mb: f32,
-    /// Background and border items, which a table row or flex line may
-    /// stretch to its full height.
+    /// Background, border and clip items, which a table row or flex line may
+    /// stretch to its full height, and which stay put when the content is
+    /// aligned inside the box.
     decorations: Vec<usize>,
 }
 
@@ -613,6 +614,8 @@ impl<'a> Engine<'a> {
                 *r = border_box;
             }
             self.emit(Item::PopClip);
+            // Emitted right after the decorations, so it belongs with them.
+            decorations.push(i);
         }
 
         if st.display == Display::ListItem && st.list_style != ListStyle::None {
@@ -726,7 +729,7 @@ impl<'a> Engine<'a> {
             return number(node, "value").unwrap_or(1);
         };
         let mut next = number(list, "start").unwrap_or(1);
-        for &child in &doc.nodes[list].children {
+        for &child in &doc.nodes()[list].children {
             if doc.element(child).is_none() {
                 continue;
             }
@@ -1012,7 +1015,7 @@ impl<'a> Engine<'a> {
             prev_mb: 0.0,
             inline: Vec::new(),
         };
-        for &child in &self.doc().nodes[node].children {
+        for &child in &self.doc().nodes()[node].children {
             self.flow_child(node, child, &mut state, cx, w);
         }
         self.flush_inline(node, &mut state, cx, w);
@@ -1028,7 +1031,7 @@ impl<'a> Engine<'a> {
         w: f32,
     ) {
         let doc = self.doc();
-        let el = match &doc.nodes[child].kind {
+        let el = match &doc.nodes()[child].kind {
             NodeKind::Text(text) => {
                 state.inline.push(InlineItem::Text {
                     node: child,
@@ -1046,7 +1049,7 @@ impl<'a> Engine<'a> {
         match st.display {
             Display::None => return,
             Display::Contents => {
-                for &c in &doc.nodes[child].children {
+                for &c in &doc.nodes()[child].children {
                     self.flow_child(container, c, state, cx, w);
                 }
                 return;
@@ -1130,7 +1133,7 @@ impl<'a> Engine<'a> {
             }
             return;
         }
-        for &c in &doc.nodes[child].children {
+        for &c in &doc.nodes()[child].children {
             self.flow_child(container, c, state, cx, w);
         }
         if pushed_bg {
@@ -1656,15 +1659,15 @@ impl<'a> Engine<'a> {
         let doc = self.doc();
         let st = self.st(node);
         let mut children: Vec<NodeId> = Vec::new();
-        let mut contents = doc.nodes[node].children.clone();
+        let mut contents = doc.nodes()[node].children.clone();
         contents.reverse();
         while let Some(c) = contents.pop() {
-            match &doc.nodes[c].kind {
+            match &doc.nodes()[c].kind {
                 NodeKind::Text(t) if !t.trim().is_empty() => children.push(c),
                 NodeKind::Element(_) => {
                     let cs = self.st(c);
                     if cs.display == Display::Contents {
-                        contents.extend(doc.nodes[c].children.iter().rev());
+                        contents.extend(doc.nodes()[c].children.iter().rev());
                     } else if cs.display == Display::None {
                     } else if cs.is_out_of_flow() {
                         let frame = if cs.position == Position::Fixed {
@@ -1984,7 +1987,7 @@ impl<'a> Engine<'a> {
     }
 
     fn text_item(&self, node: NodeId) -> InlineItem {
-        let text = match &self.doc().nodes[node].kind {
+        let text = match &self.doc().nodes()[node].kind {
             NodeKind::Text(t) => t.clone(),
             _ => String::new(),
         };
@@ -2003,7 +2006,7 @@ impl<'a> Engine<'a> {
         let mut rows = Vec::new();
         let mut captions = Vec::new();
         let mut loose_cells = Vec::new();
-        let mut stack: Vec<NodeId> = doc.nodes[table].children.iter().rev().copied().collect();
+        let mut stack: Vec<NodeId> = doc.nodes()[table].children.iter().rev().copied().collect();
         while let Some(n) = stack.pop() {
             if doc.element(n).is_none() {
                 continue;
@@ -2016,7 +2019,7 @@ impl<'a> Engine<'a> {
                     if !loose_cells.is_empty() {
                         rows.push((None, std::mem::take(&mut loose_cells)));
                     }
-                    let cells = doc.nodes[n]
+                    let cells = doc.nodes()[n]
                         .children
                         .iter()
                         .copied()
@@ -2027,7 +2030,7 @@ impl<'a> Engine<'a> {
                     rows.push((Some(n), cells));
                 }
                 (_, Display::TableCell) => loose_cells.push(n),
-                _ => stack.extend(doc.nodes[n].children.iter().rev()),
+                _ => stack.extend(doc.nodes()[n].children.iter().rev()),
             }
         }
         if !loose_cells.is_empty() {
@@ -2049,7 +2052,7 @@ impl<'a> Engine<'a> {
     fn table_columns(&mut self, rows: &[(Option<NodeId>, Vec<NodeId>)]) -> (Vec<f32>, Vec<f32>) {
         let n = rows
             .iter()
-            .map(|(_, cells)| cells.iter().map(|&c| self.colspan(c)).sum::<usize>())
+            .map(|(_, cells)| cells.iter().fold(0usize, |n, &c| n.saturating_add(self.colspan(c))))
             .max()
             .unwrap_or(0)
             .min(MAX_TABLE_COLUMNS);
@@ -2232,7 +2235,7 @@ impl<'a> Engine<'a> {
                 let mut min: f32 = 0.0;
                 let mut max = 0.0;
                 let mut count: usize = 0;
-                for &c in &doc.nodes[node].children {
+                for &c in &doc.nodes()[node].children {
                     if self.skip_for_intrinsic(c) {
                         continue;
                     }
@@ -2251,7 +2254,7 @@ impl<'a> Engine<'a> {
             Display::TableRow => {
                 let mut min = 0.0;
                 let mut max = 0.0;
-                for &c in &doc.nodes[node].children {
+                for &c in &doc.nodes()[node].children {
                     if !self.skip_for_intrinsic(c) {
                         let (a, b) = self.intrinsic(c);
                         min += a;
@@ -2265,7 +2268,7 @@ impl<'a> Engine<'a> {
     }
 
     fn skip_for_intrinsic(&self, node: NodeId) -> bool {
-        match &self.doc().nodes[node].kind {
+        match &self.doc().nodes()[node].kind {
             NodeKind::Text(t) => t.trim().is_empty(),
             NodeKind::Element(_) => {
                 let st = self.st(node);
@@ -2280,8 +2283,8 @@ impl<'a> Engine<'a> {
         let mut min: f32 = 0.0;
         let mut max: f32 = 0.0;
         let mut line = 0.0;
-        for &c in &doc.nodes[node].children {
-            let block_level = match &doc.nodes[c].kind {
+        for &c in &doc.nodes()[node].children {
+            let block_level = match &doc.nodes()[c].kind {
                 NodeKind::Element(_) => {
                     let st = self.st(c);
                     if st.display == Display::None || st.is_out_of_flow() {
@@ -2315,7 +2318,7 @@ impl<'a> Engine<'a> {
             return v;
         }
         let doc = self.doc();
-        let result = match &doc.nodes[node].kind {
+        let result = match &doc.nodes()[node].kind {
             NodeKind::Text(text) => self.text_intrinsic(node, text),
             NodeKind::Document => (0.0, 0.0),
             NodeKind::Element(_) => {
@@ -2620,6 +2623,43 @@ mod tests {
     }
 
     #[test]
+    fn clipped_table_cells_keep_their_clip_on_the_box() {
+        // A cell with `overflow:hidden` and `vertical-align:middle` in a
+        // taller row: its content moves down, its clip stays on its box.
+        let Ok(fonts) = crate::font::Fonts::new() else {
+            return;
+        };
+        let doc = html::parse(
+            "<table><tr><td style=\"height:100px\">tall</td>\
+             <td style=\"overflow:hidden;vertical-align:middle;background:#f00\">x</td></tr></table>",
+        );
+        let ctx = crate::style::StyleContext { zoom: 1.0, viewport_width: 800.0, viewport_height: 600.0 };
+        let styles = crate::style::compute_styles(&doc, &[css::parse_stylesheet("")], &ctx);
+        let (images, form) = (HashMap::new(), FormState::default());
+        let input = LayoutInput {
+            doc: &doc,
+            styles: &styles,
+            fonts: &fonts,
+            images: &images,
+            form: &form,
+            zoom: 1.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+        };
+        let out = layout(&input);
+        let fill = out.items.iter().find_map(|i| match i {
+            Item::Fill { rect, color, .. } if color.r == 255 && color.g == 0 => Some(*rect),
+            _ => None,
+        });
+        let clip = out.items.iter().find_map(|i| match i {
+            Item::PushClip(rect) => Some(*rect),
+            _ => None,
+        });
+        assert_eq!(fill, clip);
+        assert!(fill.is_some_and(|r| r.h >= 100.0), "{fill:?}");
+    }
+
+    #[test]
     fn deep_nesting_fits_the_main_thread_stack() {
         let n = html::MAX_DEPTH * 2;
         for open in [
@@ -2630,6 +2670,9 @@ mod tests {
             "<div style=\"display:flex\">",
             "<div style=\"display:inline-block\">",
             "<div style=\"float:left\">",
+            "<div style=\"display:flex;flex-direction:column\">",
+            "<div style=\"position:absolute\">",
+            "<span style=\"display:inline-flex\">",
         ] {
             render_on_main_stack(open.repeat(n) + "x");
         }
