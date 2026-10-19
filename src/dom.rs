@@ -69,8 +69,9 @@ pub struct Node {
 #[derive(Clone, Debug)]
 pub struct Document {
     /// Structural additions go through append; tag changes through
-    /// element_mut. Both invalidate the cached sibling metadata.
-    pub nodes: Vec<Node>,
+    /// element_mut. Both invalidate the cached sibling metadata, so the list
+    /// is private: read it through `nodes()`.
+    nodes: Vec<Node>,
     /// No `<!doctype html>`: legacy rendering rules apply.
     pub quirks: bool,
     sibling_positions: OnceLock<Vec<SiblingPosition>>,
@@ -116,6 +117,19 @@ impl Document {
         });
         self.nodes[parent].children.push(id);
         id
+    }
+
+    /// Every node, indexed by `NodeId`; parents come before their children.
+    pub fn nodes(&self) -> &[Node] {
+        &self.nodes
+    }
+
+    /// The text of a text node, to extend it (no structural change).
+    pub fn text_mut(&mut self, id: NodeId) -> Option<&mut String> {
+        match &mut self.nodes.get_mut(id)?.kind {
+            NodeKind::Text(text) => Some(text),
+            _ => None,
+        }
     }
 
     pub fn element(&self, id: NodeId) -> Option<&Element> {

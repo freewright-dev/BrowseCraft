@@ -527,18 +527,18 @@ pub struct StyleContext {
 pub fn compute_styles(doc: &Document, sheets: &[Stylesheet], ctx: &StyleContext) -> Vec<Rc<Style>> {
     let index = RuleIndex::new(sheets, ctx.viewport_width / ctx.zoom, doc.quirks);
     let root_style = Rc::new(Style::initial(ctx.zoom));
-    let mut styles: Vec<Rc<Style>> = vec![root_style.clone(); doc.nodes.len()];
+    let mut styles: Vec<Rc<Style>> = vec![root_style.clone(); doc.nodes().len()];
     let mut pass = Pass {
         root_font: 16.0 * ctx.zoom,
         var_budget: DOCUMENT_VAR_BUDGET,
     };
 
     // Nodes are created in document order, so parents come before children.
-    for id in 1..doc.nodes.len() {
-        let parent = doc.nodes[id]
+    for id in 1..doc.nodes().len() {
+        let parent = doc.nodes()[id]
             .parent
             .map_or(root_style.clone(), |p| styles[p].clone());
-        styles[id] = match &doc.nodes[id].kind {
+        styles[id] = match &doc.nodes()[id].kind {
             NodeKind::Element(el) => {
                 let style = compute_element(doc, id, el, &parent, &index, ctx, &mut pass);
                 if doc.tag(id) == "html" {
@@ -1855,7 +1855,7 @@ mod tests {
         };
         let styles = compute_styles(&doc, &sheets, &ctx);
         let declared = &sheets[0].rules[0].declarations[0].value;
-        let ps: Vec<NodeId> = (0..doc.nodes.len()).filter(|&n| doc.tag(n) == "p").collect();
+        let ps: Vec<NodeId> = (0..doc.nodes().len()).filter(|&n| doc.tag(n) == "p").collect();
         assert_eq!(ps.len(), 50);
         for p in ps {
             assert!(Arc::ptr_eq(&styles[p].vars.own["--x"], declared));
