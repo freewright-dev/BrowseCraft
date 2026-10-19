@@ -64,18 +64,21 @@ pub fn host_of(url: &str) -> String {
 
 fn parse(text: &str) -> Vec<Bookmark> {
     let mut out: Vec<Bookmark> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for line in text.lines() {
+        if out.len() == MAX_BOOKMARKS {
+            break;
+        }
         let Some((url, title)) = line.split_once('\t') else {
             continue;
         };
-        if bookmarkable(url) && !out.iter().any(|b| key(&b.url) == key(url)) {
+        if bookmarkable(url) && seen.insert(key(url)) {
             out.push(Bookmark {
                 title: clean_title(title, url),
                 url: url.to_string(),
             });
         }
     }
-    out.truncate(MAX_BOOKMARKS);
     out
 }
 
@@ -98,7 +101,9 @@ fn save(list: &[Bookmark]) {
 
 /// Reads `bookmarks.txt`. Call once at startup.
 pub fn load() {
-    if let Ok(text) = file_path().and_then(|path| std::fs::read_to_string(path).map_err(|e| e.to_string())) {
+    if let Ok(text) = file_path().and_then(|path| {
+        crate::storage::read_text_limited(&path, crate::storage::MAX_SETTINGS_FILE).map_err(|e| e.to_string())
+    }) {
         *STORE.write().unwrap_or_else(|p| p.into_inner()) = parse(&text);
     }
 }
@@ -232,6 +237,20 @@ mod tests {
         assert_eq!(all()[0].title, "rust-lang.org", "empty titles fall back to the host");
         assert!(remove("https://www.rust-lang.org/learn"));
         assert!(!remove("https://www.rust-lang.org/learn"));
+    }
+
+    #[test]
+    fn parsing_dedups_and_stops_at_the_cap() {
+        // A crafted file of a million lines parses in linear time and keeps
+        // at most MAX_BOOKMARKS entries (audit B-25).
+        let text: String = (0..1_000_000).map(|i| format!("https://b{}.test/\tt\n", i % 500_000)).collect();
+        let start = std::time::Instant::now();
+        let list = parse(&text);
+        assert_eq!(list.len(), MAX_BOOKMARKS);
+        assert_eq!(list[1].url, "https://b1.test/");
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "{:?}", start.elapsed());
+        let dup = parse("https://a.test/\tA\nhttps://a.test/#x\tB\nhttps://c.test/\tC\n");
+        assert_eq!(dup.iter().map(|b| b.title.as_str()).collect::<Vec<_>>(), ["A", "C"]);
     }
 
     #[test]

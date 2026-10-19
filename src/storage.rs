@@ -87,6 +87,31 @@ pub fn replace_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Reads at most `max` bytes of `path`; a longer file is refused rather than
+/// read in full, so a huge or endless file (a device, a crafted list) cannot
+/// stall startup or exhaust memory.
+pub fn read_limited(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?.take(max + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max {
+        return Err(std::io::Error::other(format!(
+            "{} is larger than {} KB",
+            path.display(),
+            max / 1024
+        )));
+    }
+    Ok(bytes)
+}
+
+/// `read_limited` for a UTF-8 text file.
+pub fn read_text_limited(path: &Path, max: u64) -> std::io::Result<String> {
+    String::from_utf8(read_limited(path, max)?).map_err(std::io::Error::other)
+}
+
+/// Settings files BrowseCraft writes itself are a few kilobytes.
+pub const MAX_SETTINGS_FILE: u64 = 1 << 20;
+
 /// Writes `bytes` to a new file at `path` in one step, never replacing a
 /// file that is already there: the bytes go to a temporary file that is then
 /// moved into place without clobbering, so a file that appears at `path`
@@ -165,6 +190,16 @@ fn current_user_only(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_are_limited() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "x".repeat(100)).unwrap();
+        assert_eq!(read_text_limited(&path, 100).unwrap().len(), 100);
+        assert!(read_text_limited(&path, 99).is_err());
+        assert!(read_limited(&dir.path().join("missing"), 10).is_err());
+    }
 
     #[test]
     fn creating_never_replaces_and_leaves_nothing_behind() {

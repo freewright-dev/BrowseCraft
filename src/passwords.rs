@@ -226,7 +226,9 @@ fn parse_config(s: &mut State, text: &str) {
 /// Reads `passwords.cfg` (which vault, how it unlocks, the never-save list).
 /// The vault stays locked until the user unlocks it.
 pub fn load() {
-    if let Ok(text) = config_path().and_then(|path| std::fs::read_to_string(path).map_err(|e| e.to_string())) {
+    if let Ok(text) = config_path().and_then(|path| {
+        crate::storage::read_text_limited(&path, crate::storage::MAX_SETTINGS_FILE).map_err(|e| e.to_string())
+    }) {
         parse_config(&mut state(), &text);
     }
 }
