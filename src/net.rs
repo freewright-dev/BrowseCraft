@@ -177,7 +177,7 @@ pub fn fetch_checked(
                     url: url.clone(),
                     status: 200,
                     content_type: "text/html".into(),
-                    body: directory_listing(&path, url).into_bytes(),
+                    body: directory_listing(&path, url).map_err(describe)?.into_bytes(),
                 });
             }
             // Devices such as `CON` or named pipes can block forever.
@@ -280,19 +280,18 @@ fn mime_from_extension(path: &str) -> &'static str {
     }
 }
 
-fn directory_listing(path: &std::path::Path, url: &Url) -> String {
-    let mut entries: Vec<(bool, String)> = std::fs::read_dir(path)
-        .map(|rd| {
-            rd.filter_map(Result::ok)
-                .map(|e| {
-                    (
-                        e.path().is_dir(),
-                        e.file_name().to_string_lossy().into_owned(),
-                    )
-                })
-                .collect()
+/// An HTML listing of a folder. A folder that cannot be read is an error,
+/// not an empty listing.
+fn directory_listing(path: &std::path::Path, url: &Url) -> std::io::Result<String> {
+    let mut entries: Vec<(bool, String)> = std::fs::read_dir(path)?
+        .filter_map(Result::ok)
+        .map(|e| {
+            (
+                e.path().is_dir(),
+                e.file_name().to_string_lossy().into_owned(),
+            )
         })
-        .unwrap_or_default();
+        .collect();
     entries.sort_by(|a, b| {
         b.0.cmp(&a.0)
             .then(a.1.to_lowercase().cmp(&b.1.to_lowercase()))
@@ -317,7 +316,7 @@ fn directory_listing(path: &std::path::Path, url: &Url) -> String {
         ));
     }
     html.push_str("</ul>");
-    html
+    Ok(html)
 }
 
 fn percent_encode_path(s: &str) -> String {
@@ -344,8 +343,12 @@ pub fn escape_html(s: &str) -> String {
 pub fn parse_data_url(url: &str) -> Option<(String, Vec<u8>)> {
     let rest = url.strip_prefix("data:")?;
     let (meta, payload) = rest.split_once(',')?;
-    let base64 = meta.ends_with(";base64");
-    let mime = meta.trim_end_matches(";base64");
+    // `;base64` in any letter case, as browsers accept it.
+    let marker = meta.len().checked_sub(7).and_then(|i| meta.get(i..).map(|tail| (i, tail)));
+    let (base64, mime) = match marker {
+        Some((i, tail)) if tail.eq_ignore_ascii_case(";base64") => (true, &meta[..i]),
+        _ => (false, meta),
+    };
     let mime = if mime.is_empty() { "text/plain" } else { mime };
     let bytes = percent_decode(payload);
     let body = if base64 {
@@ -414,15 +417,29 @@ pub fn decode_text(body: &[u8], content_type: &str) -> String {
             .strip_prefix("charset=")
             .map(|c| c.trim_matches('"').to_string())
     });
+    // Without a header, only the document's own declaration counts: a
+    // leading `@charset "…"` in CSS, or a `<meta>` tag's `charset` in HTML,
+    // not the word "charset=" anywhere in the text.
+    let mime = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
     let sniffed = || {
         let head = String::from_utf8_lossy(&body[..body.len().min(4096)]).to_ascii_lowercase();
-        let i = head.find("charset=")? + 8;
-        let label: String = head[i..]
-            .trim_start_matches(['"', '\''])
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-            .collect();
-        Some(label)
+        let label = |s: &str| -> String {
+            s.trim_start_matches(['"', '\''])
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect()
+        };
+        if mime == "text/css" {
+            return head.strip_prefix("@charset ").map(label);
+        }
+        if !(mime.is_empty() || mime.contains("html")) {
+            return None;
+        }
+        head.match_indices("<meta").find_map(|(i, _)| {
+            let tag = &head[i..];
+            let tag = &tag[..tag.find('>').unwrap_or(tag.len())];
+            tag.find("charset=").map(|j| label(&tag[j + 8..]))
+        })
     };
     let label = header.or_else(sniffed).unwrap_or_default();
     match label.as_str() {
@@ -703,5 +720,26 @@ mod tests {
             decode_text(b"<meta charset=windows-1252>\x93x\x94", ""),
             "<meta charset=windows-1252>“x”"
         );
+        // Only the document's own declaration counts, not the word anywhere.
+        assert_eq!(decode_text(b"@charset \"windows-1252\";\x93", "text/css"), "@charset \"windows-1252\";“");
+        assert_eq!(decode_text("/* charset=latin1 */ é".as_bytes(), "text/css"), "/* charset=latin1 */ é");
+        assert_eq!(decode_text("<p>charset=latin1 é</p>".as_bytes(), "text/html"), "<p>charset=latin1 é</p>");
+        assert_eq!(decode_text("charset=latin1 é".as_bytes(), "text/plain"), "charset=latin1 é");
+    }
+
+    #[test]
+    fn data_urls_accept_base64_in_any_case() {
+        for url in ["data:text/plain;base64,aGVsbG8=", "data:text/plain;BASE64,aGVsbG8=", "data:;Base64,aGVsbG8="] {
+            assert_eq!(parse_data_url(url).unwrap().1, b"hello", "{url}");
+        }
+        assert_eq!(parse_data_url("data:;BASE64,aGVsbG8=").unwrap().0, "text/plain");
+        assert_eq!(parse_data_url("data:é,x").unwrap().1, b"x");
+    }
+
+    #[test]
+    fn unreadable_folders_are_errors() {
+        let missing = std::env::temp_dir().join(format!("browsecraft-missing-{}", std::process::id()));
+        let url = Url::from_directory_path(&missing).unwrap();
+        assert!(directory_listing(&missing, &url).is_err());
     }
 }

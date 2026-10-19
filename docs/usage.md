@@ -19,7 +19,7 @@ Press `Enter` to go. BrowseCraft decides what the text means using these rules, 
 | ------------------------------------------------------ | ----------------------- |
 | Has a scheme (`https://…`, `ftp://…`, `browsecraft://…`)     | Opened unchanged        |
 | Starts with `about:`, `data:`, `file:`, `view-source:` | Opened unchanged        |
-| `localhost` or an IPv4 address, with an optional port  | `http://` is added      |
+| `localhost`, an IPv4 address or a bracketed IPv6 address (`[::1]`), with an optional port | `http://` is added      |
 | A domain such as `docs.rs/wry` or `example.com:8443`   | `https://` is added     |
 | Anything else, including text with spaces              | Startpage search        |
 

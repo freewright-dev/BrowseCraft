@@ -21,7 +21,7 @@ pub fn resolve(input: &str) -> String {
             }
         });
 
-        if hostname == "localhost" || is_ipv4(hostname) {
+        if hostname == "localhost" || is_ipv4(hostname) || is_ipv6_literal(hostname) {
             return format!("http://{input}");
         }
         if looks_like_domain(hostname) {
@@ -49,6 +49,13 @@ fn has_scheme(input: &str) -> bool {
         });
     }
     false
+}
+
+/// `[::1]`: an IPv6 address in brackets, as in a URL.
+fn is_ipv6_literal(host: &str) -> bool {
+    host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .is_some_and(|h| h.parse::<std::net::Ipv6Addr>().is_ok())
 }
 
 fn is_ipv4(host: &str) -> bool {
@@ -116,6 +123,9 @@ mod tests {
     fn adds_http_to_local_hosts() {
         assert_eq!(resolve("localhost:3000"), "http://localhost:3000");
         assert_eq!(resolve("192.168.1.1"), "http://192.168.1.1");
+        assert_eq!(resolve("[::1]:3000"), "http://[::1]:3000");
+        assert_eq!(resolve("[fe80::1]/x"), "http://[fe80::1]/x");
+        assert!(resolve("[not-an-ip]").starts_with(super::SEARCH_URL));
     }
 
     #[test]
