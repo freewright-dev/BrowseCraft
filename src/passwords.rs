@@ -18,7 +18,7 @@
 //!   only when the user picked a login for that very site.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Condvar, Mutex, MutexGuard, Once, PoisonError};
 use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
@@ -512,20 +512,72 @@ fn default_keyfile_path() -> String {
     default_data_path("browsecraft-passwords.keyx")
 }
 
+/// The password last copied and when to take it off the clipboard.
+struct PendingClear {
+    text: Zeroizing<String>,
+    at: Instant,
+}
+
+/// The pending clear, and the signal that wakes the clearer when it changes.
+/// One clearer thread serves every copy: a new copy replaces the pending one
+/// (the old password can no longer be on the clipboard) instead of adding a
+/// thread per copy.
+static CLIPBOARD: (Mutex<Option<PendingClear>>, Condvar) = (Mutex::new(None), Condvar::new());
+
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("No clipboard: {e}"))?;
     clipboard.set_text(text).map_err(|e| format!("Could not copy: {e}"))?;
-    let copied = Zeroizing::new(text.to_string());
-    // Do not leave the password on the clipboard: clear it if it is still ours.
-    std::thread::spawn(move || {
-        std::thread::sleep(CLIPBOARD_CLEAR);
+    schedule_clear(text);
+    static CLEARER: Once = Once::new();
+    CLEARER.call_once(|| {
+        let _ = std::thread::Builder::new()
+            .name("clipboard-clearer".into())
+            .spawn(clipboard_clearer);
+    });
+    Ok(())
+}
+
+/// Clears `text` from the clipboard after [`CLIPBOARD_CLEAR`], replacing any
+/// clear still pending.
+fn schedule_clear(text: &str) {
+    let (pending, wake) = &CLIPBOARD;
+    *pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(PendingClear {
+        text: Zeroizing::new(text.to_string()),
+        at: Instant::now() + CLIPBOARD_CLEAR,
+    });
+    wake.notify_one();
+}
+
+/// The clearer thread: waits for the pending clear to come due, then empties
+/// the clipboard if it still holds that password (not something copied
+/// since).
+fn clipboard_clearer() {
+    let (lock, wake) = &CLIPBOARD;
+    let mut pending = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    loop {
+        let Some(at) = pending.as_ref().map(|p| p.at) else {
+            pending = wake.wait(pending).unwrap_or_else(PoisonError::into_inner);
+            continue;
+        };
+        let now = Instant::now();
+        if at > now {
+            pending = wake
+                .wait_timeout(pending, at - now)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+            continue;
+        }
+        let Some(due) = pending.take() else {
+            continue;
+        };
+        drop(pending);
         if let Ok(mut clipboard) = arboard::Clipboard::new()
-            && clipboard.get_text().is_ok_and(|now| *Zeroizing::new(now) == *copied)
+            && clipboard.get_text().is_ok_and(|now| *Zeroizing::new(now) == *due.text)
         {
             let _ = clipboard.clear();
         }
-    });
-    Ok(())
+        pending = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    }
 }
 
 /// Applies a submission of the passwords page: the query of a link, or the
@@ -919,6 +971,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_new_copy_replaces_the_pending_clipboard_clear() {
+        schedule_clear("first");
+        schedule_clear("second");
+        let pending = CLIPBOARD.0.lock().unwrap();
+        let pending = pending.as_ref().unwrap();
+        assert_eq!(pending.text.as_str(), "second");
+        assert!(pending.at > Instant::now() + CLIPBOARD_CLEAR - Duration::from_secs(5));
     }
 
     #[test]
