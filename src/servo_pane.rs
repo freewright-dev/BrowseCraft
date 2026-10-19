@@ -108,7 +108,7 @@ mod imp {
     use std::sync::{Arc, Mutex};
 
     use servo::{
-        Code, CreateNewWebViewRequest, DeviceIntRect, DeviceIntSize, DevicePoint, EventLoopWaker,
+        Code, ConsoleLogLevel, CreateNewWebViewRequest, DeviceIntRect, DeviceIntSize, DevicePoint, EventLoopWaker,
         InputEvent, Key, KeyState, KeyboardEvent, LoadStatus, Location, Modifiers,
         MouseButton as ServoButton, MouseButtonAction, MouseButtonEvent, MouseMoveEvent,
         NamedKey as ServoNamedKey, NavigationRequest, RenderingContext, Servo, ServoBuilder,
@@ -234,6 +234,16 @@ mod imp {
             if adblock::blocked_subresource(request.url.as_str(), kind, host) {
                 let url = request.url.clone();
                 load.intercept(WebResourceResponse::new(url)).cancel();
+            }
+        }
+
+        /// Page script errors and warnings, for evaluation: they show which
+        /// web features a broken site is missing.
+        fn show_console_message(&self, _webview: WebView, level: ConsoleLogLevel, message: String) {
+            if matches!(level, ConsoleLogLevel::Error | ConsoleLogLevel::Warn) {
+                let line: String = message.chars().take(300).map(|c| if c == '
+' { ' ' } else { c }).collect();
+                trace(&format!("console {level:?} {line}"));
             }
         }
 
