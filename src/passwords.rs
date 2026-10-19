@@ -524,6 +524,25 @@ struct PendingClear {
 /// thread per copy.
 static CLIPBOARD: (Mutex<Option<PendingClear>>, Condvar) = (Mutex::new(None), Condvar::new());
 
+/// The address a manually added login is saved under: empty, or an
+/// `http(s)` URL with a host (`https://` is added to a bare `example.com`).
+/// `None` for anything else, such as `javascript:` or `data:` URLs.
+fn login_url(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Some(String::new());
+    }
+    let full = if text.contains("://") {
+        text.to_string()
+    } else {
+        format!("https://{text}")
+    };
+    url::Url::parse(&full)
+        .ok()
+        .filter(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
+        .map(|_| full)
+}
+
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("No clipboard: {e}"))?;
     clipboard.set_text(text).map_err(|e| format!("Could not copy: {e}"))?;
@@ -668,11 +687,8 @@ pub fn handle(query: &str, post_body: Option<&str>) {
                     if password.is_empty() && !field(&pairs, "generate").is_empty() {
                         password = Zeroizing::new(vault::generate_password(20));
                     }
-                    let url = field(&pairs, "url").trim();
-                    let url = if url.is_empty() || url.contains("://") {
-                        url.to_string()
-                    } else {
-                        format!("https://{url}")
+                    let Some(url) = login_url(field(&pairs, "url")) else {
+                        return s.fail("Enter the site's web address (https://…), or leave it empty.");
                     };
                     match vault.add(field(&pairs, "title"), &url, field(&pairs, "username"), &password) {
                         Ok(_) => s.ok("Login saved."),
@@ -971,6 +987,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn manual_logins_need_a_web_address() {
+        assert_eq!(login_url(" example.com/login ").as_deref(), Some("https://example.com/login"));
+        assert_eq!(login_url("http://127.0.0.1:8080/").as_deref(), Some("http://127.0.0.1:8080/"));
+        assert_eq!(login_url("  ").as_deref(), Some(""));
+        for bad in ["javascript:alert(1)", "data:text/html,hi", "ftp://example.com/", "file:///C:/x", "https://"] {
+            assert_eq!(login_url(bad), None, "{bad}");
+        }
     }
 
     #[test]
