@@ -40,6 +40,19 @@ listed here. Review all three again when updating wry, GTK, fontdue or winit,
 and remove an ignore as soon as its crate leaves the graph. Do not treat a
 successful `cargo audit` exit as the absence of informational warnings.
 
+## Servo feature (experimental, Linux)
+
+The optional `servo` dependency (issue #65) is resolved into `Cargo.lock` for
+every build, but compiled only on Linux with `--features servo`. Resolving it
+moved the shared ICU crates (`icu_*`) from 2.3 to 2.1 and `idna_adapter` from
+1.2.2 to 1.2.1, which Servo 0.6 pins. `cargo deny check` (default features)
+is unaffected. With the feature on
+(`cargo deny --features servo --target x86_64-unknown-linux-gnu check`) it
+reports six unmaintained crates in Servo's own graph: `bincode`,
+`unic-char-property`, `unic-char-range`, `unic-common`, `unic-ucd-ident` and
+`unic-ucd-version`. They are not ignored in `deny.toml`; they are part of the
+evaluation of whether to adopt Servo.
+
 ## Policy and checks
 
 The project is GPL-3.0-or-later. [Third-party notices](../THIRD_PARTY_NOTICES.md)
