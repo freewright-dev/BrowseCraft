@@ -41,6 +41,8 @@ This matters for input. BrowseCraft's shortcuts below also work while a WebView2
 | `about:blank`         | An empty page                                                     |
 | `browsecraft://flags`       | Settings (see below)                                              |
 | `browsecraft://history`     | Pages visited this session, newest first                          |
+| `browsecraft://bookmarks`   | Your bookmarks, with a Remove button each                         |
+| `browsecraft://passwords`   | The password vault (see Password manager below)                   |
 | `view-source:<url>`   | The raw source of an `http:`, `https:` or `file:` page            |
 
 History is kept in memory only (up to 500 entries) and is lost when BrowseCraft quits. Built-in pages are not recorded. When the engine renders a `file://` URL that points at a folder, it shows a directory listing.
@@ -55,6 +57,9 @@ History is kept in memory only (up to 500 entries) and is lost when BrowseCraft 
 | ⌂       | Home (Startpage)                        |
 | ☀ / ☾   | Toggle light / dark theme               |
 | ⚙       | Open settings (`browsecraft://flags`)         |
+| 🔑      | Password manager menu (top right)       |
+
+The star inside the address bar bookmarks the page you are on (click it again to remove the bookmark); it is also `Ctrl+D`.
 
 A bar along the bottom of the toolbar shows that a page is loading. On engine pages, hovering a link shows its address in the bottom-left corner.
 
@@ -67,23 +72,30 @@ with the address bar focused. With the engine chrome, middle-clicking a tab
 also closes it. Closing the last tab quits BrowseCraft. The sidebar position (left,
 right or hidden) is set on `browsecraft://flags`.
 
+## Bookmarks
+
+Click the star in the address bar, or press `Ctrl+D`, to bookmark the current page; do it again to remove it. Bookmarks show on the bookmarks bar under the address bar (turn it off in Settings or with `Ctrl+Shift+B`). Click one to open it, middle-click to open it in a new tab, right-click for *Open in new tab* and *Remove bookmark*. Bookmarks that do not fit go in the `»` menu. **All bookmarks** (`Ctrl+Shift+O`) opens `browsecraft://bookmarks`. They are saved in `bookmarks.txt` in the working directory (one `url<TAB>title` per line). Only `http(s)` pages can be bookmarked. The bar is drawn by the GPU interface; with the software interface (`chrome=engine`) bookmarks still work from `Ctrl+D` and the manager page.
+
+The key menu, the bookmarks bar and the save-login bar belong to the GPU interface (the default). When a menu is open over a web page, the page is shown as a still picture until the menu closes (the live page is a native window that cannot sit under a menu).
+
+## Fullscreen
+
+When a web page goes fullscreen, for example a video's fullscreen button on YouTube, the whole window goes fullscreen and the toolbar, bookmarks bar and tabs are hidden, so the page fills the screen. Press `Esc` (or use the page's own button) to leave; the window returns to how it was. `F11` makes the window fullscreen on its own.
+
+## Password manager
+
+Click the key icon at the top right. The first time, choose how to protect your vault:
+
+- **A password**, or
+- **A key file**: a small file with random bytes that Prowl creates for you. The vault cannot be opened without it. Keep it apart from the vault (a USB stick, say). If you lose it, the vault is gone for good.
+
+The vault is a standard KeePass 4 (`.kdbx`) file, so KeePassXC and other KeePass apps open it too. You can also open an existing vault. Prowl locks the vault again after 15 minutes without use, and keeps which vault to use (never a password) in `passwords.cfg`.
+
+On a page with a login form the key menu lists the logins saved for that site: click one to fill the page. On a sign-up or change-password form, *Suggest a strong password* fills a generated one. When you submit a login, a bar offers to **Save** it (or **Update** a changed password), or to never ask for that site. `browsecraft://passwords` lists, shows, copies (cleared from the clipboard after 30 seconds), adds and deletes logins.
+
 ## Settings (`browsecraft://flags`)
 
-`browsecraft://flags` is an engine-rendered settings page. It controls the tab
-sidebar position, the theme (auto, light or dark) and the chrome backend
-(`auto`, `egui` or `engine`). Pick the options and press **Apply**; choices are
-stored in `flags.txt` in the working directory and take effect immediately.
-`auto` follows the OS for the theme, and for chrome it uses the GPU (egui) path
-when one is available, falling back to the engine otherwise. The chrome choice
-is made at startup, so restart to apply a change to it.
-
-## Ad blocking
-
-BrowseCraft blocks ads and trackers with a small built-in filter list plus every
-`.txt` file in a `filters` folder in the working directory or next to the
-executable (EasyList / uBlock Origin syntax). A blocked page shows a "This page
-was blocked" notice while the address bar keeps the original address, and a
-blocked pop-up shows a short notice under the page.
+`browsecraft://flags` is an engine-rendered settings page with switches and segmented controls. It sets the theme (system, light or dark; dark by default), the tab sidebar position, whether the bookmarks bar shows, and the interface renderer (auto, GPU or software). Changes apply immediately and are stored in `flags.txt` in the working directory. System follows the OS for the theme; Auto uses the GPU path when one is available. The renderer choice is made at startup, so restart to apply a change to it.
 
 ## Keyboard and mouse
 

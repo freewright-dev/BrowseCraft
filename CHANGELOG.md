@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Page fullscreen: when a web page (a video, `requestFullscreen()`) goes fullscreen, the whole window goes fullscreen and the chrome is hidden, instead of the page only filling the viewport. Driven by WebView2's `ContainsFullScreenElementChanged`; the window returns to its previous state when the page leaves fullscreen. `F11` toggles window fullscreen.
+- Bookmarks: a star in the address bar, `Ctrl+D`, a bookmarks bar under the address bar (`Ctrl+Shift+B` to show or hide, overflow menu, middle-click and right-click menus), the `browsecraft://bookmarks` page (`Ctrl+Shift+O`), bookmarks as quick links on the new-tab page, and `bookmarks.txt` persistence.
+- Password manager: a KeePass 4 (`.kdbx`) vault protected by a password or a key file (created by Prowl), a key menu at the top right, login/sign-up/change-password form detection, a "Save this login?" bar (save, update, never for this site), autofill, strong password suggestion, auto-lock after 15 minutes, and the `browsecraft://passwords` page.
+- Tab context menu: duplicate tab, close tab, close other tabs.
+
 - Browser window with a toolbar (back, forward, reload/stop, home), a loading indicator and the page title in the window title.
 - BrowseCraft's own Rust rendering engine: HTML parser, CSS parser and cascade, layout (block, inline, floats, flexbox, tables, positioning) and a software rasterizer, shown through winit and softbuffer. It renders the internal pages (`about:`, `view-source:`, `browsecraft://`) and is used for everything on platforms without an embedded web view.
 - Regular websites render in an embedded WebView2 pane (wry) on Windows (WKWebView on macOS), so they run JavaScript; the engine-rendered internal pages do not.
@@ -16,7 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional URL or search as a command-line argument.
 - Real tabs with a vertical tab sidebar: `Ctrl+T` opens a new tab on the built-in `about:home` start page, `Ctrl+W` closes one, `Ctrl+Tab`/`Ctrl+Shift+Tab` cycle them.
 - Pop-ups and `target="_blank"` links open in the current tab.
-- Ad and tracker blocking ported from uBlock Origin's core, using EasyList/uBO filter syntax: network rules (`||host^`, `@@` exceptions, `$` options such as `third-party`, `domain=`, `important` and request types) and `##` element-hiding rules. Blocked pages show a "This page was blocked" notice, blocked pop-ups show a notice in the status strip, and WebView2 pages get an injected script that cancels matching requests and hides matching elements. Ships with a starter list (`filters/basic.txt`); any extra `filters/*.txt` lists next to the executable or in the working directory are merged at startup. Regex, `$redirect`, `$csp`, scriptlet and procedural filters are not supported (those rules are skipped).
 - Every page that finishes loading is recorded in the session history shown at `browsecraft://history` (`Ctrl+H`, last 500 entries).
 - User-settable options ("flags") persisted to `flags.txt` and edited on the `browsecraft://flags` settings page (toolbar gear button): tab sidebar position (left, right or hidden), theme and chrome backend.
 - Light/dark/auto theme with a toolbar sun/moon toggle; `auto` follows the system setting and the theme is applied to WebView2 pages too.
@@ -27,19 +31,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Engine features: networking with ureq and rustls, `file://` directory listings, `data:` URLs, `view-source:` (`Ctrl+U`), images (PNG, JPEG, GIF, WebP) that load in the background, form fields and GET/POST form submission, link previews on hover and keyboard scrolling.
 - Zoom (`Ctrl+Plus`/`Ctrl+Minus`/`Ctrl+0`), for both engine and WebView2 pages.
 - `--screenshot <out.png> <url> [width]` renders a page with the engine to PNG without a window.
-- `build.bat`: Windows build script (`release`, `debug`, `test`, `clean`, `run`) that checks for Rust 1.95 or newer, builds, and collects `browsecraft.exe` plus the `filters/` folder in `dist\`.
+- `build.bat`: Windows build script (`release`, `debug`, `test`, `clean`, `run`) that checks for Rust 1.95 or newer, builds, and collects `browsecraft.exe` in `dist\`.
 - Size-optimized release profile (`opt-level = "z"`, LTO, stripped).
-- Unit tests for the HTML, CSS, style, font, network, text-editing, address, browser, history, flags and ad-blocking modules.
+- Unit tests for the HTML, CSS, style, font, network, text-editing, address, browser, history and flags modules.
 - Documentation in `docs/`.
 
 ### Changed
+
+- Modern look: a refreshed dark and light palette for the toolbar, tabs and address bar (rounded, with a focus ring), and a shared stylesheet for every internal page (new tab, settings, history, bookmarks, passwords, error pages). Internal pages follow the theme and reload when it changes.
+- The theme now defaults to dark.
+- The settings page is redesigned with toggle switches and segmented controls; changing a setting no longer adds a Back step each time.
 
 - The internal pages moved from `craft://` to `browsecraft://` (`browsecraft://flags`, `browsecraft://history`), and the repository moved to `pierruno-labs/browsecraft`.
 - Replaced the original wry/tao-only browser with a hybrid design: BrowseCraft's own engine and winit window draw the chrome and internal pages, while websites render in an embedded WebView2 pane. The HTML toolbar webview is gone; the toolbar is drawn by the engine or by egui.
 - Searches use Startpage instead of DuckDuckGo.
 - The home page (`Alt+Home`, and the page shown at startup without an argument) is Startpage; new tabs open the built-in `about:home` start page.
 
+### Removed
+
+- The experimental ad blocker (a uBlock Origin port): the `adblock` module, the `filters/` lists, the `about:blocked:` notice page and the injected page script. Why it was removed and what could replace it: [proposal_adblocking_system.md](proposal_adblocking_system.md).
+
 ### Fixed
+
+- The password key icon was pushed past the right edge of the window: the toolbar reserved room for two right-hand buttons and there are three. The buttons on the right are now laid out from the window's edge and the address bar takes the room left over, so nothing can leave the window at any width (covered by a headless layout test).
+- Clicks and scrolling on engine-rendered pages (the new-tab page and its search box, settings, bookmarks, history, passwords) landed about 34 px off once the bookmarks bar was added: the page area used for layout, painting and hit-testing did not include the bookmarks bar or the "save this login?" bar. It now matches the egui panels exactly.
+- A click on a menu that hangs over the page (the key menu, a bookmark's right-click menu, the `»` overflow menu) was also delivered to the page underneath.
+- Menus drawn over a web page were hidden behind the WebView2 pane (a native window that always paints on top of egui). While a menu is open the page is now shown as a snapshot and the live pane is hidden, then restored when the menu closes.
+- The vault was queried (copied and sorted) on every frame to show the key icon's state; it now counts logins cheaply and loads site logins only while the menu is open.
 
 - BrowseCraft's keyboard shortcuts (new/close tab, address bar, reload, back/forward, zoom, history and the rest) now work while a web page has the keyboard, instead of only after clicking the toolbar or sidebar.
 - Keyboard shortcuts in the WebView2 pane now use the controller's native `AcceleratorKeyPressed` event instead of an injected script over `window.ipc`, preventing page JavaScript from triggering browser shortcuts.

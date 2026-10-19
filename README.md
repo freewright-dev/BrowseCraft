@@ -4,14 +4,14 @@
 
 <p align="center">Part of <a href="https://github.com/pierruno-labs">Pierruno Labs</a></p>
 
-A small web browser written in Rust, with tabs, a built-in ad blocker and
+A small web browser written in Rust, with tabs and
 **its own rendering engine**.
 
 BrowseCraft uses two renderers side by side:
 
 - **BrowseCraft's engine** draws the browser's own pages: the new-tab page
   (`about:home`), `view-source:` and the `browsecraft://` pages (`browsecraft://flags`,
-  `browsecraft://history`). It parses HTML and CSS, runs the cascade, lays out the
+  `browsecraft://history`, `browsecraft://bookmarks`, `browsecraft://passwords`). It parses HTML and CSS, runs the cascade, lays out the
   page and rasterizes it in software.
 - **WebView2** (through `wry`) shows regular websites, so JavaScript-heavy
   sites work as they would in Edge.
@@ -30,17 +30,14 @@ available, and by the engine otherwise.
 - Tabs in a vertical sidebar (left, right or hidden)
 - Back, forward, reload/stop, home (Startpage) and an address bar that tells URLs from searches (searches also go to Startpage)
 - Browsing history at `browsecraft://history`
-- Light, dark or automatic theme, toggled from the toolbar
-- Settings page at `browsecraft://flags`, saved to `flags.txt`
+- Bookmarks: a star in the address bar (`Ctrl+D`), a bookmarks bar under it, and a manager at `browsecraft://bookmarks`
+- Password manager backed by a KeePass `.kdbx` vault (password or key file), with sign-up/login detection, autofill and a save prompt
+- Real page fullscreen: a video's fullscreen button makes the whole window fullscreen, not just the viewport (`F11` for the window)
+- Dark theme by default; light or automatic on request, toggled from the toolbar
+- A modern settings page at `browsecraft://flags` with toggle switches, saved to `flags.txt`
 - Zoom, view source, link previews on hover and HiDPI support
 - Screenshots of the visible page (`Ctrl+Shift+S`), plus a headless `--screenshot` mode
 - A shortcut cheatsheet on `Shift+K`
-
-**Ad blocking**
-
-- A network and element-hiding filter engine ported from uBlock Origin's core, reading EasyList/uBO filter syntax
-- Blocks navigations, popups and subresources, and hides matching elements on both WebView2 and engine pages
-- Ships with a starter list; drop more lists into `filters/`
 
 **Rendering engine**
 
@@ -109,16 +106,6 @@ Open `browsecraft://flags` to change:
 - **Chrome backend:** `auto`, `egui` (GPU) or `engine` (software). This one takes effect after a restart.
 
 Settings are saved as `key=value` lines in `flags.txt` in the working directory.
-
-## Ad-block filter lists
-
-BrowseCraft builds its blocker from a built-in starter list plus every `filters/*.txt`
-file it finds next to the executable or in the working directory. To block
-more, add a list such as [EasyList](https://easylist.to/) to `filters/`.
-
-Some uBlock Origin features aren't supported: regex filters, `$redirect`,
-`$csp`, `$replace`, scriptlets and procedural filters. Rules that use them are
-skipped rather than applied loosely.
 
 ## Documentation
 

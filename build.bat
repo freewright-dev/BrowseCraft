@@ -105,11 +105,9 @@ if not exist "%EXE%" (
 if exist dist rmdir /s /q dist
 mkdir dist
 copy /y "%EXE%" "dist\browsecraft.exe" >nul
-if exist filters xcopy /e /i /y /q filters "dist\filters" >nul
 
 echo.
 echo Build finished: %CD%\dist\browsecraft.exe
-echo The ad-filter lists in dist\filters are loaded next to the executable.
 
 if defined RUN_AFTER (
     echo Starting BrowseCraft...

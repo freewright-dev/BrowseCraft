@@ -1,12 +1,14 @@
-﻿//! User-settable browser behavior ("flags"), persisted to `flags.txt` in the
+//! User-settable browser behavior ("flags"), persisted to `flags.txt` in the
 //! working directory.
 //!
 //! BrowseCraft's own experiment switches (no Chromium involved): a tiny
 //! `key=value` store. They load once at process start and are written back whenever they change,
-//! as `key=value` lines. The internal `browsecraft://flags` page edits them; a few
-//! (theme, tab side) also have toolbar/panel shortcuts.
+//! as `key=value` lines. The internal `browsecraft://flags` page (the settings
+//! page) edits them; a few (theme, tab side) also have toolbar/panel shortcuts.
 
-use std::sync::{Mutex, RwLock};
+use std::sync::RwLock;
+
+use crate::internal::{self, FormToken};
 
 const FILE_NAME: &str = "flags.txt";
 
@@ -37,22 +39,21 @@ pub struct Flags {
     pub tabs_position: TabsPosition,
     pub theme: Theme,
     pub chrome: Chrome,
+    /// The bookmarks bar under the address bar.
+    pub bookmarks_bar: bool,
 }
 
 impl Default for Flags {
     fn default() -> Self {
-        Flags {
-            tabs_position: TabsPosition::Left,
-            theme: Theme::Auto,
-            chrome: Chrome::default(),
-        }
+        DEFAULT_FLAGS
     }
 }
 
 const DEFAULT_FLAGS: Flags = Flags {
     tabs_position: TabsPosition::Left,
-    theme: Theme::Auto,
+    theme: Theme::Dark,
     chrome: Chrome::Auto,
+    bookmarks_bar: true,
 };
 
 static FLAGS: RwLock<Flags> = RwLock::new(DEFAULT_FLAGS);
@@ -80,6 +81,8 @@ fn load_from_mut(flags: &mut Flags) {
             ("chrome", "auto") => flags.chrome = Chrome::Auto,
             ("chrome", "egui") => flags.chrome = Chrome::Egui,
             ("chrome", "engine") => flags.chrome = Chrome::Engine,
+            ("bookmarks-bar", "on") => flags.bookmarks_bar = true,
+            ("bookmarks-bar", "off") => flags.bookmarks_bar = false,
             _ => {}
         }
     }
@@ -102,6 +105,11 @@ fn save(flags: &Flags) {
         Chrome::Egui => text += "chrome=egui\n",
         Chrome::Engine => text += "chrome=engine\n",
     }
+    text += if flags.bookmarks_bar {
+        "bookmarks-bar=on\n"
+    } else {
+        "bookmarks-bar=off\n"
+    };
     let _ = std::fs::write(file_path(), text);
 }
 
@@ -135,44 +143,19 @@ pub fn effective_dark(window_dark: bool) -> bool {
     }
 }
 
-/// Applies form-submitted query pairs to the flags (unknown keys ignored).
-/// Returns whether anything changed.
-/// The one-time token the flags page's form must send back. Only that form
-/// can change the flags: a link, a pop-up, another page's form or a
+/// The one-time token the settings page's links must send back. Only that
+/// page can change the flags: a link, a pop-up, another page's form or a
 /// back/forward replay of an earlier submission cannot know it.
-static FORM_TOKEN: Mutex<Option<String>> = Mutex::new(None);
+static FORM_TOKEN: FormToken = FormToken::new();
 
-/// Makes and remembers a new form token, replacing the previous one.
-fn new_form_token() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    // Each `RandomState` is seeded from the OS's random number generator.
-    let token: String = (0..2)
-        .map(|_| {
-            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-            h.write_u8(0);
-            format!("{:016x}", h.finish())
-        })
-        .collect();
-    *FORM_TOKEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(token.clone());
-    token
-}
-
-/// Applies a submission of the flags page's form (the URL query, without
-/// the `?`). Returns whether any flag changed. Without the current token it
-/// does nothing; with it, the token is used up.
+/// Applies a submission of the settings page (the URL query, without the
+/// `?`). Returns whether any flag changed. Without the current token it does
+/// nothing; with it, the token is used up.
 pub fn apply_form(query: &str) -> bool {
-    let pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
-        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-        .collect();
-    {
-        let mut token = FORM_TOKEN.lock().unwrap_or_else(|e| e.into_inner());
-        let sent = pairs.iter().find(|(k, _)| k == "token").map(|(_, v)| v);
-        if token.is_none() || sent != token.as_ref() {
-            return false;
-        }
-        *token = None;
+    match FORM_TOKEN.take(query) {
+        Some(pairs) => apply_query(pairs.into_iter()),
+        None => false,
     }
-    apply_query(pairs.into_iter())
 }
 
 fn apply_query(pairs: impl Iterator<Item = (String, String)>) -> bool {
@@ -216,6 +199,14 @@ fn apply_query(pairs: impl Iterator<Item = (String, String)>) -> bool {
                 changed |= flags.chrome != Chrome::Engine;
                 flags.chrome = Chrome::Engine;
             }
+            ("bookmarks-bar", "on") => {
+                changed |= !flags.bookmarks_bar;
+                flags.bookmarks_bar = true;
+            }
+            ("bookmarks-bar", "off") => {
+                changed |= flags.bookmarks_bar;
+                flags.bookmarks_bar = false;
+            }
             _ => {}
         }
     }
@@ -225,64 +216,69 @@ fn apply_query(pairs: impl Iterator<Item = (String, String)>) -> bool {
     changed
 }
 
-/// The HTML source of the `browsecraft://flags` page, reflecting the current
-/// flags. Each call issues a new form token.
+/// The HTML source of the `browsecraft://flags` (settings) page, reflecting
+/// the current flags. Each call issues a new form token.
 pub fn page_html() -> String {
     let flags = get();
-    let token = new_form_token();
-    let checked = |name: &str, value: &str| -> &'static str {
-        let on = match name {
-            "tabs-position" => matches!(
-                (flags.tabs_position, value),
-                (TabsPosition::Left, "left")
-                    | (TabsPosition::Right, "right")
-                    | (TabsPosition::Hidden, "hidden")
-            ),
-            "theme" => matches!(
-                (flags.theme, value),
-                (Theme::Auto, "auto") | (Theme::Light, "light") | (Theme::Dark, "dark")
-            ),
-            "chrome" => matches!(
-                (flags.chrome, value),
-                (Chrome::Auto, "auto") | (Chrome::Egui, "egui") | (Chrome::Engine, "engine")
-            ),
-            _ => false,
-        };
-        if on { " checked" } else { "" }
-    };
-    format!(
-        "<!doctype html><title>Flags</title>\
-         <style>body{{font-family:sans-serif;margin:0;background:#f6f7f9;color:#1f2328;font-size:14px}}\
-         main{{max-width:640px;margin:40px auto;padding:0 24px}}h1{{font-size:22px}}\
-         p{{color:#57606a}}fieldset{{border:1px solid #d6d8dc;border-radius:8px;margin:16px 0;padding:12px 16px}}\
-         legend{{padding:0 6px;font-weight:600}}label{{display:block;margin:6px 0}}input{{accent-color:#2f6fde}}\
-         button{{margin-top:4px;padding:8px 20px;border:0;border-radius:6px;background:#2f6fde;color:white;font-size:14px}}\
-         button:focus{{outline:none}}</style>\
-         <main><h1>Flags</h1><p>Experiments for BrowseCraft. Changes apply immediately.</p>\
-         <form><input type=\"hidden\" name=\"token\" value=\"{9}\"><fieldset><legend>Tab sidebar</legend>\
-         <label><input type=\"radio\" name=\"tabs-position\" value=\"left\"{0}> Show tabs on the left</label>\
-         <label><input type=\"radio\" name=\"tabs-position\" value=\"right\"{1}> Show tabs on the right</label>\
-         <label><input type=\"radio\" name=\"tabs-position\" value=\"hidden\"{2}> Hide the tab sidebar</label>\
-         </fieldset><fieldset><legend>Theme</legend>\
-         <label><input type=\"radio\" name=\"theme\" value=\"auto\"{3}> Auto (follow the system)</label>\
-         <label><input type=\"radio\" name=\"theme\" value=\"light\"{4}> Light</label>\
-         <label><input type=\"radio\" name=\"theme\" value=\"dark\"{5}> Dark</label>\
-         </fieldset><fieldset><legend>Chrome</legend>\
-         <label><input type=\"radio\" name=\"chrome\" value=\"auto\"{6}> Auto (use GPU if available)</label>\
-         <label><input type=\"radio\" name=\"chrome\" value=\"egui\"{7}> Egui (GPU-rendered chrome)</label>\
-         <label><input type=\"radio\" name=\"chrome\" value=\"engine\"{8}> Engine (software chrome)</label>\
-         </fieldset><button type=\"submit\">Apply</button></form></main>",
-        checked("tabs-position", "left"),
-        checked("tabs-position", "right"),
-        checked("tabs-position", "hidden"),
-        checked("theme", "auto"),
-        checked("theme", "light"),
-        checked("theme", "dark"),
-        checked("chrome", "auto"),
-        checked("chrome", "egui"),
-        checked("chrome", "engine"),
-        token,
-    )
+    let token = FORM_TOKEN.issue();
+    // Every option is a link back to the page carrying the token.
+    let to = |key: &str, value: &str| format!("browsecraft://flags?token={token}&{key}={value}");
+
+    let theme = |label: &'static str, value: &str, on: bool| (label, to("theme", value), on);
+    let side = |label: &'static str, value: &str, on: bool| (label, to("tabs-position", value), on);
+    let render = |label: &'static str, value: &str, on: bool| (label, to("chrome", value), on);
+
+    let appearance = internal::segmented_row(
+        true,
+        "Theme",
+        "Dark is easiest on the eyes. System follows your OS.",
+        &[
+            theme("System", "auto", flags.theme == Theme::Auto),
+            theme("Light", "light", flags.theme == Theme::Light),
+            theme("Dark", "dark", flags.theme == Theme::Dark),
+        ],
+    );
+    let layout = internal::segmented_row(
+        true,
+        "Tab sidebar",
+        "Where your open tabs are listed.",
+        &[
+            side("Left", "left", flags.tabs_position == TabsPosition::Left),
+            side("Right", "right", flags.tabs_position == TabsPosition::Right),
+            side("Hidden", "hidden", flags.tabs_position == TabsPosition::Hidden),
+        ],
+    );
+    let bar = internal::switch_row(
+        false,
+        "Bookmarks bar",
+        "Show your bookmarks under the address bar.",
+        flags.bookmarks_bar,
+        &to("bookmarks-bar", if flags.bookmarks_bar { "off" } else { "on" }),
+    );
+    let renderer = internal::segmented_row(
+        true,
+        "Interface renderer",
+        "Auto uses the GPU when there is one. Applies after a restart.",
+        &[
+            render("Auto", "auto", flags.chrome == Chrome::Auto),
+            render("GPU", "egui", flags.chrome == Chrome::Egui),
+            render("Software", "engine", flags.chrome == Chrome::Engine),
+        ],
+    );
+    let body = format!(
+        "<h1>Settings</h1><p class=\"sub\">Changes apply immediately.</p>\
+         <div class=\"card\"><h2>Appearance</h2>{appearance}</div>\
+         <div class=\"card\"><h2>Layout</h2>{layout}{bar}</div>\
+         <div class=\"card\"><h2>Advanced</h2>{renderer}</div>\
+         <div class=\"card\"><h2>Shortcuts to your data</h2>\
+         <div class=\"row first\"><div class=\"grow\"><div class=\"t\">Bookmarks</div><div class=\"d\">Pages you saved.</div></div>\
+         <a class=\"btn ghost\" href=\"browsecraft://bookmarks\">Open</a></div>\
+         <div class=\"row\"><div class=\"grow\"><div class=\"t\">History</div><div class=\"d\">Pages you visited.</div></div>\
+         <a class=\"btn ghost\" href=\"browsecraft://history\">Open</a></div>\
+         <div class=\"row\"><div class=\"grow\"><div class=\"t\">Passwords</div><div class=\"d\">Your KeePass (.kdbx) vault.</div></div>\
+         <a class=\"btn ghost\" href=\"browsecraft://passwords\">Open</a></div></div>"
+    );
+    internal::page("Settings", &body)
 }
 
 #[cfg(test)]
@@ -297,51 +293,60 @@ mod tests {
     fn query_sets_flags() {
         let _guard = SERIAL.lock().unwrap();
         let before = get();
+        set(Flags::default());
         let pairs = vec![
             ("tabs-position".into(), "right".into()),
-            ("theme".into(), "dark".into()),
+            ("theme".into(), "light".into()),
             ("chrome".into(), "egui".into()),
+            ("bookmarks-bar".into(), "off".into()),
         ];
         assert!(apply_query(pairs.into_iter()));
         let after = get();
         assert_eq!(after.tabs_position, TabsPosition::Right);
-        assert_eq!(after.theme, Theme::Dark);
+        assert_eq!(after.theme, Theme::Light);
         assert_eq!(after.chrome, Chrome::Egui);
+        assert!(!after.bookmarks_bar);
         assert!(!apply_query(vec![].into_iter()));
-        assert_eq!(effective_dark(true), true);
+        assert!(!effective_dark(false));
         set(before);
     }
 
-    /// The token from the hidden field of a freshly rendered flags page.
+    #[test]
+    fn dark_is_the_default_theme() {
+        assert_eq!(Flags::default().theme, Theme::Dark);
+        assert!(Flags::default().bookmarks_bar);
+    }
+
+    /// The token from a freshly rendered settings page.
     fn rendered_token() -> String {
         let html = page_html();
-        let marker = "name=\"token\" value=\"";
+        let marker = "token=";
         let start = html.find(marker).unwrap() + marker.len();
         html[start..start + 32].to_string()
     }
 
     #[test]
-    fn only_the_flags_form_can_change_flags() {
+    fn only_the_settings_page_can_change_flags() {
         let _guard = SERIAL.lock().unwrap();
         let before = get();
         set(Flags::default());
-        let query = |token: &str| format!("token={token}&theme=dark");
+        let query = |token: &str| format!("token={token}&theme=light");
 
-        // No token, a guessed token, or a link with no form rendered yet.
-        *FORM_TOKEN.lock().unwrap() = None;
-        assert!(!apply_form("theme=dark"));
-        assert!(!apply_form("token=&theme=dark"));
+        // No token, a guessed token, or a link with no page rendered yet.
+        FORM_TOKEN.clear();
+        assert!(!apply_form("theme=light"));
+        assert!(!apply_form("token=&theme=light"));
         let token = rendered_token();
-        assert!(!apply_form("theme=dark"));
+        assert!(!apply_form("theme=light"));
         assert!(!apply_form(&query(&"0".repeat(32))));
-        assert_eq!(get().theme, Theme::Auto);
-
-        // The real form works once; replaying it (back/forward) does not.
-        assert!(apply_form(&query(&token)));
         assert_eq!(get().theme, Theme::Dark);
+
+        // The real link works once; replaying it (back/forward) does not.
+        assert!(apply_form(&query(&token)));
+        assert_eq!(get().theme, Theme::Light);
         set(Flags::default());
         assert!(!apply_form(&query(&token)));
-        assert_eq!(get().theme, Theme::Auto);
+        assert_eq!(get().theme, Theme::Dark);
 
         // Rendering again issues a different token.
         assert_ne!(rendered_token(), token);
@@ -351,41 +356,51 @@ mod tests {
     #[test]
     fn unknown_keys_ignored() {
         let _guard = SERIAL.lock().unwrap();
+        let before = get();
         set(Flags::default());
         assert!(!apply_query(vec![("bogus".into(), "1".into())].into_iter()));
-        let f = get();
-        assert_eq!(f.tabs_position, TabsPosition::Left);
+        assert_eq!(get().tabs_position, TabsPosition::Left);
+        set(before);
     }
 
     #[test]
-    fn page_has_current_values_marked() {
+    fn page_marks_the_current_values() {
         let _guard = SERIAL.lock().unwrap();
+        let before = get();
         set(Flags {
             tabs_position: TabsPosition::Right,
-            theme: Theme::Dark,
+            theme: Theme::Light,
             chrome: Chrome::Egui,
+            bookmarks_bar: false,
         });
         let html = page_html();
-        assert!(html.contains("name=\"tabs-position\" value=\"right\" checked"));
-        assert!(html.contains("name=\"theme\" value=\"dark\" checked"));
-        assert!(html.contains("name=\"chrome\" value=\"egui\" checked"));
-        assert!(!html.contains("name=\"tabs-position\" value=\"left\" checked"));
-        set(Flags::default());
+        assert!(html.contains("tabs-position=right\">Right"), "unselected links have no class");
+        assert!(html.contains("class=\"on\" href=\"browsecraft://flags?token="));
+        assert_eq!(html.matches("class=\"on\"").count(), 3, "one selected option per control");
+        // The bookmarks-bar switch is off and offers to turn it on.
+        assert!(html.contains("bookmarks-bar=on"));
+        assert!(!html.contains("class=\"sw on\""));
+        set(Flags { bookmarks_bar: true, ..Flags::default() });
+        assert!(page_html().contains("class=\"sw on\""));
+        set(before);
     }
 
     #[test]
     fn roundtrip_via_file() {
         let _guard = SERIAL.lock().unwrap();
+        let before = get();
         set(Flags {
             tabs_position: TabsPosition::Right,
-            theme: Theme::Dark,
+            theme: Theme::Light,
             chrome: Chrome::Egui,
+            bookmarks_bar: false,
         });
         let mut flags = Flags::default();
         load_from_mut(&mut flags);
         assert_eq!(flags.tabs_position, TabsPosition::Right);
-        assert_eq!(flags.theme, Theme::Dark);
+        assert_eq!(flags.theme, Theme::Light);
         assert_eq!(flags.chrome, Chrome::Egui);
-        set(Flags::default());
+        assert!(!flags.bookmarks_bar);
+        set(before);
     }
 }

@@ -137,9 +137,10 @@ pub fn resolve(gpu_available: bool) -> Choice {
 // Phosphor codepoints used by the chrome (see `crate::icons`). Re-exported
 // under the historical `ICON_*` names for the call sites in `browser.rs`.
 pub use crate::icons::{
-    BACK as ICON_BACK, CLOSE as ICON_STOP, CLOSE as ICON_XMARK, FORWARD as ICON_FORWARD,
-    GEAR as ICON_GEAR, GLOBE as ICON_GLOBE, HOME as ICON_HOME, LOCK as ICON_LOCK,
-    MOON as ICON_MOON, PLUS as ICON_PLUS, RELOAD as ICON_RELOAD, SUN as ICON_SUN,
+    BACK as ICON_BACK, BOOKMARKS as ICON_BOOKMARKS, CLOSE as ICON_STOP, CLOSE as ICON_XMARK,
+    FORWARD as ICON_FORWARD, GEAR as ICON_GEAR, GLOBE as ICON_GLOBE, HOME as ICON_HOME,
+    KEY as ICON_KEY, LOCK as ICON_LOCK, MOON as ICON_MOON, PLUS as ICON_PLUS,
+    RELOAD as ICON_RELOAD, STAR as ICON_STAR, SUN as ICON_SUN,
 };
 
 /// Icon text at `size` points, in the Phosphor family.
@@ -159,8 +160,8 @@ pub fn icon_button(
     size: f32,
 ) -> egui::Response {
     let button = egui::Button::new(icon(code, size))
-        .min_size(egui::vec2(30.0, 30.0))
-        .corner_radius(egui::CornerRadius::same(7));
+        .min_size(egui::vec2(32.0, 32.0))
+        .corner_radius(egui::CornerRadius::same(10));
     let response = ui.add_enabled(enabled, button);
     if enabled {
         response.on_hover_text(tooltip)
@@ -175,37 +176,181 @@ pub fn address_id() -> egui::Id {
     egui::Id::new("bc-address")
 }
 
-/// The rounded address field with a leading scheme icon. Returns the text
-/// edit's response so the caller can react to focus/submit.
+/// The rounded address field: a leading scheme icon, the text, and (for pages
+/// that can be bookmarked) a star on the right. `star` is `Some(is_starred)`
+/// or `None` when the page cannot be bookmarked. Returns the text edit's
+/// response and whether the star was clicked.
 pub fn address_bar(
     ui: &mut egui::Ui,
     text: &mut String,
     width: f32,
     c: &Colors,
     leading: &str,
-) -> egui::Response {
-    egui::Frame::NONE
+    star: Option<bool>,
+) -> (egui::Response, bool) {
+    let focused = ui.memory(|m| m.has_focus(address_id()));
+    let stroke = if focused {
+        egui::Stroke::new(1.5, c.accent)
+    } else {
+        egui::Stroke::new(1.0, c.line)
+    };
+    let mut star_clicked = false;
+    let response = egui::Frame::NONE
         .fill(c.field_bg)
-        .stroke(egui::Stroke::new(1.0, c.line))
-        .corner_radius(egui::CornerRadius::same(8))
-        .inner_margin(egui::Margin::symmetric(9, 3))
+        .stroke(stroke)
+        .corner_radius(egui::CornerRadius::same(16))
+        .inner_margin(egui::Margin::symmetric(12, 3))
         .show(ui, |ui| {
-            ui.set_width((width - 18.0).max(40.0));
+            ui.set_width((width - 24.0).max(40.0));
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 ui.label(icon(leading, 13.0).color(c.muted));
-                ui.add_sized(
-                    [ui.available_width(), 22.0],
+                let star_w = if star.is_some() { 26.0 } else { 0.0 };
+                let response = ui.add_sized(
+                    [(ui.available_width() - star_w).max(20.0), 24.0],
                     egui::TextEdit::singleline(text)
                         .id(address_id())
                         .frame(egui::Frame::NONE)
                         .text_color(c.text)
                         .hint_text(egui::RichText::new("Search or enter address").color(c.muted)),
-                )
+                );
+                if let Some(on) = star {
+                    let color = if on { c.accent } else { c.muted };
+                    let tip = if on { "Remove bookmark (Ctrl+D)" } else { "Bookmark this page (Ctrl+D)" };
+                    let button = egui::Button::new(icon(ICON_STAR, 15.0).color(color))
+                        .frame(false)
+                        .min_size(egui::vec2(24.0, 24.0));
+                    star_clicked = ui.add(button).on_hover_text(tip).clicked();
+                }
+                response
             })
             .inner
         })
-        .inner
+        .inner;
+    (response, star_clicked)
+}
+
+/// What the user did in the bookmarks bar.
+pub enum BarEvent {
+    Open(String),
+    OpenInNewTab(String),
+    Remove(String),
+    Manage,
+}
+
+/// A small icon-and-label entry for popup menus.
+pub fn menu_item(ui: &mut egui::Ui, c: &Colors, code: &str, label: &str) -> egui::Response {
+    let text = egui::RichText::new(format!("{code}  {label}")).size(13.0).color(c.text);
+    ui.add(egui::Button::new(text).frame(false).min_size(egui::vec2(180.0, 26.0)))
+}
+
+/// The bookmarks bar contents: one chip per bookmark that fits, an overflow
+/// menu for the rest, and an "All bookmarks" button on the right.
+pub fn bookmarks_bar(ui: &mut egui::Ui, c: &Colors, items: &[(String, String)]) -> Vec<BarEvent> {
+    const CHIP_MAX_TEXT: f32 = 150.0;
+    const CHIP_PAD: f32 = 10.0;
+    const ICON_W: f32 = 14.0;
+    const GAP: f32 = 4.0;
+    let mut events = Vec::new();
+    let font = egui::FontId::proportional(13.0);
+    let reserve = 128.0; // the "All bookmarks" button
+    let budget = (ui.available_width() - reserve - 8.0).max(0.0);
+
+    ui.horizontal_centered(|ui| {
+        ui.spacing_mut().item_spacing.x = GAP;
+        ui.add_space(8.0);
+        let mut used = 0.0;
+        let mut shown = 0;
+        let mut overflow: Vec<&(String, String)> = Vec::new();
+        for item in items {
+            let text_w = ui
+                .painter()
+                .layout_no_wrap(item.0.clone(), font.clone(), c.text)
+                .size()
+                .x
+                .min(CHIP_MAX_TEXT);
+            let w = CHIP_PAD * 2.0 + ICON_W + 6.0 + text_w;
+            if overflow.is_empty() && used + w + GAP <= budget - 30.0 {
+                used += w + GAP;
+                shown += 1;
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 26.0), egui::Sense::click());
+                if resp.hovered() {
+                    ui.painter().rect_filled(rect, egui::CornerRadius::same(13), c.hover);
+                }
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(rect.shrink2(egui::vec2(CHIP_PAD, 0.0)))
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                child.spacing_mut().item_spacing.x = 6.0;
+                child.label(icon(crate::icons::GLOBE, 12.0).color(c.accent));
+                child.add(
+                    egui::Label::new(egui::RichText::new(&item.0).size(13.0).color(c.text))
+                        .truncate()
+                        .selectable(false),
+                );
+                let resp = resp.on_hover_text(&item.1);
+                if resp.clicked() {
+                    events.push(BarEvent::Open(item.1.clone()));
+                } else if resp.middle_clicked() {
+                    events.push(BarEvent::OpenInNewTab(item.1.clone()));
+                }
+                resp.context_menu(|ui| {
+                    if menu_item(ui, c, crate::icons::GLOBE, "Open").clicked() {
+                        events.push(BarEvent::Open(item.1.clone()));
+                        ui.close();
+                    }
+                    if menu_item(ui, c, crate::icons::PLUS, "Open in new tab").clicked() {
+                        events.push(BarEvent::OpenInNewTab(item.1.clone()));
+                        ui.close();
+                    }
+                    if menu_item(ui, c, crate::icons::TRASH, "Remove bookmark").clicked() {
+                        events.push(BarEvent::Remove(item.1.clone()));
+                        ui.close();
+                    }
+                });
+            } else {
+                overflow.push(item);
+            }
+        }
+        if items.is_empty() {
+            ui.label(
+                egui::RichText::new("Bookmarks you add show up here. Click the star in the address bar.")
+                    .size(12.5)
+                    .color(c.muted),
+            );
+        }
+        let _ = shown;
+        if !overflow.is_empty() {
+            ui.menu_button(egui::RichText::new("\u{bb}").size(15.0).color(c.text), |ui| {
+                for item in overflow {
+                    let label = egui::RichText::new(&item.0).size(13.0).color(c.text);
+                    if ui
+                        .add(egui::Button::new(label).frame(false).min_size(egui::vec2(220.0, 26.0)))
+                        .on_hover_text(&item.1)
+                        .clicked()
+                    {
+                        events.push(BarEvent::Open(item.1.clone()));
+                        ui.close();
+                    }
+                }
+            });
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let label = egui::RichText::new(format!("{}  All bookmarks", ICON_BOOKMARKS))
+                .size(12.5)
+                .color(c.muted);
+            let button = egui::Button::new(label)
+                .frame(false)
+                .corner_radius(egui::CornerRadius::same(13))
+                .min_size(egui::vec2(0.0, 26.0));
+            if ui.add(button).on_hover_text("Open the bookmarks page (Ctrl+Shift+O)").clicked() {
+                events.push(BarEvent::Manage);
+            }
+            ui.add_space(6.0);
+        });
+    });
+    events
 }
 
 /// Selects the whole address field (used when the address bar is focused by
@@ -225,6 +370,10 @@ pub fn select_all(ctx: &egui::Context, id: egui::Id, chars: usize) {
 pub struct TabRow {
     pub clicked: bool,
     pub close: bool,
+    /// The user picked "Duplicate tab" from the context menu.
+    pub duplicate: bool,
+    /// The user picked "Close other tabs" from the context menu.
+    pub close_others: bool,
 }
 
 /// One row in the tab sidebar: a globe, the (truncated) title and a close
@@ -280,9 +429,26 @@ pub fn tab_row(ui: &mut egui::Ui, c: &Colors, title: &str, active: bool) -> TabR
             }
         });
     }
+    let (mut duplicate, mut close_others) = (false, false);
+    row.context_menu(|ui| {
+        if menu_item(ui, c, crate::icons::COPY, "Duplicate tab").clicked() {
+            duplicate = true;
+            ui.close();
+        }
+        if menu_item(ui, c, crate::icons::CLOSE, "Close tab").clicked() {
+            close = true;
+            ui.close();
+        }
+        if menu_item(ui, c, crate::icons::TRASH, "Close other tabs").clicked() {
+            close_others = true;
+            ui.close();
+        }
+    });
     TabRow {
         clicked: row.clicked() || label_resp.clicked(),
         close,
+        duplicate,
+        close_others,
     }
 }
 
@@ -310,24 +476,24 @@ impl Colors {
     pub fn for_dark(dark: bool) -> Self {
         if dark {
             Self {
-                bar_bg: rgb(0x2b2b2b),
-                sidebar_bg: rgb(0x202020),
-                line: rgb(0x3c3c3c),
-                field_bg: rgb(0x1e1e1e),
-                text: rgb(0xe8e8e8),
-                muted: rgb(0x8a8a8a),
-                hover: rgb(0x3d3d3d),
-                accent: rgb(0x5b9cff),
+                bar_bg: rgb(0x1b1e24),
+                sidebar_bg: rgb(0x16181d),
+                line: rgb(0x2c313a),
+                field_bg: rgb(0x14161a),
+                text: rgb(0xe8eaee),
+                muted: rgb(0x8b93a1),
+                hover: rgb(0x2a2f38),
+                accent: rgb(0x5b8def),
             }
         } else {
             Self {
-                bar_bg: rgb(0xf3f3f3),
-                sidebar_bg: rgb(0xececec),
-                line: rgb(0xd6d6d6),
+                bar_bg: rgb(0xf6f7f9),
+                sidebar_bg: rgb(0xeceef2),
+                line: rgb(0xdde1e7),
                 field_bg: rgb(0xffffff),
-                text: rgb(0x1f1f1f),
-                muted: rgb(0x8a8a8a),
-                hover: rgb(0xe1e1e1),
+                text: rgb(0x1c1f24),
+                muted: rgb(0x667085),
+                hover: rgb(0xe3e6ec),
                 accent: rgb(0x2f6fde),
             }
         }
@@ -355,7 +521,7 @@ pub fn apply_style(ctx: &egui::Context, dark: bool) {
     v.selection.bg_fill = c.accent.gamma_multiply(0.40);
     v.selection.stroke = egui::Stroke::new(1.0, c.text);
 
-    let radius = egui::CornerRadius::same(7);
+    let radius = egui::CornerRadius::same(9);
     v.widgets.noninteractive.corner_radius = radius;
     v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, c.text);
 
@@ -380,4 +546,309 @@ pub fn apply_style(ctx: &egui::Context, dark: bool) {
         s.spacing.button_padding = egui::vec2(7.0, 3.0);
         s.spacing.interact_size = egui::vec2(28.0, 28.0);
     });
+}
+
+// ---- password manager ----
+
+/// What the key menu shows.
+pub struct PasswordMenu<'a> {
+    pub status: &'a crate::passwords::Status,
+    /// Logins saved for the current site (empty while locked).
+    pub logins: &'a [crate::vault::Credential],
+    /// The kind of password form the page has, if any.
+    pub forms: Option<crate::passwords::FormKind>,
+    /// A login waiting to be saved.
+    pub offer: Option<&'a crate::passwords::Offer>,
+    pub on_web_page: bool,
+    pub host: &'a str,
+}
+
+pub enum PasswordEvent {
+    Fill(String),
+    Suggest,
+    Save,
+    Manage,
+    Lock,
+}
+
+/// A full-width flat button for the key menu.
+fn menu_button(ui: &mut egui::Ui, c: &Colors, text: &str) -> egui::Response {
+    ui.add_sized(
+        [ui.available_width(), 30.0],
+        egui::Button::new(egui::RichText::new(text).size(13.0).color(c.text))
+            .fill(c.hover)
+            .corner_radius(egui::CornerRadius::same(9)),
+    )
+}
+
+/// The contents of the password menu under the key icon.
+pub fn password_menu(
+    ui: &mut egui::Ui,
+    c: &Colors,
+    menu: &PasswordMenu,
+    emit: &mut dyn FnMut(PasswordEvent),
+) {
+    use crate::passwords::{FormKind, Status};
+    ui.set_min_width(280.0);
+    ui.spacing_mut().item_spacing.y = 6.0;
+    ui.horizontal(|ui| {
+        ui.label(icon(ICON_KEY, 16.0).color(c.accent));
+        ui.label(egui::RichText::new("Passwords").size(15.0).strong().color(c.text));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let (label, color) = match menu.status {
+                Status::Unlocked { .. } => ("Unlocked", c.accent),
+                Status::Locked => ("Locked", c.muted),
+                Status::NoVault => ("Not set up", c.muted),
+            };
+            ui.label(egui::RichText::new(label).size(12.0).color(color));
+        });
+    });
+    ui.separator();
+    match menu.status {
+        Status::NoVault => {
+            ui.label(
+                egui::RichText::new("Keep your logins in a KeePass (.kdbx) vault, protected by a password or a key file.")
+                    .size(12.5)
+                    .color(c.muted),
+            );
+            if menu_button(ui, c, "Set up the password manager").clicked() {
+                emit(PasswordEvent::Manage);
+                ui.close();
+            }
+        }
+        Status::Locked => {
+            ui.label(egui::RichText::new("Your vault is locked.").size(12.5).color(c.muted));
+            if menu_button(ui, c, &format!("{}  Unlock vault", ICON_KEY)).clicked() {
+                emit(PasswordEvent::Manage);
+                ui.close();
+            }
+        }
+        Status::Unlocked { logins } => {
+            if menu.on_web_page {
+                if menu.logins.is_empty() {
+                    let text = if menu.host.is_empty() {
+                        "Nothing to fill on this page.".to_string()
+                    } else {
+                        format!("No saved logins for {}.", menu.host)
+                    };
+                    ui.label(egui::RichText::new(text).size(12.5).color(c.muted));
+                }
+                for login in menu.logins {
+                    let name = if login.username.is_empty() { &login.title } else { &login.username };
+                    let label = format!("{}  {}", crate::icons::USER, name);
+                    if menu_button(ui, c, &label)
+                        .on_hover_text(format!("Fill {} on this page", login.title))
+                        .clicked()
+                    {
+                        emit(PasswordEvent::Fill(login.id.clone()));
+                        ui.close();
+                    }
+                }
+                if matches!(menu.forms, Some(FormKind::SignUp | FormKind::ChangePassword))
+                    && menu_button(ui, c, &format!("{}  Suggest a strong password", crate::icons::LOCK_KEY)).clicked()
+                {
+                    emit(PasswordEvent::Suggest);
+                    ui.close();
+                }
+                if menu.offer.is_some() && menu_button(ui, c, &format!("{}  Save this login", crate::icons::CHECK)).clicked() {
+                    emit(PasswordEvent::Save);
+                    ui.close();
+                }
+            } else {
+                ui.label(egui::RichText::new("Open a web page to fill a login.").size(12.5).color(c.muted));
+            }
+            ui.separator();
+            if menu_button(ui, c, &format!("{}  Manage passwords ({logins})", crate::icons::FOLDER)).clicked() {
+                emit(PasswordEvent::Manage);
+                ui.close();
+            }
+            if menu_button(ui, c, &format!("{}  Lock vault", crate::icons::LOCK_KEY)).clicked() {
+                emit(PasswordEvent::Lock);
+                ui.close();
+            }
+        }
+    }
+}
+
+pub enum SaveBarEvent {
+    Save,
+    OpenPasswords,
+    NotNow,
+    Never,
+}
+
+/// The bar offering to save (or update) a login the page just submitted.
+pub fn save_login_bar(
+    ui: &mut egui::Ui,
+    c: &Colors,
+    offer: &crate::passwords::Offer,
+    status: &crate::passwords::Status,
+    emit: &mut dyn FnMut(SaveBarEvent),
+) {
+    use crate::passwords::Status;
+    let who = if offer.username.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", offer.username)
+    };
+    let (text, action_label, action) = match status {
+        Status::Unlocked { .. } if offer.update_id.is_some() => (
+            format!("Update the saved password for {}{who}?", offer.host),
+            "Update",
+            SaveBarEvent::Save,
+        ),
+        Status::Unlocked { .. } => (
+            if offer.kind == crate::passwords::FormKind::SignUp {
+                format!("Save the new account for {}{who}?", offer.host)
+            } else {
+                format!("Save the login for {}{who}?", offer.host)
+            },
+            "Save",
+            SaveBarEvent::Save,
+        ),
+        Status::Locked => (
+            format!("Unlock your vault to save the login for {}{who}.", offer.host),
+            "Unlock",
+            SaveBarEvent::OpenPasswords,
+        ),
+        Status::NoVault => (
+            format!("Set up a password vault to save the login for {}{who}.", offer.host),
+            "Set up",
+            SaveBarEvent::OpenPasswords,
+        ),
+    };
+    ui.horizontal_centered(|ui| {
+        ui.add_space(12.0);
+        ui.label(icon(ICON_KEY, 16.0).color(c.accent));
+        ui.label(egui::RichText::new(text).size(13.0).color(c.text));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(10.0);
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new("Never for this site").size(12.5).color(c.muted))
+                        .frame(false),
+                )
+                .clicked()
+            {
+                emit(SaveBarEvent::Never);
+            }
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new("Not now").size(12.5).color(c.text))
+                        .fill(c.bar_bg)
+                        .corner_radius(egui::CornerRadius::same(8)),
+                )
+                .clicked()
+            {
+                emit(SaveBarEvent::NotNow);
+            }
+            let primary = egui::Button::new(egui::RichText::new(action_label).size(12.5).color(egui::Color32::WHITE))
+                .fill(c.accent)
+                .corner_radius(egui::CornerRadius::same(8));
+            if ui.add(primary).clicked() {
+                match action {
+                    SaveBarEvent::Save => emit(SaveBarEvent::Save),
+                    _ => emit(SaveBarEvent::OpenPasswords),
+                }
+            }
+        });
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds the toolbar the way `browser.rs` does (buttons on the left,
+    /// then the right-hand buttons anchored to the right edge with the
+    /// address bar taking the rest) and returns the rect of every widget.
+    fn toolbar_rects(screen_w: f32) -> (Vec<egui::Rect>, egui::Rect) {
+        let ctx = egui::Context::default();
+        install_icon_font(&ctx);
+        let c = Colors::for_dark(true);
+        let mut text = String::from("https://example.com/");
+        let mut buttons = Vec::new();
+        let mut address = egui::Rect::NOTHING;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(screen_w, 400.0))),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            egui::Panel::top("toolbar").exact_size(44.0).show(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.add_space(8.0);
+                    for code in [ICON_BACK, ICON_FORWARD, ICON_RELOAD, ICON_HOME] {
+                        buttons.push(icon_button(ui, true, code, "x", 16.0).rect);
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(8.0);
+                        for code in [ICON_KEY, ICON_GEAR, ICON_MOON] {
+                            buttons.push(icon_button(ui, true, code, "x", 16.0).rect);
+                        }
+                        let width = (ui.available_width() - 4.0).max(60.0);
+                        let (resp, _) = address_bar(ui, &mut text, width, &c, ICON_LOCK, Some(false));
+                        address = resp.rect;
+                    });
+                });
+            });
+        });
+        output.textures_delta.clear();
+        (buttons, address)
+    }
+
+    #[test]
+    fn toolbar_buttons_stay_inside_the_window_at_every_width() {
+        for width in [1600.0, 1280.0, 900.0, 640.0, 520.0] {
+            let (buttons, address) = toolbar_rects(width);
+            assert_eq!(buttons.len(), 7);
+            for (i, r) in buttons.iter().enumerate() {
+                assert!(r.max.x <= width + 0.5, "button {i} ends at {} in a {width}px window", r.max.x);
+                assert!(r.min.x >= 0.0, "button {i} starts left of the window at {width}px");
+            }
+            // The right-hand buttons are ordered theme | settings | key, key last.
+            let (key, gear, theme) = (buttons[4], buttons[5], buttons[6]);
+            assert!(key.min.x > gear.min.x && gear.min.x > theme.min.x || key.max.x >= width - 20.0,
+                "key is the rightmost button at {width}px");
+            assert!(key.max.x >= width - 20.0, "key hugs the right edge at {width}px: {}", key.max.x);
+            // The address bar never overlaps the buttons beside it.
+            if width >= 640.0 {
+                assert!(address.max.x <= theme.min.x.min(gear.min.x).min(key.min.x) + 0.5, "address overlaps buttons at {width}px");
+                assert!(address.width() > 150.0, "address bar too small at {width}px");
+            }
+        }
+    }
+
+    /// The width the bookmarks bar's content really takes in a window of
+    /// `screen_w` with `count` bookmarks.
+    fn bookmarks_bar_used(screen_w: f32, count: usize) -> f32 {
+        let ctx = egui::Context::default();
+        install_icon_font(&ctx);
+        let c = Colors::for_dark(true);
+        let items: Vec<(String, String)> = (0..count)
+            .map(|i| (format!("A fairly long bookmark title number {i}"), format!("https://site{i}.test/")))
+            .collect();
+        let mut used = 0.0;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(screen_w, 400.0))),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            egui::Panel::top("bookmarks").exact_size(34.0).show(ui, |ui| {
+                let _ = bookmarks_bar(ui, &c, &items);
+                used = ui.min_rect().max.x;
+            });
+        });
+        output.textures_delta.clear();
+        used
+    }
+
+    #[test]
+    fn bookmarks_bar_fits_the_window_with_few_or_many_bookmarks() {
+        for width in [1600.0, 1280.0, 800.0, 500.0] {
+            for count in [0, 3, 40] {
+                let used = bookmarks_bar_used(width, count);
+                assert!(used <= width + 0.5, "{count} bookmarks overflow a {width}px window: ends at {used}");
+            }
+        }
+    }
 }

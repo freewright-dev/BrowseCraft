@@ -28,6 +28,15 @@ pub const MOON: &str = egui_phosphor::regular::MOON;
 pub const GLOBE: &str = egui_phosphor::regular::GLOBE;
 pub const LOCK: &str = egui_phosphor::regular::LOCK;
 pub const GEAR: &str = egui_phosphor::regular::GEAR;
+pub const STAR: &str = egui_phosphor::regular::STAR;
+pub const BOOKMARKS: &str = egui_phosphor::regular::BOOKMARKS_SIMPLE;
+pub const KEY: &str = egui_phosphor::regular::KEY;
+pub const TRASH: &str = egui_phosphor::regular::TRASH;
+pub const COPY: &str = egui_phosphor::regular::COPY;
+pub const CHECK: &str = egui_phosphor::regular::CHECK;
+pub const LOCK_KEY: &str = egui_phosphor::regular::LOCK_KEY;
+pub const USER: &str = egui_phosphor::regular::USER;
+pub const FOLDER: &str = egui_phosphor::regular::FOLDER;
 
 /// The Phosphor family, for `RichText::family`.
 pub fn family() -> egui::FontFamily {

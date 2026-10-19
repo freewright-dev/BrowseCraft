@@ -6,8 +6,8 @@
 //! parses stylesheets, `style` runs the cascade, `layout` builds a display
 //! list and `paint` rasterizes it. `browser` is the window and UI around it.
 
-mod adblock;
 mod address;
+mod bookmarks;
 mod browser;
 mod capture;
 mod css;
@@ -19,17 +19,23 @@ mod headless;
 mod history;
 mod html;
 mod icons;
+mod internal;
 mod layout;
 mod loader;
 mod net;
 mod paint;
+mod passwords;
 mod style;
 mod textfield;
+mod vault;
 
 use winit::event_loop::EventLoop;
 
 fn main() {
     flags::load();
+    bookmarks::load();
+    passwords::load();
+    internal::set_dark(flags::get().theme != flags::Theme::Light);
     let fonts = match font::Fonts::new() {
         Ok(fonts) => fonts,
         Err(e) => {

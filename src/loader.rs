@@ -134,25 +134,8 @@ fn fetch_images(
     });
 }
 
-/// The URL inside `about:blocked:<url>`, if the ad filter really blocks
-/// it. BrowseCraft makes these addresses itself for blocked pages; anyone
-/// else (a link, a typed address) could otherwise put any URL, say a bank's,
-/// in the address bar over the "blocked" notice.
-pub fn blocked_notice_target(raw: &str) -> Option<&str> {
-    let inner = raw.strip_prefix("about:blocked:")?;
-    let lower = inner.to_ascii_lowercase();
-    let web = lower.starts_with("http://") || lower.starts_with("https://");
-    (web && crate::adblock::blocked_page(inner, "")).then_some(inner)
-}
-
 fn load_page(request: &Request) -> Page {
     let raw = request.url();
-    if raw.starts_with("about:blocked:") {
-        return match blocked_notice_target(raw) {
-            Some(inner) => ad_blocked_page(raw, inner),
-            None => error_page(raw, "This address is not valid."),
-        };
-    }
     if let Some(inner) = raw.strip_prefix("view-source:") {
         return view_source(inner);
     }
@@ -160,14 +143,32 @@ fn load_page(request: &Request) -> Page {
         // The flags page submits to itself with the new values in the query.
         crate::flags::apply_form(query);
         let source = crate::flags::page_html();
-        return internal_page(raw, &source);
+        // The address bar shows the clean URL, not the one-time link.
+        return internal_page("browsecraft://flags", &source);
     }
     if internal_query(raw, "browsecraft://history").is_some() {
         let source = crate::history::page_html();
         return internal_page(raw, &source);
     }
+    if let Some(query) = internal_query(raw, "browsecraft://bookmarks") {
+        // Removing a bookmark is a link back to this page carrying the token.
+        crate::bookmarks::apply_form(query);
+        let source = crate::bookmarks::page_html();
+        return internal_page("browsecraft://bookmarks", &source);
+    }
+    if let Some(query) = internal_query(raw, "browsecraft://passwords") {
+        // Forms post their fields in the body (never in the URL, which would
+        // land in the history); links carry only a token and an id.
+        let body = match request {
+            Request::Post(_, body) => Some(body.as_str()),
+            Request::Get(_) => None,
+        };
+        crate::passwords::handle(query, body);
+        let source = crate::passwords::page_html();
+        return internal_page("browsecraft://passwords", &source);
+    }
     match raw {
-        "about:home" => return internal_page(raw, HOME_HTML),
+        "about:home" => return internal_page(raw, &home_html()),
         "about:blank" => return internal_page(raw, ""),
         _ => {}
     }
@@ -220,12 +221,7 @@ fn load_page(request: &Request) -> Page {
 
     let doc = html::parse(&source);
     let base = document_base(&doc, &resp.url);
-    let mut sheets = load_stylesheets(&doc, &base);
-    let host = base.host_str().map(str::to_lowercase).unwrap_or_default();
-    let cosmetics = crate::adblock::instance().engine_cosmetic_css(&host);
-    if !cosmetics.is_empty() {
-        sheets.push(css::parse_stylesheet(&cosmetics));
-    }
+    let sheets = load_stylesheets(&doc, &base);
     Page {
         url: final_url,
         base,
@@ -243,6 +239,35 @@ fn internal_query<'a>(raw: &'a str, page: &str) -> Option<&'a str> {
     }
 }
 
+/// The new-tab page for the current theme, with the user's bookmarks as quick
+/// links (or a few starting points when there are none).
+fn home_html() -> String {
+    let bookmarks = crate::bookmarks::all();
+    let mut links = String::new();
+    if bookmarks.is_empty() {
+        for (title, url) in [
+            ("Hacker News", "https://news.ycombinator.com/"),
+            ("Wikipedia", "https://en.wikipedia.org/wiki/Special:Random"),
+            ("Lobsters", "https://lobste.rs/"),
+            ("The Rust Book", "https://doc.rust-lang.org/book/"),
+        ] {
+            links.push_str(&format!("<a href=\"{url}\">{title}</a>"));
+        }
+    } else {
+        for b in bookmarks.iter().take(8) {
+            links.push_str(&format!(
+                "<a href=\"{}\">{}</a>",
+                escape_html(&b.url),
+                escape_html(&b.title)
+            ));
+        }
+    }
+    let page = HOME_HTML
+        .replace("{{CSS}}", &crate::internal::css())
+        .replace("{{LINKS}}", &links);
+    crate::internal::themed(&page, crate::internal::dark())
+}
+
 fn internal_page(url: &str, source: &str) -> Page {
     let doc = html::parse(source);
     let base = Url::parse("about:blank").expect("valid url");
@@ -256,46 +281,21 @@ fn internal_page(url: &str, source: &str) -> Page {
 }
 
 pub fn error_page(url: &str, message: &str) -> Page {
-    let source = format!(
-        "<title>Problem loading page</title>\
-         <body style=\"font-family:sans-serif;margin:0;background:#f6f7f9;color:#1f2328\">\
-         <div style=\"max-width:640px;margin:80px auto;padding:0 24px\">\
-         <h1 style=\"font-size:24px;font-weight:600\">Hmm. We can't reach this page.</h1>\
-         <p style=\"color:#57606a\">{}</p>\
-         <p style=\"color:#57606a;font-size:14px;word-break:break-all\">{}</p></div>",
+    let body = format!(
+        "<div style=\"padding-top:56px\"><h1>Hmm. We can't reach this page.</h1>\
+         <p class=\"sub\">{}</p><div class=\"card\"><div class=\"row first\"><div class=\"grow\">\
+         <div class=\"d\">Address</div><div class=\"t\" style=\"word-break:break-all\">{}</div></div></div>\
+         <div class=\"note\">Check the address for typos, check your connection, then try again.</div></div></div>",
         escape_html(message),
         escape_html(url)
     );
+    let source = crate::internal::page("Problem loading page", &body);
     let mut page = internal_page(url, &source);
     page.url = url.to_string();
     page
 }
 
-fn ad_blocked_page(raw: &str, url: &str) -> Page {
-    let source = format!(
-        "<title>Blocked page</title>\
-         <body style=\"font-family:sans-serif;margin:0;background:#f6f7f9;color:#1f2328\">\
-         <div style=\"max-width:640px;margin:80px auto;padding:0 24px\">\
-         <h1 style=\"font-size:24px;font-weight:600\">This page was blocked.</h1>\
-         <p style=\"color:#57606a\">BrowseCraft's ad filter stopped this address from loading.</p>\
-         <p style=\"color:#57606a;font-size:14px;word-break:break-all\">{}</p></div>",
-        escape_html(url)
-    );
-    let mut page = internal_page(raw, &source);
-    page.url = url.to_string();
-    page
-}
-
 fn view_source(inner: &str) -> Page {
-    // The source of a blocked page is not fetched either.
-    let lower = inner.to_ascii_lowercase();
-    if (lower.starts_with("http://") || lower.starts_with("https://"))
-        && crate::adblock::blocked_page(inner, "")
-    {
-        let mut page = ad_blocked_page(inner, inner);
-        page.url = format!("view-source:{inner}");
-        return page;
-    }
     let source = Url::parse(inner)
         .map_err(|e| e.to_string())
         .and_then(|url| net::fetch(&url, None, ACCEPT_HTML))
@@ -397,7 +397,6 @@ fn inline_sheets(doc: &Document) -> Vec<Stylesheet> {
 /// Fetches and parses every stylesheet, in document order, fetching linked
 /// sheets in parallel.
 fn load_stylesheets(doc: &Document, base: &Url) -> Vec<Stylesheet> {
-    let host = base.host_str().map(str::to_lowercase).unwrap_or_default();
     let mut sources = sheet_sources(doc, Some(base));
     // The same stylesheet linked twice loads once.
     let mut linked = HashSet::new();
@@ -417,7 +416,6 @@ fn load_stylesheets(doc: &Document, base: &Url) -> Vec<Stylesheet> {
                 break;
             };
             let mut ctx = SheetContext {
-                doc_host: &host,
                 fetches: &fetches,
                 seen: HashSet::new(),
             };
@@ -442,7 +440,6 @@ fn load_stylesheets(doc: &Document, base: &Url) -> Vec<Stylesheet> {
 
 /// What one `<style>` or `<link>` and its `@import`s may still fetch.
 struct SheetContext<'a> {
-    doc_host: &'a str,
     /// Stylesheet requests left for the whole page.
     fetches: &'a AtomicUsize,
     /// URLs this sheet's `@import` tree has already fetched, so that `N`
@@ -466,12 +463,7 @@ fn fetch_sheet(
     depth: u32,
     ctx: &mut SheetContext,
 ) -> Vec<Stylesheet> {
-    if crate::adblock::blocked_subresource(
-        url.as_str(),
-        crate::adblock::TYPE_STYLESHEET,
-        ctx.doc_host,
-    ) || !ctx.claim(url)
-    {
+    if !ctx.claim(url) {
         return Vec::new();
     }
     match net::fetch(url, None, "text/css,*/*;q=0.1") {
@@ -505,15 +497,9 @@ fn with_imports(
     out
 }
 
-/// Image sources to fetch, as (src attribute, resolved URL). Sources the ad
-/// filter blocks are omitted.
+/// Image sources to fetch, as (src attribute, resolved URL).
 fn image_sources(page: &Page) -> Vec<(String, Url)> {
     let doc = &page.doc;
-    let host = page
-        .base
-        .host_str()
-        .map(str::to_lowercase)
-        .unwrap_or_default();
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for node in doc.descendants(Document::ROOT) {
@@ -535,7 +521,6 @@ fn image_sources(page: &Page) -> Vec<(String, Url)> {
         }
         if let Ok(url) = page.base.join(src)
             && may_fetch(&page.base, &url)
-            && !crate::adblock::blocked_subresource(url.as_str(), crate::adblock::TYPE_IMAGE, &host)
         {
             out.push((src.to_string(), url));
         }
@@ -600,20 +585,6 @@ fn decode_image(bytes: &[u8], budget: &AtomicU64) -> Option<Image> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn view_source_of_a_blocked_page_is_not_fetched() {
-        // filters/basic.txt (loaded from the working directory) blocks this.
-        if !crate::adblock::blocked_page("https://doubleclick.net/", "") {
-            return;
-        }
-        let page = load_page(&Request::Get("view-source:https://doubleclick.net/".into()));
-        assert_eq!(page.url, "view-source:https://doubleclick.net/");
-        assert!(
-            page.doc
-                .text_content(Document::ROOT)
-                .contains("was blocked")
-        );
-    }
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
 
@@ -765,23 +736,6 @@ mod tests {
     }
 
     #[test]
-    fn blocked_notices_only_for_blocked_urls() {
-        // Nothing in the test build's filter blocks a bank.
-        let raw = "about:blocked:https://bank.example/login";
-        assert_eq!(blocked_notice_target(raw), None);
-        let page = load_page(&Request::Get(raw.into()));
-        assert_eq!(page.url, raw);
-        assert!(
-            !page
-                .doc
-                .text_content(Document::ROOT)
-                .contains("was blocked")
-        );
-        assert_eq!(blocked_notice_target("about:blocked:javascript:x"), None);
-        assert_eq!(blocked_notice_target("https://bank.example/"), None);
-    }
-
-    #[test]
     fn web_pages_cannot_load_local_files() {
         let page = page_at("https://example.com/dir/page.html");
         assert_eq!(page.base.as_str(), "https://example.com/dir/page.html");
@@ -796,7 +750,6 @@ mod tests {
             let sheet = css::parse_stylesheet(&import);
             let fetches = AtomicUsize::new(MAX_SHEET_FETCHES);
             let mut ctx = SheetContext {
-                doc_host: "",
                 fetches: &fetches,
                 seen: HashSet::new(),
             };
@@ -813,5 +766,18 @@ mod tests {
         assert_eq!(page.base.as_str(), "file:///C:/");
         assert_eq!(links(&page), ["file:///C:/a.css", "file:///C:/b.css"]);
         assert_eq!(images(&page), ["file:///C:/c.png", "file:///C:/secret.png"]);
+    }
+
+    #[test]
+    fn new_tab_page_has_a_working_search_form() {
+        let html = home_html();
+        assert!(html.contains("action=\"https://www.startpage.com/sp/search\""));
+        assert!(html.contains("method=\"get\""));
+        assert!(html.contains("name=\"query\""));
+        assert!(html.contains("type=\"submit\""));
+        assert!(!html.contains("{{") && !html.contains('@'), "no unreplaced placeholders");
+        // The page the loader returns for about:home keeps the form.
+        let page = load_page(&Request::Get("about:home".into()));
+        assert_eq!(page.url, "about:home");
     }
 }

@@ -18,8 +18,12 @@ loader ──► net ──► html ──► dom
 | `flags.rs`       | User-settable flags persisted to `flags.txt`; the `browsecraft://flags` page  |
 | `egui_chrome.rs` | GPU chrome: egui toolbar/sidebar on wgpu, page raster as a texture      |
 | `icons.rs`       | Chrome icon codepoints (Phosphor) and the embedded icon font            |
-| `adblock.rs`     | Ad blocker ported from uBlock Origin: network and cosmetic filters      |
 | `history.rs`     | In-memory browsing history; the `browsecraft://history` page                  |
+| `bookmarks.rs`   | Bookmarks store (`bookmarks.txt`); the `browsecraft://bookmarks` page   |
+| `internal.rs`    | Shared look (palette, CSS), HTML helpers and one-time form tokens for internal pages |
+| `vault.rs`       | KeePass `.kdbx` vault: create/open with a password or key file, logins, atomic save |
+| `passwords.rs`   | Unlocked vault state, `browsecraft://passwords`, save offers, autofill scripts |
+| `passwords.js`   | Page script: detects login/sign-up forms, reports submits, defines `__bcFill` |
 | `capture.rs`     | Screen-region capture (GDI `BitBlt`) for screenshots of WebView2 pages  |
 | `loader.rs`      | Background page loads: document, stylesheets, then images; internal pages |
 | `net.rs`         | `http(s)` (ureq + rustls), `file:`, `data:`, charset decoding           |
@@ -47,8 +51,7 @@ goes through the engine.
 
 The engine handles these internal URLs in `loader::load_page`:
 `about:home`, `about:blank`, `view-source:<url>`, `browsecraft://flags`,
-`browsecraft://history`, and `about:blocked:<url>` (the notice shown when the ad
-filter blocks a page). WebView2 events (`WebStart`, `WebLoad`, `WebTitle`,
+`browsecraft://history`. WebView2 events (`WebStart`, `WebLoad`, `WebTitle`,
 `WebOpen`, `WebKey`) reach the UI thread as `UserMessage`s. Pop-ups are denied and
 reopened in the current tab.
 
@@ -152,27 +155,6 @@ texture in the central panel. If GPU setup fails, or `chrome = engine`,
 `browser.rs` creates the softbuffer surface (`Gfx::surface` is `Some`) and
 draws its own chrome. The choice is made once at startup; the WebView2 pane is
 placed from the egui central panel rect on the GPU path. See `docs/egui.md`.
-
-## Ad blocking
-
-`adblock.rs` is a port of uBlock Origin's static network filtering and `##`
-element hiding, using EasyList/uBO syntax. `adblock::instance()` builds one
-shared `AdBlocker` from a built-in starter list plus every `filters/*.txt`
-file in the working directory and next to the executable. It feeds three
-sinks:
-
-1. **Rust-side network checks** (`matches_network`, through `blocked_page` and
-   `blocked_subresource`): main-frame navigations and pop-ups are checked
-   before they load (a blocked page becomes `about:blocked:<url>`), and engine
-   pages skip blocked stylesheets and images.
-2. **WebView2 pages:** `page_script()` is installed as the web view's
-   initialization script. It cancels matching fetch/XHR/beacon/img/script/
-   iframe loads and injects a `<style>` for the `##` selectors.
-3. **Engine pages:** `engine_cosmetic_css(host)` returns a stylesheet that
-   `loader.rs` appends to fetched pages, hiding matches with `display: none`.
-
-Regex filters, `$redirect`/`$csp`/`$replace`, scriptlets and procedural
-filters are dropped; `$domain=` is only honoured on the Rust side.
 
 ## History
 

@@ -3,11 +3,11 @@
 //!
 //! The store is global (all tabs share it) and is read from the loader thread
 //! when the history page is built, so it lives behind a `Mutex` in a
-//! `OnceLock` like the ad filter and flags.
+//! `OnceLock` like the flags.
 
 use std::sync::{Mutex, OnceLock};
 
-use crate::net::escape_html;
+use crate::internal;
 
 /// Most recent entries kept; older ones are dropped.
 const MAX_ENTRIES: usize = 500;
@@ -65,39 +65,32 @@ pub fn page_html() -> String {
         } else {
             entry.title.clone()
         };
+        let letter: String = title
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().collect())
+            .unwrap_or_else(|| "?".into());
         rows.push_str(&format!(
-            "<li><span class=\"n\">{n}</span>\
-             <div class=\"meta\"><a href=\"{url}\">{title}</a>\
-             <span class=\"u\">{url}</span></div></li>",
-            n = entries.len() - i,
-            url = escape_html(&entry.url),
-            title = escape_html(&title),
+            "<div class=\"item{first}\"><div class=\"ico\">{letter}</div>\
+             <div class=\"main\"><a class=\"name\" href=\"{url}\">{title}</a>\
+             <div class=\"url\">{url}</div></div></div>",
+            first = if i == 0 { " first" } else { "" },
+            letter = internal::escape(&letter),
+            url = internal::escape(&entry.url),
+            title = internal::escape(&title),
         ));
     }
-    let body = if rows.is_empty() {
-        "<p class=\"empty\">No history yet. Pages you visit will show up here.</p>".to_string()
+    let list = if rows.is_empty() {
+        "<div class=\"empty\">No history yet. Pages you visit will show up here.</div>".to_string()
     } else {
-        format!("<ol class=\"h\">{rows}</ol>")
+        rows
     };
-    format!(
-        "<!doctype html><title>History</title><style>\
-         body {{ margin: 0; background: #f6f7f9; color: #1f2328; \
-         font-family: system-ui, sans-serif }}\
-         main {{ max-width: 760px; margin: 0 auto; padding: 40px 24px 64px }}\
-         h1 {{ font-size: 26px; font-weight: 600; margin: 0 0 4px }}\
-         .sub {{ color: #57606a; margin: 0 0 24px }}\
-         ol.h {{ list-style: none; margin: 0; padding: 0 }}\
-         ol.h li {{ display: flex; gap: 14px; padding: 12px 14px; background: #fff; \
-         border: 1px solid #e3e6ea; border-radius: 10px; margin-bottom: 8px }}\
-         .n {{ color: #8c959f; font-variant-numeric: tabular-nums; min-width: 32px; \
-         text-align: right }}\
-         .meta {{ min-width: 0 }}\
-         .meta a {{ color: #1f2328; text-decoration: none; font-size: 15px }}\
-         .meta a:hover {{ text-decoration: underline }}\
-         .u {{ display: block; color: #8c959f; font-size: 12px; word-break: break-all; margin-top: 2px }}\
-         .empty {{ color: #57606a }}\
-         </style><main><h1>History</h1>\
-         <p class=\"sub\">Pages BrowseCraft has loaded, newest first.</p>{body}</main>"
+    internal::page(
+        "History",
+        &format!(
+            "<h1>History</h1><p class=\"sub\">Pages you have loaded, newest first.</p>\
+             <div class=\"card\">{list}</div>"
+        ),
     )
 }
 

@@ -24,15 +24,15 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Window
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
-use winit::window::{CursorIcon, Theme, Window, WindowId};
+use winit::window::{CursorIcon, Fullscreen, Theme, Window, WindowId};
 use wry::dpi::{
     PhysicalPosition as WryPhysicalPosition, PhysicalSize as WryPhysicalSize, Position as WryPosition,
     Size as WrySize,
 };
 use wry::{NewWindowResponse, PageLoadEvent, WebView, WebViewBuilder};
 
-use crate::adblock;
 use crate::address;
+use crate::bookmarks;
 use crate::css::Color;
 use crate::dom::{Document, NodeId};
 use crate::egui_chrome::{self, EguiChrome};
@@ -40,11 +40,14 @@ use crate::flags::{self, Chrome, TabsPosition};
 use crate::font::{FontKey, Fonts};
 use crate::history;
 use crate::icons;
+use crate::internal;
 use crate::layout::{self, FormState, Layout, LayoutInput, Rect};
 use crate::loader::{self, LoadEvent, Page, Request};
 use crate::paint::{self, Canvas, Image};
+use crate::passwords::{self, FormKind, PageMessage};
 use crate::style::{self, Style, StyleContext};
 use crate::textfield::TextField;
+use crate::vault;
 
 pub const HOME_URL: &str = "https://www.startpage.com/";
 /// What a new tab opens: the built-in start page (`src/home.html`).
@@ -53,6 +56,8 @@ const TOOLBAR_HEIGHT: f32 = 44.0;
 const SIDEBAR_WIDTH: f32 = 220.0;
 /// Height of the status strip that shows a notice under the page.
 const NOTICE_HEIGHT: f32 = 30.0;
+const BOOKMARKS_BAR_HEIGHT: f32 = 34.0;
+const SAVE_BAR_HEIGHT: f32 = 42.0;
 const NOTICE_LIFETIME: Duration = Duration::from_secs(3);
 /// Pixels scrolled per mouse-wheel line or arrow-key press, in CSS px.
 const SCROLL_STEP: f32 = 48.0;
@@ -71,6 +76,10 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl + Left", "Go to the previous page"),
     ("Ctrl + Right", "Go to the next page"),
     ("Ctrl + H", "Open the history page"),
+    ("Ctrl + D", "Bookmark this page, or remove its bookmark"),
+    ("Ctrl + Shift + B", "Show or hide the bookmarks bar"),
+    ("Ctrl + Shift + O", "Open the bookmarks page"),
+    ("F11", "Fullscreen"),
     ("Ctrl + R", "Reload the page"),
     ("Ctrl + Shift + S", "Save a screenshot to Pictures"),
     ("Ctrl + + / \u{2212} / 0", "Zoom in / out / reset"),
@@ -88,11 +97,17 @@ pub enum UserMessage {
     WebStart(String),
     /// The WebView2 page finished loading this URL.
     WebLoad(String),
-    /// The WebView2 pane wants to open this URL (pop-ups, blocked pages).
+    /// The WebView2 pane wants to open this URL (pop-ups).
     WebOpen(String),
     /// A shortcut pressed inside the WebView2 pane (`AcceleratorKeyPressed`).
     #[cfg_attr(not(windows), allow(dead_code))]
     WebKey(Shortcut),
+    /// A page inside the WebView2 pane entered or left element fullscreen
+    /// (a video's fullscreen button, `requestFullscreen()`).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    WebFullscreen(bool),
+    /// The page script reported a form or a submitted login.
+    Page(PageMessage),
     /// Stop the current load.
     Stop,
 }
@@ -154,6 +169,20 @@ enum Action {
     NewTab,
     SwitchTab(usize),
     CloseTab(usize),
+    DuplicateTab(usize),
+    CloseOtherTabs(usize),
+    ToggleBookmark,
+    OpenBookmark(String),
+    OpenInNewTab(String),
+    RemoveBookmark(String),
+    BookmarksPage,
+    FillLogin(String),
+    SuggestPassword,
+    SaveLogin,
+    DismissOffer,
+    NeverSave,
+    LockVault,
+    PasswordsPage,
 }
 
 struct HistoryEntry {
@@ -261,6 +290,20 @@ pub struct Browser {
     egui_focus_address: bool,
     egui_select_all: bool,
     egui_address_focused: bool,
+    /// A web page is fullscreen: the window fills the screen and only the
+    /// page is shown.
+    web_fullscreen: bool,
+    /// The kind of password form the web page has right now, if any.
+    page_forms: Option<FormKind>,
+    /// An egui menu or popup is open. The WebView2 pane is a native window
+    /// that paints over anything egui draws, so while a menu is open the pane
+    /// is hidden and a snapshot of the page is shown in its place.
+    egui_popup_open: bool,
+    /// The page as it looked when the menu opened (see `egui_popup_open`).
+    popup_snapshot: Option<egui::TextureHandle>,
+    /// The window was already fullscreen (F11 / the OS) when the page asked,
+    /// so leaving page fullscreen must keep it that way.
+    fullscreen_restore: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -279,6 +322,41 @@ pub fn request_in_webview(url: &str) -> bool {
 /// A reload of the same URL is ours.
 fn stale_web_event(expecting: bool, leaving: &str, target: &str, url: &str) -> bool {
     expecting && !leaving.is_empty() && url == leaving && url != target
+}
+
+/// The height, in physical pixels, of the bars between the toolbar and the
+/// page: the bookmarks bar and the save-login bar. Zero on the engine chrome
+/// (`egui_chrome` false), which has neither.
+fn extra_bars_h(scale: f32, egui_chrome: bool, bookmarks_bar: bool, save_bar: bool) -> f32 {
+    if !egui_chrome {
+        return 0.0;
+    }
+    let mut h = 0.0;
+    if bookmarks_bar {
+        h += (BOOKMARKS_BAR_HEIGHT * scale).round();
+    }
+    if save_bar {
+        h += (SAVE_BAR_HEIGHT * scale).round();
+    }
+    h
+}
+
+/// The request a history entry keeps. A form post to the passwords page
+/// carries typed passwords, so the entry keeps a plain visit to the page
+/// instead: Back, Forward and Reload never resubmit or retain them.
+fn history_request(request: &Request) -> Request {
+    match request {
+        Request::Post(url, _) if url.starts_with("browsecraft://") => {
+            Request::Get(url.split('?').next().unwrap_or(url).to_string())
+        }
+        other => other.clone(),
+    }
+}
+
+/// Whether both URLs are the same `browsecraft://` page (ignoring the query).
+fn same_internal_page(a: &str, b: &str) -> bool {
+    let base = |u: &str| u.split('?').next().unwrap_or(u).trim_end_matches('/').to_string();
+    a.starts_with("browsecraft://") && b.starts_with("browsecraft://") && base(a) == base(b)
 }
 
 /// Whether `url` is an http(s) URL, in any letter case (`HTTP://` too).
@@ -454,6 +532,10 @@ pub enum Shortcut {
     Reload,
     ViewSource,
     History,
+    Bookmark,
+    BookmarksBar,
+    BookmarksPage,
+    Fullscreen,
     Quit,
     Zoom(Option<bool>),
 }
@@ -476,6 +558,9 @@ fn shortcut_for(key: &Key, ctrl: bool, shift: bool, alt: bool, typing: bool) -> 
                 "r" => Some(Shortcut::Reload),
                 "u" => Some(Shortcut::ViewSource),
                 "h" => Some(Shortcut::History),
+                "d" => Some(Shortcut::Bookmark),
+                "b" if shift => Some(Shortcut::BookmarksBar),
+                "o" if shift => Some(Shortcut::BookmarksPage),
                 "q" => Some(Shortcut::Quit),
                 "=" | "+" => Some(Shortcut::Zoom(Some(true))),
                 "-" | "_" => Some(Shortcut::Zoom(Some(false))),
@@ -499,6 +584,7 @@ fn shortcut_for(key: &Key, ctrl: bool, shift: bool, alt: bool, typing: bool) -> 
     match key {
         Key::Named(NamedKey::F5) => Some(Shortcut::Reload),
         Key::Named(NamedKey::F6) => Some(Shortcut::FocusAddress),
+        Key::Named(NamedKey::F11) => Some(Shortcut::Fullscreen),
         _ => None,
     }
 }
@@ -515,6 +601,7 @@ fn vk_to_key(vk: u32) -> Option<Key> {
         0x27 => Some(Key::Named(NamedKey::ArrowRight)), // VK_RIGHT
         0x74 => Some(Key::Named(NamedKey::F5)),         // VK_F5
         0x75 => Some(Key::Named(NamedKey::F6)),         // VK_F6
+        0x7A => Some(Key::Named(NamedKey::F11)),        // VK_F11
         0x30 | 0x60 => Some(Key::Character("0".into())), // '0', VK_NUMPAD0
         0x6B | 0xBB => Some(Key::Character("+".into())), // VK_ADD, VK_OEM_PLUS ('=' / '+')
         0x6D | 0xBD => Some(Key::Character("-".into())), // VK_SUBTRACT, VK_OEM_MINUS ('-' / '_')
@@ -579,6 +666,28 @@ fn attach_webview_shortcuts(wv: &WebView, proxy: EventLoopProxy<UserMessage>) {
         Ok(())
     }));
     let _ = unsafe { controller.add_AcceleratorKeyPressed(&handler, &mut token) };
+}
+
+/// Reports element fullscreen (a video's fullscreen button) from the WebView2
+/// pane. This is WebView2's own `ContainsFullScreenElementChanged` event, so a
+/// page cannot fake it, and it covers fullscreen requested from iframes too.
+#[cfg(windows)]
+fn attach_webview_fullscreen(wv: &WebView, proxy: EventLoopProxy<UserMessage>) {
+    use webview2_com::ContainsFullScreenElementChangedEventHandler;
+    use wry::WebViewExtWindows;
+
+    let webview = wv.webview();
+    let mut token = 0i64;
+    let handler = ContainsFullScreenElementChangedEventHandler::create(Box::new(move |sender, _| {
+        let Some(sender) = sender else {
+            return Ok(());
+        };
+        let mut flag = Default::default();
+        unsafe { sender.ContainsFullScreenElement(&mut flag)? };
+        let _ = proxy.send_event(UserMessage::WebFullscreen(flag.as_bool()));
+        Ok(())
+    }));
+    let _ = unsafe { webview.add_ContainsFullScreenElementChanged(&handler, &mut token) };
 }
 
 /// Applies an editing key to a text field. Returns `true` when the key was an
@@ -858,6 +967,11 @@ impl Browser {
             egui_focus_address: false,
             egui_select_all: false,
             egui_address_focused: false,
+            web_fullscreen: false,
+            page_forms: None,
+            egui_popup_open: false,
+            popup_snapshot: None,
+            fullscreen_restore: false,
         }
     }
 
@@ -877,10 +991,32 @@ impl Browser {
     }
 
     fn toolbar_h(&self) -> f32 {
+        if self.web_fullscreen {
+            return 0.0;
+        }
         (TOOLBAR_HEIGHT * self.scale()).round()
     }
 
+    /// Everything above the page: the toolbar plus, on the GPU chrome, the
+    /// bookmarks bar and the "save this login?" bar. The engine lays out,
+    /// paints and hit-tests the page from this, so it must match the egui
+    /// panels exactly or clicks land on the wrong spot.
+    fn top_h(&self) -> f32 {
+        let scale = self.scale();
+        let save_bar = self.egui.is_some() && self.web_page && passwords::has_offer();
+        self.toolbar_h()
+            + extra_bars_h(
+                scale,
+                self.egui.is_some() && !self.web_fullscreen,
+                flags::get().bookmarks_bar,
+                save_bar && !self.web_fullscreen,
+            )
+    }
+
     fn sidebar_w(&self) -> f32 {
+        if self.web_fullscreen {
+            return 0.0;
+        }
         match flags::get().tabs_position {
             TabsPosition::Hidden => 0.0,
             _ => (SIDEBAR_WIDTH * self.scale()).round(),
@@ -894,7 +1030,7 @@ impl Browser {
     }
 
     fn notice_h(&self) -> f32 {
-        if self.notice_active() {
+        if self.notice_active() && !self.web_fullscreen {
             (NOTICE_HEIGHT * self.scale()).round()
         } else {
             0.0
@@ -909,7 +1045,7 @@ impl Browser {
     /// The area the page (engine raster or WebView2 pane) occupies.
     fn page_rect(&self) -> Rect {
         let (w, h) = self.window_size();
-        let (th, sw) = (self.toolbar_h(), self.sidebar_w());
+        let (th, sw) = (self.top_h(), self.sidebar_w());
         let left = flags::get().tabs_position == TabsPosition::Left;
         Rect {
             x: if left { sw } else { 0.0 },
@@ -921,11 +1057,11 @@ impl Browser {
 
     fn sidebar_rect(&self) -> Option<Rect> {
         let pos = flags::get().tabs_position;
-        if pos == TabsPosition::Hidden {
+        if pos == TabsPosition::Hidden || self.web_fullscreen {
             return None;
         }
         let (w, h) = self.window_size();
-        let (th, sw) = (self.toolbar_h(), self.sidebar_w());
+        let (th, sw) = (self.top_h(), self.sidebar_w());
         Some(Rect {
             x: if pos == TabsPosition::Left { 0.0 } else { w - sw },
             y: th,
@@ -1157,13 +1293,7 @@ impl Browser {
         self.start_load(request, push, None);
     }
 
-    fn start_load(&mut self, mut request: Request, push: bool, restore: Option<f32>) {
-        let url = request.url().to_string();
-        // Main-frame ad filtering: blocked pages show an engine notice but
-        // keep the original URL in the address bar.
-        if is_web_url(&url) && adblock::blocked_page(&url, "") {
-            request = Request::Get(format!("about:blocked:{url}"));
-        }
+    fn start_load(&mut self, request: Request, push: bool, restore: Option<f32>) {
         if push {
             let scroll = self.live_scroll();
             if let Some(entry) = self.history.get_mut(self.index) {
@@ -1172,11 +1302,21 @@ impl Browser {
             if !self.history.is_empty() {
                 self.history.truncate(self.index + 1);
             }
-            self.history.push(HistoryEntry {
-                request: request.clone(),
-                scroll: 0.0,
+            // Toggling a setting reloads the same internal page: replace the
+            // entry instead of stacking one Back step per click.
+            let same_page = self.history.get(self.index).is_some_and(|e| {
+                same_internal_page(e.request.url(), request.url())
             });
-            self.index = self.history.len() - 1;
+            let entry = HistoryEntry {
+                request: history_request(&request),
+                scroll: 0.0,
+            };
+            if same_page {
+                self.history[self.index] = entry;
+            } else {
+                self.history.push(entry);
+                self.index = self.history.len() - 1;
+            }
         }
         self.focus = Focus::Page;
         self.drag = Drag::None;
@@ -1213,10 +1353,7 @@ impl Browser {
         self.web_url.clear();
         self.web_expect = false;
         self.pending_restore = restore;
-        let shown = loader::blocked_notice_target(&target)
-            .unwrap_or(&target)
-            .to_string();
-        self.address.set(&shown);
+        self.address.set(&target);
         let proxy = self.proxy.clone();
         loader::spawn(
             request,
@@ -1303,6 +1440,137 @@ impl Browser {
         self.request_redraw();
     }
 
+    /// A report from the password script of the page in the web view.
+    fn page_message(&mut self, message: PageMessage) {
+        if !self.web_page {
+            return;
+        }
+        match message {
+            PageMessage::Forms(kind) => {
+                self.page_forms = kind;
+                self.request_redraw();
+            }
+            PageMessage::Login {
+                url,
+                username,
+                password,
+                kind,
+            } => {
+                // Judge by the page the browser is really showing, not by
+                // the address the page claims.
+                let page = self.current_url();
+                if vault::same_site(&url, &page)
+                    && passwords::offer_login(&page, &username, &password, kind)
+                {
+                    self.request_redraw();
+                }
+            }
+        }
+    }
+
+    /// Runs `script` in the page of the web view.
+    fn run_in_page(&self, script: &str) -> bool {
+        self.web_page
+            && self
+                .webview
+                .as_ref()
+                .is_some_and(|wv| wv.evaluate_script(script).is_ok())
+    }
+
+    fn fill_login(&mut self, id: &str) {
+        let page = self.current_url();
+        match passwords::fill_script(id, &page) {
+            Some(script) if self.run_in_page(&script) => self.set_notice("Filled the login"),
+            _ => self.set_notice("Could not fill this login on this page"),
+        }
+    }
+
+    fn suggest_password(&mut self) {
+        if self.run_in_page(&passwords::suggest_script()) {
+            self.set_notice("Filled a new password. Submit the form and Prowl will offer to save it");
+        } else {
+            self.set_notice("Could not fill the password fields");
+        }
+    }
+
+    /// Bookmarks the page, or removes its bookmark (the star, Ctrl+D).
+    fn toggle_bookmark(&mut self) {
+        let url = self.current_url();
+        if !bookmarks::bookmarkable(&url) {
+            self.set_notice("Only web pages can be bookmarked");
+            return;
+        }
+        let title = self.live_title();
+        let message = if bookmarks::toggle(&title, &url) {
+            "Bookmark added"
+        } else {
+            "Bookmark removed"
+        };
+        self.set_notice(message);
+        // The bookmarks page and the new-tab links are built from the store.
+        self.refresh_if_internal("browsecraft://bookmarks");
+    }
+
+    fn toggle_bookmarks_bar(&mut self) {
+        let mut f = flags::get();
+        f.bookmarks_bar = !f.bookmarks_bar;
+        flags::set(f);
+        self.request_redraw();
+    }
+
+    /// F11: the whole window fullscreen, independent of page fullscreen.
+    fn toggle_window_fullscreen(&mut self) {
+        if self.web_fullscreen {
+            return;
+        }
+        if let Some(g) = &self.gfx {
+            let on = g.window.fullscreen().is_some();
+            g.window
+                .set_fullscreen(if on { None } else { Some(Fullscreen::Borderless(None)) });
+        }
+    }
+
+    /// Opens `url` in a new tab.
+    fn open_in_new_tab(&mut self, url: String) {
+        self.new_tab();
+        self.load(Request::Get(url), true);
+        self.focus = Focus::Page;
+    }
+
+    /// The URL tab `i` is showing.
+    fn tab_url(&self, i: usize) -> String {
+        if i == self.active {
+            return self.current_url();
+        }
+        self.tabs
+            .get(i)
+            .and_then(|s| s.history.get(s.index))
+            .map(|e| e.request.url().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Keeps only tab `keep`.
+    fn close_other_tabs(&mut self, keep: usize) {
+        if keep >= self.tabs.len() {
+            return;
+        }
+        self.switch_tab(keep);
+        while self.tabs.len() > 1 {
+            let Some(other) = (0..self.tabs.len()).rev().find(|&j| j != self.active) else {
+                break;
+            };
+            self.close_tab(other);
+        }
+    }
+
+    /// Reloads the active page when it is the engine page `prefix`, so it
+    /// reflects data that just changed.
+    fn refresh_if_internal(&mut self, prefix: &str) {
+        if !self.web_page && self.current_url().starts_with(prefix) {
+            self.reload();
+        }
+    }
+
     fn zoom(&mut self, change: Option<bool>) {
         self.user_zoom = match change {
             Some(up) => zoom_step(self.user_zoom, up),
@@ -1336,11 +1604,7 @@ impl Browser {
                     (_, Some(f)) => Some(PendingScroll::Fragment(f)),
                     _ => None,
                 };
-                let blocked = self
-                    .history
-                    .get(self.index)
-                    .is_some_and(|e| e.request.url().starts_with("about:blocked:"));
-                if !blocked && !url.starts_with("about:") {
+                if !url.starts_with("about:") {
                     history::record(&url, &title);
                 }
                 self.title = title;
@@ -1386,6 +1650,10 @@ impl Browser {
             self.web_committed = true;
         }
         self.loading = true;
+        // A new page: forget the form kind (the script reports it again) and
+        // a save offer that was for another site.
+        self.page_forms = None;
+        passwords::drop_offer_unless_site(&url);
         if !self.address_focused() && url != "about:blank" {
             self.address.set(&url);
         }
@@ -1439,14 +1707,10 @@ impl Browser {
         }
     }
 
-    /// A pop-up or a blocked main-frame navigation asked to open `url`.
+    /// A pop-up asked to open `url`.
     fn web_open(&mut self, url: String) {
         if !self.web_page {
             return; // from a page that is no longer shown
-        }
-        if is_web_url(&url) && adblock::blocked_page(&url, "") {
-            self.set_notice("Blocked a pop-up (ad filter)");
-            return;
         }
         self.load(Request::Get(url), true);
     }
@@ -1476,10 +1740,10 @@ impl Browser {
         if !(cfg!(windows) || cfg!(target_os = "macos")) {
             return;
         }
-        let nav_proxy = self.proxy.clone();
         let popup_proxy = self.proxy.clone();
         let title_proxy = self.proxy.clone();
         let load_proxy = self.proxy.clone();
+        let ipc_proxy = self.proxy.clone();
         let size = window.inner_size();
         let bounds = wry::Rect {
             position: WryPosition::Physical(WryPhysicalPosition::new(0, 0)),
@@ -1488,16 +1752,14 @@ impl Browser {
         let builder = WebViewBuilder::new()
             .with_visible(false)
             .with_bounds(bounds)
-            .with_initialization_script(adblock::instance().page_script())
-            .with_navigation_handler(move |url| {
-                // Main-frame navigations the ad filter blocks become an engine
-                // notice page instead.
-                if is_web_url(&url) && adblock::blocked_page(&url, "") {
-                    let _ =
-                        nav_proxy.send_event(UserMessage::WebOpen(format!("about:blocked:{url}")));
-                    return false;
+            .with_initialization_script(passwords::PAGE_SCRIPT)
+            .with_ipc_handler(move |request| {
+                // Reports from the password script. The page is untrusted:
+                // messages are parsed defensively and only ever lead to an
+                // offer the user can decline.
+                if let Some(message) = passwords::parse_page_message(request.body()) {
+                    let _ = ipc_proxy.send_event(UserMessage::Page(message));
                 }
-                true
             })
             .with_new_window_req_handler(move |url, _features| {
                 // Pop-ups open as a new navigation in the browser, but only
@@ -1529,17 +1791,84 @@ impl Browser {
         match builder.build_as_child(window) {
             Ok(wv) => {
                 #[cfg(windows)]
-                attach_webview_shortcuts(&wv, self.proxy.clone());
+                {
+                    attach_webview_shortcuts(&wv, self.proxy.clone());
+                    attach_webview_fullscreen(&wv, self.proxy.clone());
+                }
                 self.webview = Some(wv);
             }
             Err(e) => eprintln!("browsecraft: WebView2 is unavailable ({e}); using the engine for every page"),
         }
     }
 
+    /// Captures the web view's area into a texture shown while a menu is
+    /// open. Without a capture (not Windows, or it failed) the area is blank
+    /// for as long as the menu is open.
+    fn snapshot_page(&mut self) {
+        let r = self.webview_rect();
+        let (x, y, w, h) = (r.x.round() as i32, r.y.round() as i32, r.w.round() as u32, r.h.round() as u32);
+        let max_side = self.egui.as_ref().map_or(0, |e| e.max_texture_side()) as u32;
+        let Some(window) = self.gfx.as_ref().map(|g| g.window.clone()) else {
+            return;
+        };
+        if w == 0 || h == 0 || w > max_side || h > max_side {
+            return;
+        }
+        let Some(rgba) = crate::capture::window_region(&window, x, y, w, h) else {
+            return;
+        };
+        if rgba.len() != (w * h * 4) as usize {
+            return;
+        }
+        let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+        if let Some(egui) = &self.egui {
+            self.popup_snapshot = Some(egui.ctx().load_texture(
+                "browsecraft-popup-snapshot",
+                image,
+                egui::TextureOptions::LINEAR,
+            ));
+            // Draw it now, before the page disappears for good.
+            self.request_redraw();
+        }
+    }
+
+    /// Puts the whole window into (or out of) page fullscreen. The chrome is
+    /// hidden while it lasts, so the page, and not just the viewport, fills
+    /// the screen.
+    fn set_web_fullscreen(&mut self, on: bool) {
+        if on == self.web_fullscreen {
+            return;
+        }
+        self.web_fullscreen = on;
+        if let Some(g) = &self.gfx {
+            if on {
+                self.fullscreen_restore = g.window.fullscreen().is_some();
+                g.window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+            } else if !self.fullscreen_restore {
+                g.window.set_fullscreen(None);
+            }
+        }
+        // The page area changed size: force the pane to follow.
+        self.web_bounds = None;
+        self.request_redraw();
+    }
+
     /// Shows the WebView2 pane over the page area when a web page is the
     /// active one, and keeps its bounds in step with the layout.
     fn sync_webview(&mut self) {
-        let visible = self.web_page && !self.cheatsheet;
+        if self.web_fullscreen && !self.web_page {
+            // The fullscreen page is gone (another tab, an engine page).
+            self.set_web_fullscreen(false);
+        }
+        let menu_over_page = self.egui_popup_open && self.web_page && !self.cheatsheet;
+        if menu_over_page && self.web_visible && self.popup_snapshot.is_none() {
+            // The menu just opened: grab the page while it is still showing.
+            self.snapshot_page();
+        }
+        if !menu_over_page {
+            self.popup_snapshot = None;
+        }
+        let visible = self.web_page && !self.cheatsheet && !self.egui_popup_open;
         let r = self.webview_rect();
         let bounds = (
             r.x.round() as i32,
@@ -1566,6 +1895,13 @@ impl Browser {
     /// Pushes the effective theme to the window and the web view.
     fn apply_theme(&mut self, dark: bool) {
         self.last_dark = Some(dark);
+        // Internal pages are generated for one theme: rebuild the open one.
+        if internal::set_dark(dark) && !self.web_page {
+            let url = self.current_url();
+            if url.starts_with("browsecraft://") || url == NEW_TAB_URL {
+                self.reload();
+            }
+        }
         let setting = flags::get().theme;
         if let Some(g) = &self.gfx {
             g.window.set_theme(match setting {
@@ -2008,6 +2344,10 @@ impl Browser {
             Shortcut::Reload => self.reload(),
             Shortcut::ViewSource => self.view_source(),
             Shortcut::History => self.open_history_page(),
+            Shortcut::Bookmark => self.toggle_bookmark(),
+            Shortcut::BookmarksBar => self.toggle_bookmarks_bar(),
+            Shortcut::BookmarksPage => self.load(Request::Get("browsecraft://bookmarks".into()), true),
+            Shortcut::Fullscreen => self.toggle_window_fullscreen(),
             Shortcut::Quit => self.quit = true,
             Shortcut::Zoom(change) => self.zoom(change),
         }
@@ -3038,7 +3378,7 @@ impl Browser {
     }
 
     fn build_egui_chrome(&mut self, ui: &mut egui::Ui, tex: Option<(egui::TextureId, [usize; 2])>) {
-        use egui_chrome::{ICON_BACK, ICON_FORWARD, ICON_GEAR, ICON_GLOBE, ICON_HOME, ICON_LOCK};
+        use egui_chrome::{ICON_BACK, ICON_FORWARD, ICON_GEAR, ICON_GLOBE, ICON_HOME, ICON_KEY, ICON_LOCK};
         let dark = self.dark();
         let c = egui_chrome::Colors::for_dark(dark);
         let ctx = ui.ctx().clone();
@@ -3050,74 +3390,180 @@ impl Browser {
         let theme_icon = if dark { egui_chrome::ICON_SUN } else { egui_chrome::ICON_MOON };
         let reload_icon = if loading { egui_chrome::ICON_STOP } else { egui_chrome::ICON_RELOAD };
 
+        let fullscreen = self.web_fullscreen;
+        let page_url = self.current_url();
+        let star = bookmarks::bookmarkable(&page_url).then(|| bookmarks::contains(&page_url));
+        let bar_visible = flags::get().bookmarks_bar && !fullscreen;
+        // Password manager state for the key menu and the save bar.
+        let pw_status = passwords::status();
+        let pw_unlocked = matches!(pw_status, passwords::Status::Unlocked { .. });
+        let pw_offer = passwords::current_offer().filter(|_| self.web_page);
+        let pw_forms = self.page_forms;
+        let on_web_page = self.web_page;
+        let page_host = vault::host_key(&page_url);
+
         // Toolbar.
-        egui::Panel::top("toolbar")
-            .exact_size(TOOLBAR_HEIGHT)
-            .resizable(false)
-            .show_separator_line(false)
-            .frame(egui::Frame::NONE.fill(c.bar_bg))
-            .show(ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.add_space(8.0);
-                    if egui_chrome::icon_button(ui, can_back, ICON_BACK, "Back", 16.0).clicked() {
-                        actions.push(Action::Back);
+        if !fullscreen {
+            egui::Panel::top("toolbar")
+                .exact_size(TOOLBAR_HEIGHT)
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(egui::Frame::NONE.fill(c.bar_bg))
+                .show(ui, |ui| {
+                    ui.horizontal_centered(|ui| {
+                        ui.add_space(8.0);
+                        if egui_chrome::icon_button(ui, can_back, ICON_BACK, "Back", 16.0).clicked() {
+                            actions.push(Action::Back);
+                        }
+                        if egui_chrome::icon_button(ui, can_forward, ICON_FORWARD, "Forward", 16.0).clicked() {
+                            actions.push(Action::Forward);
+                        }
+                        let tip = if loading { "Stop" } else { "Reload" };
+                        if egui_chrome::icon_button(ui, true, reload_icon, tip, 16.0).clicked() {
+                            actions.push(if loading { Action::Stop } else { Action::Reload });
+                        }
+                        if egui_chrome::icon_button(ui, true, ICON_HOME, "Home", 16.0).clicked() {
+                            actions.push(Action::Home);
+                        }
+                        // The buttons on the right are placed from the right edge, then
+                        // the address bar takes whatever room is left. Nothing can be
+                        // pushed past the window edge, at any window width.
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(8.0);
+                            let key_tip = match &pw_status {
+                                passwords::Status::Unlocked { .. } => "Passwords (unlocked)",
+                                passwords::Status::Locked => "Passwords (locked)",
+                                passwords::Status::NoVault => "Passwords",
+                            };
+                            let key = egui_chrome::icon_button(ui, true, ICON_KEY, key_tip, 16.0);
+                            egui::Popup::menu(&key).align(egui::RectAlign::BOTTOM_END).width(300.0).show(|ui| {
+                                // Only while the menu is open: the vault is not queried every frame.
+                                let pw_logins = if pw_unlocked && on_web_page {
+                                    passwords::logins_for(&page_url)
+                                } else {
+                                    Vec::new()
+                                };
+                                egui_chrome::password_menu(
+                                    ui,
+                                    &c,
+                                    &egui_chrome::PasswordMenu {
+                                        status: &pw_status,
+                                        logins: &pw_logins,
+                                        forms: pw_forms,
+                                        offer: pw_offer.as_ref(),
+                                        on_web_page,
+                                        host: &page_host,
+                                    },
+                                    &mut |event| {
+                                        actions.push(match event {
+                                            egui_chrome::PasswordEvent::Fill(id) => Action::FillLogin(id),
+                                            egui_chrome::PasswordEvent::Suggest => Action::SuggestPassword,
+                                            egui_chrome::PasswordEvent::Save => Action::SaveLogin,
+                                            egui_chrome::PasswordEvent::Manage => Action::PasswordsPage,
+                                            egui_chrome::PasswordEvent::Lock => Action::LockVault,
+                                        });
+                                    },
+                                );
+                            });
+                            if egui_chrome::icon_button(ui, true, ICON_GEAR, "Settings", 16.0).clicked() {
+                                actions.push(Action::Flags);
+                            }
+                            if egui_chrome::icon_button(ui, true, theme_icon, "Toggle light / dark", 16.0).clicked() {
+                                actions.push(Action::Theme);
+                            }
+                            let width = (ui.available_width() - 4.0).max(60.0);
+                            if self.egui_focus_address {
+                                ctx.memory_mut(|m| m.request_focus(egui_chrome::address_id()));
+                                self.egui_focus_address = false;
+                                self.egui_select_all = true;
+                            }
+                            let (resp, star_clicked) =
+                                egui_chrome::address_bar(ui, &mut self.address.text, width, &c, leading, star);
+                            if star_clicked {
+                                actions.push(Action::ToggleBookmark);
+                            }
+                            self.egui_address_focused = resp.has_focus();
+                            if self.egui_select_all && resp.has_focus() {
+                                let chars = self.address.text.chars().count();
+                                egui_chrome::select_all(&ctx, egui_chrome::address_id(), chars);
+                                self.egui_select_all = false;
+                            }
+                            if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                actions.push(Action::RestoreAddress);
+                            } else if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                actions.push(Action::Navigate(self.address.text.clone()));
+                            }
+                        });
+                    });
+                    if loading {
+                        // A thin sliding bar along the bottom edge of the toolbar.
+                        let r = ui.max_rect();
+                        let phase = (self.epoch.elapsed().as_secs_f32() * 0.9) % 1.0;
+                        let seg = r.width() * 0.25;
+                        let x = r.min.x + (r.width() + seg) * phase - seg;
+                        let bar = egui::Rect::from_min_max(
+                            egui::pos2(x.max(r.min.x), r.max.y - 3.0),
+                            egui::pos2((x + seg).min(r.max.x), r.max.y - 1.0),
+                        );
+                        if bar.width() > 0.0 {
+                            ui.painter().rect_filled(bar, 0.0, c.accent);
+                        }
                     }
-                    if egui_chrome::icon_button(ui, can_forward, ICON_FORWARD, "Forward", 16.0).clicked() {
-                        actions.push(Action::Forward);
-                    }
-                    let tip = if loading { "Stop" } else { "Reload" };
-                    if egui_chrome::icon_button(ui, true, reload_icon, tip, 16.0).clicked() {
-                        actions.push(if loading { Action::Stop } else { Action::Reload });
-                    }
-                    if egui_chrome::icon_button(ui, true, ICON_HOME, "Home", 16.0).clicked() {
-                        actions.push(Action::Home);
-                    }
-                    let width = (ui.available_width() - 2.0 * 34.0 - 16.0).max(60.0);
-                    if self.egui_focus_address {
-                        ctx.memory_mut(|m| m.request_focus(egui_chrome::address_id()));
-                        self.egui_focus_address = false;
-                        self.egui_select_all = true;
-                    }
-                    let resp = egui_chrome::address_bar(ui, &mut self.address.text, width, &c, leading);
-                    self.egui_address_focused = resp.has_focus();
-                    if self.egui_select_all && resp.has_focus() {
-                        let chars = self.address.text.chars().count();
-                        egui_chrome::select_all(&ctx, egui_chrome::address_id(), chars);
-                        self.egui_select_all = false;
-                    }
-                    if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        actions.push(Action::RestoreAddress);
-                    } else if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        actions.push(Action::Navigate(self.address.text.clone()));
-                    }
-                    if egui_chrome::icon_button(ui, true, theme_icon, "Toggle light / dark", 16.0).clicked() {
-                        actions.push(Action::Theme);
-                    }
-                    if egui_chrome::icon_button(ui, true, ICON_GEAR, "Settings (browsecraft://flags)", 16.0).clicked() {
-                        actions.push(Action::Flags);
+                    if !bar_visible {
+                        let r = ui.max_rect();
+                        ui.painter().hline(r.x_range(), r.max.y - 0.5, egui::Stroke::new(1.0, c.line));
                     }
                 });
-                if loading {
-                    // A thin sliding bar along the bottom edge of the toolbar.
-                    let r = ui.max_rect();
-                    let phase = (self.epoch.elapsed().as_secs_f32() * 0.9) % 1.0;
-                    let seg = r.width() * 0.25;
-                    let x = r.min.x + (r.width() + seg) * phase - seg;
-                    let bar = egui::Rect::from_min_max(
-                        egui::pos2(x.max(r.min.x), r.max.y - 3.0),
-                        egui::pos2((x + seg).min(r.max.x), r.max.y - 1.0),
-                    );
-                    if bar.width() > 0.0 {
-                        ui.painter().rect_filled(bar, 0.0, c.accent);
+        }
+
+        // Bookmarks bar, under the address bar.
+        if bar_visible {
+            let items: Vec<(String, String)> = bookmarks::all().into_iter().map(|b| (b.title, b.url)).collect();
+            egui::Panel::top("bookmarks")
+                .exact_size(BOOKMARKS_BAR_HEIGHT)
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(egui::Frame::NONE.fill(c.bar_bg))
+                .show(ui, |ui| {
+                    for event in egui_chrome::bookmarks_bar(ui, &c, &items) {
+                        actions.push(match event {
+                            egui_chrome::BarEvent::Open(url) => Action::OpenBookmark(url),
+                            egui_chrome::BarEvent::OpenInNewTab(url) => Action::OpenInNewTab(url),
+                            egui_chrome::BarEvent::Remove(url) => Action::RemoveBookmark(url),
+                            egui_chrome::BarEvent::Manage => Action::BookmarksPage,
+                        });
                     }
-                }
-                let r = ui.max_rect();
-                ui.painter().hline(r.x_range(), r.max.y - 0.5, egui::Stroke::new(1.0, c.line));
-            });
+                    let r = ui.max_rect();
+                    ui.painter().hline(r.x_range(), r.max.y - 0.5, egui::Stroke::new(1.0, c.line));
+                });
+        }
+
+        // "Save this login?" bar, under the bookmarks bar.
+        if let Some(offer) = &pw_offer
+            && !fullscreen
+        {
+            egui::Panel::top("save_login")
+                .exact_size(SAVE_BAR_HEIGHT)
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(egui::Frame::NONE.fill(c.hover))
+                .show(ui, |ui| {
+                    egui_chrome::save_login_bar(ui, &c, offer, &pw_status, &mut |event| {
+                        actions.push(match event {
+                            egui_chrome::SaveBarEvent::Save => Action::SaveLogin,
+                            egui_chrome::SaveBarEvent::OpenPasswords => Action::PasswordsPage,
+                            egui_chrome::SaveBarEvent::NotNow => Action::DismissOffer,
+                            egui_chrome::SaveBarEvent::Never => Action::NeverSave,
+                        });
+                    });
+                    let r = ui.max_rect();
+                    ui.painter().hline(r.x_range(), r.max.y - 0.5, egui::Stroke::new(1.0, c.line));
+                });
+        }
 
         // Tab sidebar.
         let position = flags::get().tabs_position;
-        if position != TabsPosition::Hidden {
+        if position != TabsPosition::Hidden && !fullscreen {
             let titles: Vec<String> = (0..self.tabs.len()).map(|i| self.tab_title(i)).collect();
             let active = self.active;
             let panel = if position == TabsPosition::Left {
@@ -3131,20 +3577,26 @@ impl Browser {
                 .show_separator_line(false)
                 .frame(egui::Frame::NONE.fill(c.sidebar_bg))
                 .show(ui, |ui| {
-                    egui::Frame::NONE.inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+                    egui::Frame::NONE.inner_margin(egui::Margin::same(10)).show(ui, |ui| {
                         let label = egui::RichText::new(format!("{}  New tab", egui_chrome::ICON_PLUS))
                             .size(13.0)
                             .color(c.text);
-                        let button = egui::Button::new(label).corner_radius(egui::CornerRadius::same(7));
-                        if ui.add_sized([ui.available_width(), 30.0], button).clicked() {
+                        let button = egui::Button::new(label)
+                            .fill(c.hover)
+                            .corner_radius(egui::CornerRadius::same(10));
+                        if ui.add_sized([ui.available_width(), 34.0], button).clicked() {
                             actions.push(Action::NewTab);
                         }
-                        ui.add_space(6.0);
+                        ui.add_space(8.0);
                         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                             for (i, title) in titles.iter().enumerate() {
                                 let row = egui_chrome::tab_row(ui, &c, title, i == active);
                                 if row.close {
                                     actions.push(Action::CloseTab(i));
+                                } else if row.duplicate {
+                                    actions.push(Action::DuplicateTab(i));
+                                } else if row.close_others {
+                                    actions.push(Action::CloseOtherTabs(i));
                                 } else if row.clicked {
                                     actions.push(Action::SwitchTab(i));
                                 }
@@ -3156,6 +3608,7 @@ impl Browser {
 
         // Notice strip.
         if self.notice_active()
+            && !fullscreen
             && let Some((message, _)) = self.notice.clone()
         {
             egui::Panel::bottom("notice")
@@ -3165,11 +3618,19 @@ impl Browser {
                 .frame(egui::Frame::NONE.fill(c.hover))
                 .show(ui, |ui| {
                     ui.horizontal_centered(|ui| {
-                        ui.add_space(10.0);
+                        ui.add_space(12.0);
                         ui.label(egui::RichText::new(message).size(13.0).color(c.text));
                     });
                 });
         }
+
+        let popup_now = egui::Popup::is_any_open(&ctx);
+        if popup_now != self.egui_popup_open {
+            self.egui_popup_open = popup_now;
+            // Show or hide the web view, and draw the snapshot, on the next frame.
+            ctx.request_repaint();
+        }
+        let snapshot_id = self.popup_snapshot.as_ref().map(|t| t.id());
 
         // The page: the engine raster as a texture; the WebView2 pane sits
         // exactly over this rectangle.
@@ -3182,6 +3643,10 @@ impl Browser {
                     let at = egui::Rect::from_min_size(rect.min, size);
                     let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
                     ui.painter().image(id, at, uv, egui::Color32::WHITE);
+                }
+                if let Some(id) = snapshot_id {
+                    let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                    ui.painter().image(id, rect, uv, egui::Color32::WHITE);
                 }
                 rect
             });
@@ -3215,6 +3680,40 @@ impl Browser {
                 Action::NewTab => self.new_tab(),
                 Action::SwitchTab(i) => self.switch_tab(i),
                 Action::CloseTab(i) => self.close_tab(i),
+                Action::DuplicateTab(i) => {
+                    let url = self.tab_url(i);
+                    if url.is_empty() {
+                        self.new_tab();
+                    } else {
+                        self.open_in_new_tab(url);
+                    }
+                }
+                Action::CloseOtherTabs(i) => self.close_other_tabs(i),
+                Action::ToggleBookmark => self.toggle_bookmark(),
+                Action::OpenBookmark(url) => self.load(Request::Get(url), true),
+                Action::OpenInNewTab(url) => self.open_in_new_tab(url),
+                Action::RemoveBookmark(url) => {
+                    bookmarks::remove(&url);
+                    self.set_notice("Bookmark removed");
+                    self.refresh_if_internal("browsecraft://bookmarks");
+                }
+                Action::BookmarksPage => self.load(Request::Get("browsecraft://bookmarks".into()), true),
+                Action::FillLogin(id) => self.fill_login(&id),
+                Action::SuggestPassword => self.suggest_password(),
+                Action::SaveLogin => match passwords::save_offer() {
+                    Ok(message) => self.set_notice(&message),
+                    Err(message) => self.set_notice(&message),
+                },
+                Action::DismissOffer => passwords::dismiss_offer(),
+                Action::NeverSave => {
+                    passwords::never_offer_for_site();
+                    self.set_notice("Prowl will not offer to save logins on this site");
+                }
+                Action::LockVault => {
+                    passwords::lock();
+                    self.set_notice("Vault locked");
+                }
+                Action::PasswordsPage => self.load(Request::Get("browsecraft://passwords".into()), true),
             }
         }
         if changed {
@@ -3234,6 +3733,8 @@ impl Browser {
             UserMessage::WebTitle(title) => self.web_titled(title),
             UserMessage::WebOpen(url) => self.web_open(url),
             UserMessage::WebKey(shortcut) => self.web_key(shortcut),
+            UserMessage::WebFullscreen(on) => self.set_web_fullscreen(on),
+            UserMessage::Page(message) => self.page_message(message),
             UserMessage::Stop => self.stop(),
         }
         self.request_redraw();
@@ -3319,7 +3820,13 @@ impl ApplicationHandler<UserMessage> for Browser {
                 self.request_redraw();
             }
             WindowEvent::MouseInput { state, button, .. } => match state {
-                ElementState::Pressed => self.mouse_down(button),
+                ElementState::Pressed => {
+                    // A click egui took over the page area belongs to a menu
+                    // or popup drawn on top of it: not to the page below.
+                    if !(consumed && self.page_rect().contains(self.mouse.0, self.mouse.1)) {
+                        self.mouse_down(button);
+                    }
+                }
                 ElementState::Released => {
                     if button == MouseButton::Left {
                         self.drag = Drag::None;
@@ -3395,6 +3902,33 @@ mod tests {
         assert_eq!(shortcut_for(&tab, true, true, false, false), Some(Shortcut::CycleTab(-1)));
         let f5 = Key::Named(NamedKey::F5);
         assert_eq!(shortcut_for(&f5, false, false, false, false), Some(Shortcut::Reload));
+        let f11 = Key::Named(NamedKey::F11);
+        assert_eq!(shortcut_for(&f11, false, false, false, false), Some(Shortcut::Fullscreen));
+        assert_eq!(shortcut_for(&ch("d"), true, false, false, false), Some(Shortcut::Bookmark));
+        assert_eq!(shortcut_for(&ch("B"), true, true, false, false), Some(Shortcut::BookmarksBar));
+        assert_eq!(shortcut_for(&ch("b"), true, false, false, false), None);
+        assert_eq!(shortcut_for(&ch("O"), true, true, false, false), Some(Shortcut::BookmarksPage));
+    }
+
+    #[test]
+    fn bars_between_toolbar_and_page_are_counted() {
+        // The page area (layout, painting and click mapping) must start where
+        // egui's central panel starts, below every bar.
+        assert_eq!(extra_bars_h(1.0, true, true, false), 34.0);
+        assert_eq!(extra_bars_h(1.0, true, true, true), 76.0);
+        assert_eq!(extra_bars_h(1.0, true, false, true), 42.0);
+        assert_eq!(extra_bars_h(1.5, true, true, false), 51.0);
+        assert_eq!(extra_bars_h(1.0, true, false, false), 0.0);
+        assert_eq!(extra_bars_h(2.0, false, true, true), 0.0, "the engine chrome has neither bar");
+    }
+
+    #[test]
+    fn same_internal_page_ignores_the_query() {
+        assert!(same_internal_page("browsecraft://flags", "browsecraft://flags?token=x&theme=dark"));
+        assert!(same_internal_page("browsecraft://flags/?a=1", "browsecraft://flags"));
+        assert!(!same_internal_page("browsecraft://flags", "browsecraft://history"));
+        assert!(!same_internal_page("https://a.test/?x", "https://a.test/?y"));
+        assert!(!same_internal_page("about:home", "about:home"));
     }
 
     #[test]
@@ -3409,6 +3943,8 @@ mod tests {
         assert_eq!(web_shortcut_for(0x24, false, false, true), Some(Shortcut::Home));
         assert_eq!(web_shortcut_for(0x74, false, false, false), Some(Shortcut::Reload));
         assert_eq!(web_shortcut_for(0x75, false, false, false), Some(Shortcut::FocusAddress));
+        assert_eq!(web_shortcut_for(0x7A, false, false, false), Some(Shortcut::Fullscreen));
+        assert_eq!(web_shortcut_for(0x44, true, false, false), Some(Shortcut::Bookmark));
         assert_eq!(web_shortcut_for(0xBB, true, false, false), Some(Shortcut::Zoom(Some(true))));
         assert_eq!(web_shortcut_for(0xBD, true, false, false), Some(Shortcut::Zoom(Some(false))));
         assert_eq!(web_shortcut_for(0x30, true, false, false), Some(Shortcut::Zoom(None)));
@@ -3421,7 +3957,6 @@ mod tests {
         assert!(request_in_webview("https://example.com/"));
         assert!(request_in_webview("file:///C:/index.html"));
         assert!(!request_in_webview("about:home"));
-        assert!(!request_in_webview("about:blocked:https://ads.example"));
         assert!(!request_in_webview("view-source:https://example.com"));
         assert!(!request_in_webview("browsecraft://history"));
         let (a, b) = ("https://slow.example/", "https://b.example/");
@@ -3444,7 +3979,6 @@ mod tests {
             "browsecraft://flags?theme=dark",
             "file:///C:/",
             "view-source:file://host/x",
-            "about:blocked:https://bank.example",
             "javascript:alert(1)",
         ] {
             assert!(!popup_allowed(url), "{url}");
@@ -3490,7 +4024,10 @@ mod tests {
 
     #[test]
     fn every_shortcut_is_listed_once() {
-        for needed in ["Shift + K", "Ctrl + H", "Ctrl + Shift + S", "Ctrl + Left", "Ctrl + Right", "Ctrl + S"] {
+        for needed in [
+            "Shift + K", "Ctrl + H", "Ctrl + Shift + S", "Ctrl + Left", "Ctrl + Right", "Ctrl + S",
+            "Ctrl + D", "Ctrl + Shift + B", "Ctrl + Shift + O", "F11",
+        ] {
             assert_eq!(SHORTCUTS.iter().filter(|(k, _)| *k == needed).count(), 1, "{needed}");
         }
     }

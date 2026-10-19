@@ -1,3 +1,10 @@
 /target
 /dist
 /flags.txt
+
+# Personal data written next to the executable
+bookmarks.txt
+passwords.cfg
+*.kdbx
+*.kdbx.tmp
+*.keyx

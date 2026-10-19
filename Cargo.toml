@@ -22,6 +22,11 @@ pollster = "1.0.1"
 softbuffer = "0.4"
 ureq = "3"
 url = "2"
+keepass = { version = "0.8", default-features = false, features = ["save_kdbx4"] }
+argon2 = { package = "rust-argon2", version = "3" }
+secstr = "0.5"
+base64 = "0.22"
+getrandom = "0.3"
 winit = "0.30"
 wry = "0.53"
 

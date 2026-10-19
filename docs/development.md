@@ -42,23 +42,14 @@ build.bat run          :: start the browser after a successful build
 ```
 
 It checks that `rustc` is 1.95 or newer (and runs `rustup update stable` if
-not), builds, then copies the executable to `dist\browsecraft.exe` and the
-`filters\` folder to `dist\filters\`. Set `NOPAUSE=1` to skip the closing
-`pause`.
-
-## Ad-block filter lists
-
-A small starter list is built into `src/adblock.rs`. On top of that, every
-`*.txt` file in a `filters/` folder in the working directory or next to the
-executable is merged in at startup (EasyList/uBlock Origin syntax; regex,
-`$redirect`, `$csp`, `$replace`, scriptlet and procedural rules are dropped).
-To add a list, drop it into `filters/` (the repo ships `filters/basic.txt`)
-and restart; `build.bat` copies the folder into `dist\`.
+not), builds, then copies the executable to `dist\browsecraft.exe`. Set
+`NOPAUSE=1` to skip the closing `pause`.
 
 ## Flags
 
 Settings from `browsecraft://flags` are saved as `key=value` lines in `flags.txt` in
-the working directory (ignored by git).
+the working directory (ignored by git). Bookmarks live in `bookmarks.txt` and the
+password manager's settings (which vault, never-save sites) in `passwords.cfg`.
 
 ## Headless screenshots
 
@@ -85,7 +76,7 @@ push to `main`.
 Unit tests live next to the code: HTML parsing (`html.rs`), selectors, values
 and media queries (`css.rs`), the cascade (`style.rs`), data URLs and charsets
 (`net.rs`), text editing (`textfield.rs`), address-bar rules (`address.rs`),
-ad blocking (`adblock.rs`), flags and the `flags.txt` store (`flags.rs`),
+flags and the `flags.txt` store (`flags.rs`),
 glyph coverage (`font.rs`), the history store (`history.rs`), and WebView2
 routing, zoom steps, shortcuts and form submission (`browser.rs`). The
 `flags.rs` tests share a global store and file, so they serialise on a mutex.
@@ -98,7 +89,6 @@ routing, zoom steps, shortcuts and form submission (`browser.rs`). The
 - **Fonts:** the file lists in `src/font.rs`.
 - **Toolbar / sidebar:** engine chrome in `draw_toolbar()`, `draw_sidebar()`, `button_rect()`, `click_toolbar()` and `click_sidebar()` in `src/browser.rs`; egui chrome in `build_egui_chrome()` in `src/browser.rs` and the widgets in `src/egui_chrome.rs`. Change both.
 - **Which pages use WebView2:** `request_in_webview()` in `src/browser.rs`.
-- **Ad blocking:** `src/adblock.rs` (`load_default()`, built-in `START_LIST`); extra lists in `filters/`.
 - **Tabs:** `TabState`, `park_active_tab`/`activate_pantry`/`switch_tab`/`new_tab`/`close_tab` in `src/browser.rs`.
 - **Flags / settings page:** `src/flags.rs` (`browsecraft://flags` HTML in `page_html()`); routing in `src/loader.rs`. **History page:** `src/history.rs`.
 - **Icons:** Phosphor codepoints in `src/icons.rs` (font embedded via the `egui-phosphor` crate), loaded as `Family::Icon` in `src/font.rs`.
