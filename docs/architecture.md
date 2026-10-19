@@ -16,6 +16,7 @@ loader ──► net ──► html ──► dom
 | `main.rs`        | Entry point; window mode or `--screenshot`                              |
 | `browser.rs`     | Window, toolbar, tabs, history, input, forms, WebView2 pane, render loop |
 | `flags.rs`       | User-settable flags persisted to `flags.txt`; the `browsecraft://flags` page  |
+| `storage.rs`     | The per-user config folder and atomic, owner-only file writes           |
 | `egui_chrome.rs` | GPU chrome: egui toolbar/sidebar on wgpu, page raster as a texture      |
 | `icons.rs`       | Chrome icon codepoints (Phosphor) and the embedded icon font            |
 | `history.rs`     | In-memory browsing history; the `browsecraft://history` page                  |
@@ -50,10 +51,20 @@ platform is neither Windows nor macOS, where `wry` uses WKWebView), every page
 goes through the engine.
 
 The engine handles these internal URLs in `loader::load_page`:
-`about:home`, `about:blank`, `view-source:<url>`, `browsecraft://flags`,
-`browsecraft://history`. WebView2 events (`WebStart`, `WebLoad`, `WebTitle`,
-`WebOpen`, `WebKey`) reach the UI thread as `UserMessage`s. Pop-ups are denied and
-reopened in the current tab.
+`about:home`, `about:blank`, `about:blocked:<url>`, `view-source:<url>`,
+`browsecraft://flags`, `browsecraft://history`, `browsecraft://bookmarks` and
+`browsecraft://passwords`. They share one stylesheet from `internal.rs`, generated
+for the current theme. WebView2 events (`WebStart`, `WebLoad`, `WebTitle`,
+`WebOpen`, `WebKey`, `WebFullscreen`) reach the UI thread as `UserMessage`s.
+Pop-ups are denied and reopened in the current tab.
+
+The web view gets two initialization scripts: the ad blocker's (see "Ad
+blocking") and `passwords.js`. The page's IPC channel accepts only the password
+script's reports (`passwords::parse_page_message`, becoming
+`UserMessage::Page`); the page is untrusted, so a report can only lead to an
+offer the user may decline. On Windows, `attach_webview_fullscreen` listens for
+`ContainsFullScreenElementChanged` and makes the whole window fullscreen while
+a page element is.
 
 A WebView2 page has the keyboard to itself, so winit never sees its keys.
 On Windows, `attach_webview_shortcuts` hooks the WebView2 controller's native
@@ -182,17 +193,42 @@ webview rectangles.
 
 ## Flags and `browsecraft://`
 
-`flags.rs` holds user settings (`tabs-position`, `theme`, `chrome`) in a
-`RwLock`, persisted as `key=value` lines in the per-user configuration directory.
-An exclusive temporary file is synced, then atomically replaces `flags.txt`;
-memory changes only after a successful save. `browsecraft://flags` is an
-engine-internal page: `loader.rs` passes its query to `flags::apply_form`.
-Each form owns a 128-bit OS-random one-time token. Up to 128 forms may remain
-outstanding; issuing a new token preserves other tabs, evicting only the oldest
-entry when full. Submitting consumes only that form's token, and replayed or
-evicted forms show an expiration message. `browsecraft://` URLs are routed to the engine by
+`flags.rs` holds user settings (`tabs-position`, `theme`, `chrome`,
+`bookmarks-bar`) in a `RwLock`, persisted as `key=value` lines in the per-user
+configuration directory. `storage::write_private` creates that directory
+owner-only, refuses a symlinked directory, and has an exclusive temporary file
+synced and then atomically replace `flags.txt`; memory changes only after a
+successful save. `browsecraft://flags` is an engine-internal page: `loader.rs`
+passes its query to `flags::apply_form`, and the address bar shows the clean
+URL. Each option on the page is a link carrying a token.
+
+Every internal page that changes state (settings, bookmarks, passwords) uses an
+`internal::FormToken`. Each rendered page owns a 128-bit OS-random one-time
+token. Up to 128 may remain outstanding per page kind; issuing a new token
+preserves other tabs, evicting only the oldest entry when full. Submitting
+consumes only that page's token, and replayed or evicted settings links show an
+expiration message. `browsecraft://` URLs are routed to the engine by
 `request_in_webview`. The theme toggle (toolbar sun/moon) flips `theme` between
-Light and Dark; `Auto` follows the OS.
+Light and Dark; `Auto` follows the OS. The default theme is Dark.
+
+## Bookmarks and passwords
+
+`bookmarks.rs` keeps a global list (at most 2,000) shared by every tab, stored as
+`url<TAB>title` lines in `bookmarks.txt` next to `flags.txt` and written with
+`storage::write_private`. The star button, `Ctrl+D`, the egui bookmarks bar,
+the new-tab quick links (`loader::home_html`) and `browsecraft://bookmarks`
+all read it. Only `http(s)` pages are bookmarkable.
+
+`vault.rs` wraps a KeePass 4 (`.kdbx`) database from the `keepass` crate,
+unlocked with a password or a key file it generates. Saves encrypt into memory
+and replace the file through `storage::replace_atomic`, so a crash or a planted
+temporary-file symlink cannot leave or redirect a half-written vault.
+`passwords.rs` holds the unlocked vault (auto-locked after 15 minutes),
+`passwords.cfg` (which vault and key file, never-save sites; no secrets), the
+save/update offer and the fill script, and renders `browsecraft://passwords`.
+Its forms post their fields in the request body, never the URL, so secrets do
+not reach the history. The suggested vault location is the per-user
+configuration folder.
 
 ## Chrome: engine or egui
 
@@ -205,7 +241,9 @@ toolbar/sidebar as egui widgets, with the engine page raster uploaded as a
 texture in the central panel. If GPU setup fails, or `chrome = engine`,
 `browser.rs` creates the softbuffer surface (`Gfx::surface` is `Some`) and
 draws its own chrome. The choice is made once at startup; the WebView2 pane is
-placed from the egui central panel rect on the GPU path. See `docs/egui.md`.
+placed from the egui central panel rect on the GPU path. The bookmarks bar, the
+"save this login?" bar, the key menu and the tab context menu exist only on the
+egui path. See `docs/egui.md`.
 
 ## Ad blocking
 

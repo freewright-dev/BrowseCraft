@@ -62,7 +62,9 @@ the egui path owns the window.
    `page_rect()`.
 2. Upload `frame` as an egui texture (`ColorImage` + `load_texture`/`set`).
 3. `egui_winit::State::take_egui_input`, build the UI with
-   `egui::Panel::top("toolbar")`, `egui::Panel::left("tabs")` (or `right`,
+   `egui::Panel::top("toolbar")`, `egui::Panel::top("bookmarks")` (when the
+   bookmarks bar is on), `egui::Panel::top("save_login")` (while a login can
+   be saved), `egui::Panel::left("tabs")` (or `right`,
    none when `tabs-position = hidden`), `egui::Panel::bottom("notice")` while
    a notice is shown, and `egui::CentralPanel`, and run it via
    `Context::run_ui` (egui 0.36 panels take the root `Ui`, not the `Context`).
@@ -83,15 +85,25 @@ presentation path. On the GPU path its bounds come from the egui central panel
 (`egui_page`), refreshed each frame by `sync_webview`; on the CPU path they
 come from the engine toolbar/sidebar geometry (`page_rect`).
 
+The pane is a native window, so it always paints over egui. While a menu that
+can hang over the page is open (the key menu, a bookmark's menu, the `»`
+overflow menu), `snapshot_page` captures the page as a texture, the live pane
+is hidden and the snapshot is drawn in the central panel; the pane comes back
+when the menu closes. In page fullscreen the toolbar, bars and sidebar
+collapse to zero size and the pane fills the window.
+
 ## Chrome look
 
 `egui_chrome.rs` registers the Phosphor face (embedded in the binary by the
 `egui-phosphor` crate, codepoints in `src/icons.rs`) as the `phosphor` egui
 family and draws the toolbar as an icon row (back/forward/reload-stop/home, a
-rounded address pill with a leading lock/globe, theme and flags buttons, and a
+rounded address pill with a leading lock/globe and a trailing bookmark star,
+theme and flags buttons, the password key menu at the right edge, and a
 sliding loading bar) plus a "New tab" button and a hoverable tab list (globe,
 truncated title, close button on the active or hovered row, accent bar on the
-active row). Visuals are themed from the same palette as the engine chrome
+active row, and a right-click menu to duplicate, close or close other tabs).
+Under the toolbar sit the bookmarks bar (overflow in a `»` menu, right-click
+and middle-click actions) and the "save this login?" bar. Visuals are themed from the same palette as the engine chrome
 (`Colors::for_dark`), and `apply_style` sets the widget spacing/rounding once
 per frame.
 
@@ -108,7 +120,8 @@ family).
   `about:`/`browsecraft:` pages should be clickable. This path compiles and is shared
   with the engine chrome (which was run end to end), but has not been run on a
   GPU. Mouse clicks and hover use the engine geometry (`page_rect`), not the
-  egui central panel rect. Keys reach the browser when egui did not consume
+  egui central panel rect; `top_h` adds the bookmarks and save-login bars so the
+  two match. Keys reach the browser when egui did not consume
   them, or when they are shortcuts (Ctrl/Alt, F5, F6).
 - Middle-click to close a tab only works in the engine chrome.
 - The chrome is not re-created when the `chrome` flag changes at runtime; the
@@ -118,6 +131,8 @@ family).
 
 ## Flags wiring
 
-`browsecraft://flags` has a "Chrome" fieldset (`chrome = auto | egui | engine`)
-persisted like the others. The gear button in either chrome opens
-`browsecraft://flags`; you can also edit `flags.txt` by hand.
+`browsecraft://flags` has an "Interface renderer" control (Auto, GPU, Software,
+stored as `chrome = auto | egui | engine`) persisted like the others. The gear
+button in either chrome opens `browsecraft://flags`; you can also edit
+`flags.txt` in the per-user configuration folder by hand while the browser is
+closed.

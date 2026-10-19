@@ -57,7 +57,10 @@ page or the toolbar notice. Working-directory settings are not migrated
 automatically; users can copy a trusted legacy file while the browser is closed.
 Bookmarks (`bookmarks.txt`) and the password manager's settings (`passwords.cfg`:
 which vault, how it unlocks, never-save sites) live in the same folder and are
-written the same way.
+written the same way. Both helpers are in `src/storage.rs`; use
+`storage::config_file` and `storage::write_private` for any new file BrowseCraft
+keeps, never the working directory. In tests `storage::config_dir` is a
+temporary directory per test thread.
 
 ## Headless screenshots
 
@@ -97,10 +100,14 @@ Unit tests live next to the code: HTML parsing (`html.rs`), sibling metadata
 and cache invalidation (`dom.rs`), selectors, values
 and media queries (`css.rs`), the cascade (`style.rs`), data URLs and charsets
 (`net.rs`), text editing (`textfield.rs`), address-bar rules (`address.rs`),
-flags and the `flags.txt` store (`flags.rs`),
+flags and the `flags.txt` store (`flags.rs`), atomic writes (`storage.rs`),
+one-time tokens and the internal-page look (`internal.rs`), the bookmarks store
+and page (`bookmarks.rs`), the KeePass vault (`vault.rs`) and the password
+manager's forms, offers and page (`passwords.rs`),
 glyph coverage (`font.rs`), the history store (`history.rs`), and WebView2
 routing, zoom steps, shortcuts and form submission (`browser.rs`). The
-`flags.rs` tests share a global store and file, so they serialise on a mutex.
+`flags.rs` and `bookmarks.rs` tests share a global store, so they serialise on
+a mutex.
 
 ### Parser and selector regressions
 
@@ -151,7 +158,8 @@ target-specific advisories and license/source policy.
 - **Toolbar / sidebar:** engine chrome in `draw_toolbar()`, `draw_sidebar()`, `button_rect()`, `click_toolbar()` and `click_sidebar()` in `src/browser.rs`; egui chrome in `build_egui_chrome()` in `src/browser.rs` and the widgets in `src/egui_chrome.rs`. Change both.
 - **Which pages use WebView2:** `request_in_webview()` in `src/browser.rs`.
 - **Tabs:** `TabState`, `park_active_tab`/`activate_pantry`/`switch_tab`/`new_tab`/`close_tab` in `src/browser.rs`.
-- **Flags / settings page:** `src/flags.rs` (`browsecraft://flags` HTML in `page_html()`); routing in `src/loader.rs`. **History page:** `src/history.rs`.
+- **Flags / settings page:** `src/flags.rs` (`browsecraft://flags` HTML in `page_html()`); routing in `src/loader.rs`. **History page:** `src/history.rs`. **Bookmarks:** `src/bookmarks.rs`. **Password manager:** `src/passwords.rs`, `src/passwords.js` and `src/vault.rs`.
+- **Look of the internal pages:** the palette and shared CSS in `src/internal.rs` (also `switch_row()` and `segmented_row()` for settings controls); the new-tab page is `src/home.html`, filled in by `home_html()` in `src/loader.rs`.
 - **Icons:** Phosphor codepoints in `src/icons.rs` (font embedded via the `egui-phosphor` crate), loaded as `Family::Icon` in `src/font.rs`.
 - **Shortcuts:** `Browser::key()` in `src/browser.rs`.
 

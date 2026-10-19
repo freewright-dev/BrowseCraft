@@ -68,13 +68,14 @@ A bar along the bottom of the toolbar shows that a page is loading. On engine pa
 The vertical sidebar on the left lists the open tabs; the active one is
 highlighted. Click a tab to switch to it, click its ✕ to close it, and click the
 `+` (New tab) button at the top to open a new one. New tabs open `about:home`
-with the address bar focused. With the engine chrome, middle-clicking a tab
-also closes it. Closing the last tab quits BrowseCraft. The sidebar position (left,
+with the address bar focused. With the GPU interface, right-clicking a tab
+offers *Duplicate tab*, *Close tab* and *Close other tabs*. With the engine
+chrome, middle-clicking a tab also closes it. Closing the last tab quits BrowseCraft. The sidebar position (left,
 right or hidden) is set on `browsecraft://flags`.
 
 ## Bookmarks
 
-Click the star in the address bar, or press `Ctrl+D`, to bookmark the current page; do it again to remove it. Bookmarks show on the bookmarks bar under the address bar (turn it off in Settings or with `Ctrl+Shift+B`). Click one to open it, middle-click to open it in a new tab, right-click for *Open in new tab* and *Remove bookmark*. Bookmarks that do not fit go in the `»` menu. **All bookmarks** (`Ctrl+Shift+O`) opens `browsecraft://bookmarks`. They are saved in `bookmarks.txt` in the working directory (one `url<TAB>title` per line). Only `http(s)` pages can be bookmarked. The bar is drawn by the GPU interface; with the software interface (`chrome=engine`) bookmarks still work from `Ctrl+D` and the manager page.
+Click the star in the address bar, or press `Ctrl+D`, to bookmark the current page; do it again to remove it. Bookmarks show on the bookmarks bar under the address bar (turn it off in Settings or with `Ctrl+Shift+B`). Click one to open it, middle-click to open it in a new tab, right-click for *Open in new tab* and *Remove bookmark*. Bookmarks that do not fit go in the `»` menu. **All bookmarks** (`Ctrl+Shift+O`) opens `browsecraft://bookmarks`. They are saved in `bookmarks.txt` in the [per-user settings folder](../README.md#settings) (one `url<TAB>title` per line). Only `http(s)` pages can be bookmarked. The bar is drawn by the GPU interface; with the software interface (`chrome=engine`) bookmarks still work from `Ctrl+D` and the manager page.
 
 The key menu, the bookmarks bar and the save-login bar belong to the GPU interface (the default). When a menu is open over a web page, the page is shown as a still picture until the menu closes (the live page is a native window that cannot sit under a menu).
 
@@ -122,6 +123,11 @@ blocked pop-up shows a short notice under the page.
 | `Ctrl+Plus` / `Ctrl+Minus` / `Ctrl+0`, `Ctrl`+wheel | Zoom in / out / reset |
 | `Ctrl+U`                              | View page source          |
 | `Ctrl+H`                              | Open the history page (`browsecraft://history`) |
+| `Ctrl+D`                              | Bookmark the page, or remove its bookmark |
+| `Ctrl+Shift+B`                        | Show / hide the bookmarks bar |
+| `Ctrl+Shift+O`                        | Open the bookmarks page (`browsecraft://bookmarks`) |
+| `F11`                                 | Make the window fullscreen, or leave fullscreen |
+| `Esc` (page in fullscreen)            | Leave page fullscreen     |
 | `Ctrl+Shift+S`                        | Save a PNG of the visible page to your Pictures folder (UTC-stamped `browsecraft-YYYYMMDD-HHMMSS.png`); the result shows in a strip under the page |
 | `Shift+K` (page focused)              | Show / hide the shortcut cheatsheet (`Esc`, `Enter`, `Space` or `K` closes it) |
 | `Space` / `Shift+Space`, `Page Up/Down`, arrows, `Home`/`End` | Scroll |

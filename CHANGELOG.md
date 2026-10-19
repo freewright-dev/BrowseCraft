@@ -10,10 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Page fullscreen: when a web page (a video, `requestFullscreen()`) goes fullscreen, the whole window goes fullscreen and the chrome is hidden, instead of the page only filling the viewport. Driven by WebView2's `ContainsFullScreenElementChanged`; the window returns to its previous state when the page leaves fullscreen. `F11` toggles window fullscreen.
-- Bookmarks: a star in the address bar, `Ctrl+D`, a bookmarks bar under the address bar (`Ctrl+Shift+B` to show or hide, overflow menu, middle-click and right-click menus), the `browsecraft://bookmarks` page (`Ctrl+Shift+O`), bookmarks as quick links on the new-tab page, and `bookmarks.txt` persistence.
-- Password manager: a KeePass 4 (`.kdbx`) vault protected by a password or a key file (created by BrowseCraft), a key menu at the top right, login/sign-up/change-password form detection, a "Save this login?" bar (save, update, never for this site), autofill, strong password suggestion, auto-lock after 15 minutes, and the `browsecraft://passwords` page.
+- Bookmarks: a star in the address bar, `Ctrl+D`, a bookmarks bar under the address bar (`Ctrl+Shift+B` to show or hide, overflow menu, middle-click and right-click menus), the `browsecraft://bookmarks` page (`Ctrl+Shift+O`), bookmarks as quick links on the new-tab page, and `bookmarks.txt` persistence in the per-user configuration folder.
+- Password manager: a KeePass 4 (`.kdbx`) vault protected by a password or a key file (created by BrowseCraft), a key menu at the top right, login/sign-up/change-password form detection, a "Save this login?" bar (save, update, never for this site), autofill, strong password suggestion, auto-lock after 15 minutes, and the `browsecraft://passwords` page. Its settings (`passwords.cfg`) live in the per-user configuration folder, which is also the suggested vault location.
 - Tab context menu: duplicate tab, close tab, close other tabs.
-
 - Browser window with a toolbar (back, forward, reload/stop, home), a loading indicator and the page title in the window title.
 - BrowseCraft's own Rust rendering engine: HTML parser, CSS parser and cascade, layout (block, inline, floats, flexbox, tables, positioning) and a software rasterizer, shown through winit and softbuffer. It renders the internal pages (`about:`, `view-source:`, `browsecraft://`) and is used for everything on platforms without an embedded web view.
 - Regular websites render in an embedded WebView2 pane (wry) on Windows (WKWebView on macOS), so they run JavaScript; the engine-rendered internal pages do not.
@@ -33,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--screenshot <out.png> <url> [width]` renders a page with the engine to PNG without a window.
 - `build.bat`: Windows build script (`release`, `debug`, `test`, `clean`, `run`) that checks for Rust 1.95 or newer, builds, and collects `browsecraft.exe` in `dist\`.
 - Size-optimized release profile (`opt-level = "z"`, LTO, stripped).
-- Unit tests for the HTML, CSS, style, font, network, text-editing, address, browser, history and flags modules.
+- Unit tests for the HTML, CSS, style, font, network, text-editing, address, browser, history, flags, storage, bookmarks, vault and password-manager modules.
 - Documentation in `docs/`.
 
 ### Changed
@@ -57,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated rustls to 0.23.46 for four TLS advisories and wry to 0.55.1 to remove the affected fxhash/rand dependency chains. Remaining GTK/font maintenance advisories are tracked in `docs/dependencies.md` (#54).
 - Settings now use atomic replacement in a per-user configuration directory, preventing planted working-directory symlinks from redirecting writes. Save errors are displayed and preserve the in-memory settings; trusted legacy files can be copied manually to the new location (#56).
 - Settings forms in multiple retained tabs keep independent OS-random one-time tokens, with bounded storage, replay rejection and an explanation when a form has expired (#57).
+- Bookmarks and the password manager's settings use the same atomic, owner-only storage in the per-user configuration folder as the settings (`src/storage.rs`), and the bookmarks and passwords pages use the same bounded one-time tokens. Vault saves no longer go through a predictable `<vault>.tmp` file that a planted symlink could redirect.
 - Windows screenshot capture rejects overflowing or excessive dimensions before allocation, validates bitmap selection/restoration, and releases native resources on error paths (#55).
 - Ad blocking now checks every engine HTTP redirect destination and uses native WebView2 interception for parser-initiated resources and redirects. JavaScript fallback fetch hooks handle URL and Request objects with one native conversion (#52).
 - Cancelled engine loads stop scheduling document/stylesheet/import/image work and publishing stale events. Background loads use a bounded two-worker queue and whole-load deadlines (#53).

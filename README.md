@@ -51,7 +51,7 @@ claim. Track the work in [the engine roadmap](https://github.com/freewright-dev/
 
 **Browser**
 
-- Tabs in a vertical sidebar (left, right or hidden)
+- Tabs in a vertical sidebar (left, right or hidden), with a right-click menu to duplicate a tab, close it or close the others
 - Back, forward, reload/stop, home (Startpage) and an address bar that tells URLs from searches (searches also go to Startpage)
 - Browsing history at `browsecraft://history`
 - Bookmarks: a star in the address bar (`Ctrl+D`), a bookmarks bar under it, and a manager at `browsecraft://bookmarks`
@@ -130,6 +130,9 @@ cargo test
 | `F5` / `Ctrl+R`                       | Reload                    |
 | `Alt+Home`                            | Home page (Startpage)     |
 | `Ctrl+H`                              | History                   |
+| `Ctrl+D`                              | Bookmark / unbookmark the page |
+| `Ctrl+Shift+B` / `Ctrl+Shift+O`       | Bookmarks bar / bookmarks page |
+| `F11`                                 | Fullscreen window         |
 | `Ctrl+Plus` / `Ctrl+Minus` / `Ctrl+0` | Zoom in / out / reset     |
 | `Ctrl+U`                              | View source               |
 | `Ctrl+Shift+S`                        | Save a screenshot to Pictures |
@@ -176,7 +179,7 @@ code adapted by the ad blocker.
 
 ## Documentation
 
-- [Usage](docs/usage.md): address bar rules, toolbar, tabs, settings, shortcuts and forms
+- [Usage](docs/usage.md): address bar rules, toolbar, tabs, bookmarks, fullscreen, the password manager, settings, shortcuts and forms
 - [Architecture](docs/architecture.md): how the engine's stages fit together
 - [egui chrome](docs/egui.md): the GPU toolbar and sidebar, and how they sit next to WebView2
 - [Development](docs/development.md): building, tests, headless screenshots and common changes
