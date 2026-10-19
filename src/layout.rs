@@ -1296,6 +1296,7 @@ impl<'a> Engine<'a> {
             y: cy,
             floats: Vec::new(),
             line: Vec::new(),
+            content: false,
             line_w: 0.0,
             avail: 0.0,
             first: true,
@@ -1346,18 +1347,14 @@ impl<'a> Engine<'a> {
                         continue;
                     }
                     ls.line_w += piece.width;
-                    ls.line.push(piece);
+                    ls.push(piece);
                     continue;
                 }
                 _ => {}
             }
-            let has_content = ls
-                .line
-                .iter()
-                .any(|p| !matches!(p.kind, PieceKind::Space | PieceKind::Spacer));
             let wraps = item_wraps(piece.item);
             if ls.line_w + piece.width > ls.avail + 0.01 && wraps {
-                if has_content {
+                if ls.content {
                     self.finish_line(&mut ls, &items, &atomics, cst, cx, w, indent);
                     pending = Some(piece);
                     continue;
@@ -1397,7 +1394,7 @@ impl<'a> Engine<'a> {
                         used += cw;
                         split = start + i + c.len_utf8();
                     }
-                    ls.line.push(Piece {
+                    ls.push(Piece {
                         kind: PieceKind::Word(text[start..split].to_string()),
                         width: used,
                         item: piece.item,
@@ -1423,7 +1420,7 @@ impl<'a> Engine<'a> {
                 continue;
             }
             ls.line_w += piece.width;
-            ls.line.push(piece);
+            ls.push(piece);
         }
         if !ls.line.is_empty() {
             self.finish_line(&mut ls, &items, &atomics, cst, cx, w, indent);
@@ -1445,6 +1442,7 @@ impl<'a> Engine<'a> {
     ) {
         trim_trailing_spaces(&mut ls.line);
         let line = std::mem::take(&mut ls.line);
+        ls.content = false;
         let (l, r) = ls.bounds();
         let ind = if ls.first { indent } else { 0.0 };
         let h = self.place_line(
@@ -2403,6 +2401,9 @@ struct LineState {
     /// Floats placed in this run: (is right, width, bottom edge).
     floats: Vec<(bool, f32, f32)>,
     line: Vec<Piece>,
+    /// Whether `line` holds anything but spaces and spacers. Kept up to date
+    /// on push, so each piece does not rescan a line of preserved spaces.
+    content: bool,
     line_w: f32,
     avail: f32,
     first: bool,
@@ -2427,6 +2428,11 @@ impl LineState {
             .map(|f| f.2)
             .filter(|&b| b > self.y + 0.01)
             .reduce(f32::min)
+    }
+
+    fn push(&mut self, piece: Piece) {
+        self.content |= !matches!(piece.kind, PieceKind::Space | PieceKind::Spacer);
+        self.line.push(piece);
     }
 
     fn reset(&mut self, w: f32, indent: f32) {
@@ -2677,5 +2683,20 @@ mod scaling_tests {
             "{:?}",
             start.elapsed()
         );
+    }
+
+    #[test]
+    fn preserved_leading_spaces_stay_linear() {
+        // Each word used to rescan every preserved space before it (audit B-06).
+        let start = Instant::now();
+        let spaces = " ".repeat(160_000);
+        let words = "x ".repeat(40_000);
+        let Some(t) = texts(&format!("<p style=\"white-space:pre\">{spaces}{words}</p>"), "") else {
+            return;
+        };
+        assert_eq!(t.iter().map(|s| s.matches('x').count()).sum::<usize>(), 40_000);
+        let spacers = "<span style=\"padding-left:1px\"></span>".repeat(20_000);
+        texts(&format!("<p style=\"white-space:nowrap\">{spacers}{words}</p>"), "");
+        assert!(start.elapsed() < Duration::from_secs(10), "{:?}", start.elapsed());
     }
 }
