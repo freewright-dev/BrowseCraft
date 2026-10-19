@@ -338,6 +338,11 @@ mod imp {
             let size = self.context.size();
             let rect = DeviceIntRect::from_size(DeviceIntSize::new(size.width as i32, size.height as i32));
             let rgba = self.context.read_to_image(rect)?;
+            // For evaluating the slice: keep the newest frame as a PNG, so
+            // pages can be checked without looking at the screen.
+            if let Some(path) = std::env::var_os("BROWSECRAFT_SERVO_FRAME") {
+                let _ = rgba.save(path);
+            }
             let pixels = rgba
                 .pixels()
                 .map(|p| (p[3] as u32) << 24 | (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32)
