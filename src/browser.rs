@@ -371,6 +371,14 @@ fn popup_allowed(url: &str) -> bool {
     is_web_url(url)
 }
 
+/// Whether the web view may navigate its main frame to `url`. The browser
+/// never loads its internal pages (`browsecraft:`, `about:`, `view-source:`)
+/// in the web view, only the `about:blank` it uses to unload a page, so a
+/// page script setting `location` to one of them is refused.
+fn navigation_allowed(url: &str) -> bool {
+    request_in_webview(url) || url.trim().eq_ignore_ascii_case("about:blank")
+}
+
 /// A page title fit for the window title and history: control and
 /// bidirectional-formatting characters (which can disguise the rest) are
 /// dropped, whitespace is collapsed, and it is at most 300 characters.
@@ -1782,6 +1790,10 @@ impl Browser {
                 }
             })
             .with_navigation_handler(move |url| {
+                // Web content cannot open the engine's internal pages.
+                if !navigation_allowed(&url) {
+                    return false;
+                }
                 // Main-frame navigations the ad filter blocks become an engine
                 // notice page instead.
                 if is_web_url(&url) && adblock::blocked_page(&url, "") {
@@ -4031,6 +4043,24 @@ mod tests {
             assert!(!popup_allowed(url), "{url}");
         }
         assert!(!request_in_webview("BROWSECRAFT://flags"));
+        for url in [
+            "https://example.com/",
+            "file:///C:/page.html",
+            "data:text/html,hi",
+            "about:blank",
+            " About:Blank ",
+        ] {
+            assert!(navigation_allowed(url), "{url}");
+        }
+        for url in [
+            "browsecraft://flags",
+            "BrowseCraft://passwords?action=lock",
+            "about:home",
+            "about:blocked:https://bank.example",
+            "view-source:https://attacker.example/",
+        ] {
+            assert!(!navigation_allowed(url), "{url}");
+        }
     }
 
     #[test]

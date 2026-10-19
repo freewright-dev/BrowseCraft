@@ -92,7 +92,7 @@ Click the key icon at the top right. The first time, choose how to protect your 
 
 The vault is a standard KeePass 4 (`.kdbx`) file, so KeePassXC and other KeePass apps open it too. You can also open an existing vault. BrowseCraft locks the vault again after 15 minutes without use, and keeps which vault to use (never a password) in `passwords.cfg` in the [per-user settings folder](../README.md#settings), which is also where it suggests creating a new vault.
 
-On a page with a login form the key menu lists the logins saved for that site: click one to fill the page. On a sign-up or change-password form, *Suggest a strong password* fills a generated one. When you submit a login, a bar offers to **Save** it (or **Update** a changed password), or to never ask for that site. `browsecraft://passwords` lists, shows, copies (cleared from the clipboard after 30 seconds), adds and deletes logins.
+On a page with a login form the key menu lists the logins saved for that site: click one to fill the page. A login counts for its own host and for hosts above or below it in the same registered domain (a login for `example.com` is offered on `login.example.com`), but not for sibling subdomains or across a public suffix such as `github.io`. On a sign-up or change-password form, *Suggest a strong password* fills a generated one. When you submit a login, a bar offers to **Save** it (or **Update** a changed password), or to never ask for that site. `browsecraft://passwords` lists, shows, copies (cleared from the clipboard after 30 seconds), adds and deletes logins.
 
 ## Settings (`browsecraft://flags`)
 

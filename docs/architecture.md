@@ -250,8 +250,9 @@ egui path. See `docs/egui.md`.
 `adblock.rs` is a port of uBlock Origin's static network filtering and `##`
 element hiding, using EasyList/uBO syntax. `adblock::instance()` builds one
 shared `AdBlocker` from a built-in starter list plus every `filters/*.txt`
-file in the working directory and next to the executable. It feeds three
-sinks:
+file in the working directory and next to the executable, keeping at most
+200,000 network and element-hiding rules (`MAX_RULES`; later lines are skipped
+and counted on stderr). It feeds three sinks:
 
 1. **Rust-side network checks** (`matches_network`, through `blocked_page` and
    `blocked_subresource`): main-frame navigations and pop-ups are checked
@@ -262,10 +263,13 @@ sinks:
    runtimes include frame/worker request sources. Request Origin/Referer, or
    the current page URL as a fallback, supplies the document host. Blocked
    requests receive an empty 403 response. Windows initialization scripts
-   handle cosmetic rules only; a failed native hook falls back to the engine.
+   handle cosmetic rules only, and their script leaves the network rules out;
+   a failed native hook falls back to the engine.
    On macOS, JavaScript request hooks remain best effort: fetch inputs are
    normalized through `Request`, but parser-initiated resources are not fully
-   covered by JavaScript interception.
+   covered by JavaScript interception. The hooks take the host and what
+   follows it from the parsed URL and anchor host rules there, like
+   `matches_network`.
 3. **Engine pages:** `engine_cosmetic_css(host)` returns a stylesheet that
    `loader.rs` appends to fetched pages, hiding matches with `display: none`.
 

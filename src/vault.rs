@@ -20,6 +20,7 @@ use keepass::config::{DatabaseConfig, KdfConfig};
 use keepass::db::{Entry, Group, Value};
 use keepass::{Database, DatabaseKey};
 use secstr::SecStr;
+use zeroize::Zeroizing;
 
 /// A saved login as the UI sees it. The password is not part of it: it is
 /// fetched on demand with [`Vault::password`].
@@ -163,13 +164,30 @@ pub fn host_key(url: &str) -> String {
 }
 
 /// Whether a login saved for `saved` may be used on `page`: the same host,
-/// or one is a subdomain of the other (`login.example.com` / `example.com`).
+/// or one is a subdomain of the other (`login.example.com` / `example.com`)
+/// and both share one registrable domain from the Public Suffix List. So a
+/// public suffix never covers the sites under it (`github.io` does not match
+/// `alice.github.io`, nor `co.uk` match `example.co.uk`), and sibling
+/// subdomains (`a.example.com` / `b.example.com`) do not match either.
 pub fn same_site(saved: &str, page: &str) -> bool {
     let (a, b) = (host_key(saved), host_key(page));
     if a.is_empty() || b.is_empty() {
         return false;
     }
-    a == b || a.ends_with(&format!(".{b}")) || b.ends_with(&format!(".{a}"))
+    if a == b {
+        return true;
+    }
+    let nested = a.ends_with(&format!(".{b}")) || b.ends_with(&format!(".{a}"));
+    nested && registrable_domain(&a).is_some_and(|d| registrable_domain(&b) == Some(d))
+}
+
+/// The registrable domain (eTLD+1) of `host`, or `None` for an IP address or
+/// a host that is itself a public suffix.
+fn registrable_domain(host: &str) -> Option<&str> {
+    if host.starts_with('[') || host.parse::<std::net::Ipv4Addr>().is_ok() {
+        return None;
+    }
+    psl::domain_str(host)
 }
 
 impl Vault {
@@ -267,8 +285,9 @@ impl Vault {
             .collect()
     }
 
-    pub fn password(&self, id: &str) -> Option<String> {
-        find(&self.db.root, id).map(|e| entry_text(e, "Password"))
+    /// A copy of a login's password, wiped from memory when dropped.
+    pub fn password(&self, id: &str) -> Option<Zeroizing<String>> {
+        find(&self.db.root, id).map(|e| Zeroizing::new(entry_text(e, "Password")))
     }
 
     /// Adds a login and writes the vault. Returns its id.
@@ -371,14 +390,14 @@ mod tests {
         let path = dir.join("v.kdbx");
         let mut vault = Vault::create(&path, NewProtection::Password("correct horse".into())).unwrap();
         let id = vault.add("Example", "https://www.example.com/login", "alice", "s3cret!").unwrap();
-        assert_eq!(vault.password(&id).as_deref(), Some("s3cret!"));
+        assert_eq!(vault.password(&id).as_deref().map(String::as_str), Some("s3cret!"));
 
         let reopened = Vault::open(&path, &Unlock::Password("correct horse".into())).unwrap();
         let list = reopened.credentials();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "Example");
         assert_eq!(list[0].username, "alice");
-        assert_eq!(reopened.password(&list[0].id).as_deref(), Some("s3cret!"));
+        assert_eq!(reopened.password(&list[0].id).as_deref().map(String::as_str), Some("s3cret!"));
 
         assert_eq!(
             Vault::open(&path, &Unlock::Password("wrong password".into())).err().as_deref(),
@@ -452,7 +471,7 @@ mod tests {
         assert!(vault.delete(&b).is_err());
         let again = Vault::open(&path, &pw).unwrap();
         assert_eq!(again.credentials().len(), 1);
-        assert_eq!(again.password(&a).as_deref(), Some("uno"));
+        assert_eq!(again.password(&a).as_deref().map(String::as_str), Some("uno"));
         assert!(vault.add("C", "https://c.test/", "u", "").is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -477,6 +496,18 @@ mod tests {
         assert!(same_site("https://a.example.com", "https://example.com"));
         assert!(!same_site("https://example.com", "https://notexample.com"));
         assert!(!same_site("", "https://example.com"));
+        assert!(same_site("https://example.co.uk", "https://login.example.co.uk"));
+        assert!(same_site("http://127.0.0.1:8080/", "http://127.0.0.1/"));
+        assert!(same_site("http://localhost:3000/", "http://localhost/"));
+        // A public suffix never covers the sites registered under it.
+        assert!(!same_site("https://github.io", "https://alice.github.io"));
+        assert!(!same_site("https://alice.github.io", "https://github.io"));
+        assert!(!same_site("https://alice.github.io", "https://bob.github.io"));
+        assert!(!same_site("https://co.uk", "https://example.co.uk"));
+        assert!(!same_site("https://com", "https://example.com"));
+        // Sibling subdomains are different sites.
+        assert!(!same_site("https://login.example.com", "https://other.example.com"));
+        assert!(!same_site("http://1.2.3.4", "http://5.1.2.3.4"));
         assert_eq!(host_key("Example.COM/path"), "example.com");
     }
 

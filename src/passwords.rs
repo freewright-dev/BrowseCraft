@@ -5,7 +5,8 @@
 //! The vault itself (the `.kdbx` file) lives in `vault.rs`. This module keeps
 //! the one unlocked [`Vault`] in memory, locks it again after a quiet spell,
 //! and never shows a saved password except where the user asked for it
-//! (Fill, Show, Copy).
+//! (Fill, Show, Copy). Password copies made on the way (fill scripts, save
+//! offers, clipboard checks) are `Zeroizing`, so they are wiped once used.
 //!
 //! Page and browser talk like this:
 //!
@@ -19,6 +20,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+use zeroize::Zeroizing;
 
 use crate::internal::{self, FormToken};
 use crate::vault::{self, Credential, NewProtection, Unlock, Vault};
@@ -68,7 +71,7 @@ pub struct Offer {
     /// What the login is saved under: the site's address.
     pub url: String,
     pub username: String,
-    password: String,
+    password: Zeroizing<String>,
     pub kind: FormKind,
     /// Set when the vault already has this user on this site with another
     /// password: the offer is then to update that login.
@@ -284,8 +287,9 @@ pub fn js_string(text: &str) -> String {
 }
 
 /// The script that fills login `id` into the page at `page_url`. `None`
-/// unless the vault is unlocked and the login belongs to that site.
-pub fn fill_script(id: &str, page_url: &str) -> Option<String> {
+/// unless the vault is unlocked and the login belongs to that site. The
+/// script holds the password, so it is wiped when dropped.
+pub fn fill_script(id: &str, page_url: &str) -> Option<Zeroizing<String>> {
     let mut s = state();
     s.touch_if_unlocked();
     let vault = s.vault.as_ref()?;
@@ -294,11 +298,17 @@ pub fn fill_script(id: &str, page_url: &str) -> Option<String> {
         return None;
     }
     let password = vault.password(id)?;
-    Some(format!(
-        "window.__bcFill&&window.__bcFill({},{});",
-        js_string(&login.username),
-        js_string(&password)
-    ))
+    let password = Zeroizing::new(js_string(&password));
+    let username = js_string(&login.username);
+    // Sized up front so the buffer never reallocates and leaves a copy behind.
+    let (head, tail) = ("window.__bcFill&&window.__bcFill(", ");");
+    let mut script = Zeroizing::new(String::with_capacity(
+        head.len() + username.len() + 1 + password.len() + tail.len(),
+    ));
+    for part in [head, &username, ",", &password, tail] {
+        script.push_str(part);
+    }
+    Some(script)
 }
 
 /// A script that puts a new strong password in the page's password fields
@@ -335,7 +345,7 @@ pub fn offer_login(page_url: &str, username: &str, password: &str, kind: FormKin
     let mut update_id = None;
     if let Some(vault) = &s.vault {
         for login in vault.for_site(page_url).into_iter().filter(|c| c.username == username) {
-            if vault.password(&login.id).as_deref() == Some(password) {
+            if vault.password(&login.id).is_some_and(|saved| saved.as_str() == password) {
                 return false;
             }
             update_id = Some(login.id);
@@ -345,7 +355,7 @@ pub fn offer_login(page_url: &str, username: &str, password: &str, kind: FormKin
         host,
         url: origin_of(page_url),
         username: username.to_string(),
-        password: password.to_string(),
+        password: Zeroizing::new(password.to_string()),
         kind,
         update_id,
         made: Instant::now(),
@@ -418,7 +428,7 @@ pub enum PageMessage {
     Login {
         url: String,
         username: String,
-        password: String,
+        password: Zeroizing<String>,
         kind: FormKind,
     },
 }
@@ -451,7 +461,7 @@ pub fn parse_page_message(body: &str) -> Option<PageMessage> {
         "forms" => Some(PageMessage::Forms(FormKind::parse(&get("k")).or_else(|| FormKind::parse(&get("kind"))))),
         "cred" => {
             let kind = FormKind::parse(&get("k"))?;
-            let password = get("p");
+            let password = Zeroizing::new(get("p"));
             if password.is_empty() {
                 return None;
             }
@@ -504,13 +514,13 @@ fn default_keyfile_path() -> String {
 
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("No clipboard: {e}"))?;
-    clipboard.set_text(text.to_string()).map_err(|e| format!("Could not copy: {e}"))?;
-    let copied = text.to_string();
+    clipboard.set_text(text).map_err(|e| format!("Could not copy: {e}"))?;
+    let copied = Zeroizing::new(text.to_string());
     // Do not leave the password on the clipboard: clear it if it is still ours.
     std::thread::spawn(move || {
         std::thread::sleep(CLIPBOARD_CLEAR);
         if let Ok(mut clipboard) = arboard::Clipboard::new()
-            && clipboard.get_text().is_ok_and(|now| now == copied)
+            && clipboard.get_text().is_ok_and(|now| *Zeroizing::new(now) == *copied)
         {
             let _ = clipboard.clear();
         }
@@ -602,9 +612,9 @@ pub fn handle(query: &str, post_body: Option<&str>) {
             let id = field(&pairs, "id").to_string();
             match action.as_str() {
                 "add" => {
-                    let mut password = field(&pairs, "password").to_string();
+                    let mut password = Zeroizing::new(field(&pairs, "password").to_string());
                     if password.is_empty() && !field(&pairs, "generate").is_empty() {
-                        password = vault::generate_password(20);
+                        password = Zeroizing::new(vault::generate_password(20));
                     }
                     let url = field(&pairs, "url").trim();
                     let url = if url.is_empty() || url.contains("://") {
@@ -1030,6 +1040,7 @@ mod tests {
         // Filling only works for the login's own site.
         let script = fill_script(&id, "https://login.example.com/").unwrap();
         assert!(script.contains("\"alice\"") && script.contains("\"pw\\\"quote\""));
+        assert_eq!(script.capacity(), script.len(), "built without reallocating");
         assert!(fill_script(&id, "https://evil.test/").is_none());
         assert!(fill_script(&id, "https://example.com.evil.test/").is_none());
         assert!(fill_script("no-such-id", "https://example.com/").is_none());
@@ -1051,7 +1062,7 @@ mod tests {
         submit("add", &[("url", "https://gen.test/"), ("username", "g"), ("generate", "1")]);
         let id = logins_for("https://gen.test/")[0].id.clone();
         let script = fill_script(&id, "https://gen.test/").unwrap();
-        assert!(script.len() > 40, "a generated password was saved: {script}");
+        assert!(script.len() > 40, "a generated password was saved: {}", script.as_str());
         submit("add", &[("url", "https://none.test/"), ("username", "g")]);
         assert_eq!(status(), Status::Unlocked { logins: 1 }, "no password and no generate: nothing saved");
         let _ = std::fs::remove_dir_all(dir);

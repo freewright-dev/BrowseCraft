@@ -108,12 +108,23 @@ struct Cosmetic {
     allow: bool,
 }
 
+/// The most network and element-hiding rules kept from all lists together.
+/// Lines past it are skipped, so a huge or hostile list cannot grow memory
+/// and per-request matching without bound. The bundled list loads first,
+/// then `filters/*.txt` by file name. EasyList and EasyPrivacy together
+/// fit well under it.
+const MAX_RULES: usize = 200_000;
+
 pub struct AdBlocker {
     /// Rules keyed by the hostname they are anchored on, for fast lookup.
     by_host: HashMap<String, Vec<usize>>,
     plain: Vec<usize>,
     rules: Vec<NetRule>,
     cosmetic: Vec<Cosmetic>,
+    /// Rule limit ([`MAX_RULES`], smaller in tests).
+    limit: usize,
+    /// Rules dropped because the limit was reached.
+    skipped: usize,
 }
 
 // ---- Public API ----
@@ -125,6 +136,8 @@ impl AdBlocker {
             plain: Vec::new(),
             rules: Vec::new(),
             cosmetic: Vec::new(),
+            limit: MAX_RULES,
+            skipped: 0,
         }
     }
 
@@ -243,52 +256,16 @@ impl AdBlocker {
         self.page_script_with_network(true)
     }
 
+    /// The page script. Without `network_hooks` (Windows, where WebView2
+    /// filters requests natively) the network rules are left out, since only
+    /// the element hiding runs: that keeps a multi-megabyte list out of
+    /// every page.
     pub fn page_script_with_network(&self, network_hooks: bool) -> String {
-        let mut url_rules: Vec<String> = Vec::new();
-        for &i in &self.plain {
-            let r = &self.rules[i];
-            if !r.options.domains.is_empty() {
-                continue; // `domain=` is enforced Rust-side only.
-            }
-            if !r.pattern.host.is_empty() {
-                continue;
-            }
-            let re = token_regex(
-                &r.pattern.toks,
-                r.pattern.left_anchor,
-                r.pattern.right_anchor,
-            );
-            url_rules.push(format!(
-                "[{},{},{}]",
-                quote(&re),
-                r.options.types.unwrap_or(TYPE_ALL),
-                bit(r.allow, r.options.important)
-            ));
-        }
-        url_rules.sort();
-        let mut host_map: Vec<String> = Vec::new();
-        for (host, indices) in &self.by_host {
-            let mut entries = Vec::new();
-            let mut ok = true;
-            for &i in indices {
-                let r = &self.rules[i];
-                if !r.options.domains.is_empty() {
-                    ok = false;
-                    break;
-                }
-                let re = token_regex(&r.pattern.toks, false, r.pattern.right_anchor);
-                entries.push(format!(
-                    "[{},{},{}]",
-                    quote(&re),
-                    r.options.types.unwrap_or(TYPE_ALL),
-                    bit(r.allow, r.options.important)
-                ));
-            }
-            if ok && !entries.is_empty() {
-                host_map.push(format!("{}:[{}],", quote(host), entries.join(",")));
-            }
-        }
-        host_map.sort();
+        let (url_rules, host_map) = if network_hooks {
+            self.network_rules_js()
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let mut generic_css: Vec<String> = Vec::new();
         for sel in self.cosmetic_selectors("") {
             generic_css.push(quote(&sel));
@@ -329,6 +306,67 @@ impl AdBlocker {
             .replace("__SCOPED_CSS__", &format!("[{}]", scoped_js.join(",")))
     }
 
+    /// The network rules as JavaScript: the entries of `__URL_RULES__` and
+    /// of the `__HOST_RULES__` object.
+    fn network_rules_js(&self) -> (Vec<String>, Vec<String>) {
+        let mut url_rules: Vec<String> = Vec::new();
+        for &i in &self.plain {
+            let r = &self.rules[i];
+            if !r.options.domains.is_empty() {
+                continue; // `domain=` is enforced Rust-side only.
+            }
+            if !r.pattern.host.is_empty() {
+                continue;
+            }
+            let re = token_regex(
+                &r.pattern.toks,
+                r.pattern.left_anchor,
+                r.pattern.right_anchor,
+            );
+            url_rules.push(format!(
+                "[{},{},{}]",
+                quote(&re),
+                r.options.types.unwrap_or(TYPE_ALL),
+                bit(r.allow, r.options.important)
+            ));
+        }
+        url_rules.sort();
+        let mut host_map: Vec<String> = Vec::new();
+        for (host, indices) in &self.by_host {
+            let mut entries = Vec::new();
+            let mut ok = true;
+            for &i in indices {
+                let r = &self.rules[i];
+                if !r.options.domains.is_empty() {
+                    ok = false;
+                    break;
+                }
+                // Anchored where the host ends, as `match_pattern` does.
+                let re = token_regex(&r.pattern.toks, true, r.pattern.right_anchor);
+                entries.push(format!(
+                    "[{},{},{}]",
+                    quote(&re),
+                    r.options.types.unwrap_or(TYPE_ALL),
+                    bit(r.allow, r.options.important)
+                ));
+            }
+            if ok && !entries.is_empty() {
+                host_map.push(format!("{}:[{}],", quote(host), entries.join(",")));
+            }
+        }
+        host_map.sort();
+        (url_rules, host_map)
+    }
+
+    /// Whether another rule fits under the limit; counts it as skipped if not.
+    fn has_room(&mut self) -> bool {
+        if self.rules.len() + self.cosmetic.len() < self.limit {
+            return true;
+        }
+        self.skipped += 1;
+        false
+    }
+
     fn add_filter_line(&mut self, line: &str) {
         if line.is_empty()
             || line.starts_with('!')
@@ -338,7 +376,9 @@ impl AdBlocker {
             return;
         }
         if line.contains("##") || line.contains("#@#") {
-            if let Some(c) = parse_cosmetic(line) {
+            if let Some(c) = parse_cosmetic(line)
+                && self.has_room()
+            {
                 self.cosmetic.push(c);
             }
             return;
@@ -346,7 +386,9 @@ impl AdBlocker {
         if line.contains("#?#") || line.contains("#$#") || line.contains("##+js") {
             return;
         }
-        if let Some(rule) = parse_network(line) {
+        if let Some(rule) = parse_network(line)
+            && self.has_room()
+        {
             let index = self.rules.len();
             self.rules.push(rule);
             if self.rules[index].pattern.host.is_empty() {
@@ -385,6 +427,12 @@ pub fn load_default() -> AdBlocker {
         for text in load_directory(&dir.join("filters")).into_iter().flatten() {
             ab.add_filter_list("filters", &text);
         }
+    }
+    if ab.skipped > 0 {
+        eprintln!(
+            "adblock: kept the first {MAX_RULES} filter rules and skipped {} more",
+            ab.skipped
+        );
     }
     ab
 }
@@ -904,12 +952,15 @@ for(const k in H){H[k].forEach(e=>{e[0]=R(e[0]);});}
 for(const e of N){e[0]=R(e[0]);}
 const abs=u=>{try{return new URL(u,location.href).href}catch(e){return ''}};
 const decide=(u,t)=>{
-  const l=String(u).toLowerCase();
-  let un='';try{un=new URL(String(u)).hostname.toLowerCase()}catch(e){return 0}
+  let p;try{p=new URL(String(u))}catch(e){return 0}
+  // Match the serialized URL like the Rust side, and take what follows the
+  // host from the parsed parts: searching for the host text could find it
+  // in the user info or the path instead.
+  const l=p.href.toLowerCase();
+  const un=p.hostname.toLowerCase();
   let block=false,allow=false,imp=false;
   if(un){
-    const start=l.indexOf(un);
-    const tail=start>=0?l.slice(start+un.length):'';
+    const tail=((p.port?':'+p.port:'')+p.pathname+p.search+p.hash).toLowerCase();
     const parts=un.split('.');
     for(let i=0;i<parts.length;i++){
       const rs=H[parts.slice(i).join('.')];
@@ -1091,6 +1142,54 @@ mod tests {
             .stdin(Stdio::piped()).spawn().expect("Node.js is required for fetch regression tests");
         child.stdin.take().unwrap().write_all(ab.page_script().as_bytes()).unwrap();
         assert!(child.wait().unwrap().success());
+    }
+
+    #[test]
+    fn page_hook_takes_the_host_from_the_parsed_url() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let ab = blocker(&["||cdn.example^ads"]);
+        let mut child = Command::new("node").arg("-e")
+            .arg(include_str!("../tests/adblock-hook.cjs"))
+            .stdin(Stdio::piped()).spawn().expect("Node.js is required for page-hook regression tests");
+        child.stdin.take().unwrap().write_all(ab.page_script().as_bytes()).unwrap();
+        assert!(child.wait().unwrap().success());
+        // The Rust matcher gives the same verdicts.
+        assert_eq!(decide(&ab, "https://cdn.example/ads", TYPE_ALL, "x.com"), Decision::Block);
+        assert_eq!(decide(&ab, "https://img.cdn.example/ads", TYPE_ALL, "x.com"), Decision::Block);
+        assert_eq!(decide(&ab, "https://cdn.example/x/ads", TYPE_ALL, "x.com"), Decision::Neutral);
+        assert_eq!(
+            decide(&ab, "https://cdn.example:ads@cdn.example/ok", TYPE_ALL, "x.com"),
+            Decision::Neutral
+        );
+    }
+
+    #[test]
+    fn page_script_without_network_hooks_leaves_out_network_rules() {
+        let ab = blocker(&["||doubleclick.net^", "/banner-ads/", "##.adsbygoogle"]);
+        let js = ab.page_script_with_network(false);
+        assert!(!js.contains("doubleclick") && !js.contains("banner"));
+        assert!(js.contains("adsbygoogle"), "element hiding still runs");
+        let js = ab.page_script_with_network(true);
+        assert!(js.contains("doubleclick") && js.contains("banner"));
+    }
+
+    #[test]
+    fn rule_count_is_capped() {
+        let mut ab = AdBlocker::empty();
+        ab.limit = 3;
+        ab.add_filter_list("t", "! a comment
+||a.example^
+##.one
+||b.example^
+||c.example^
+##.two
+");
+        assert_eq!(ab.rules.len() + ab.cosmetic.len(), 3);
+        assert_eq!(ab.skipped, 2, "comments do not count");
+        assert_eq!(decide(&ab, "https://b.example/", TYPE_ALL, "x.com"), Decision::Block);
+        assert_eq!(decide(&ab, "https://c.example/", TYPE_ALL, "x.com"), Decision::Neutral);
+        assert_eq!(ab.cosmetic_selectors("x.com"), [".one"]);
     }
 
     #[test]
