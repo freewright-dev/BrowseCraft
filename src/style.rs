@@ -180,7 +180,6 @@ pub struct Style {
 
     pub color: Color,
     pub background: Color,
-    pub background_image: Option<String>,
 
     pub font_size: f32,
     pub bold: bool,
@@ -235,10 +234,11 @@ pub struct Style {
 
 /// Custom properties in scope for an element: the ones it declares itself,
 /// layered over its parent's. Elements share their ancestors' layers instead
-/// of each copying the whole map.
+/// of each copying the whole map, and names and values are the declarations'
+/// own strings, so a long value is stored once however many elements use it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Vars {
-    own: HashMap<String, String>,
+    own: HashMap<Arc<str>, Arc<str>>,
     parent: Option<Rc<Vars>>,
 }
 
@@ -262,15 +262,15 @@ impl Vars {
     /// one entry for the whole document rather than one per element.
     fn layered<'a>(
         parent: &Rc<Vars>,
-        declared: impl Iterator<Item = (&'a str, &'a str)>,
+        declared: impl Iterator<Item = (&'a Arc<str>, &'a Arc<str>)>,
     ) -> Rc<Vars> {
-        let mut own: HashMap<String, String> = HashMap::new();
+        let mut own: HashMap<Arc<str>, Arc<str>> = HashMap::new();
         for (name, value) in declared {
             if own.get(name).is_none_or(|v| v != value)
-                && (own.contains_key(name) || parent.get(name) != Some(value))
+                && (own.contains_key(name) || parent.get(name) != Some(&**value))
                 && (own.len() < MAX_OWN_VARS || own.contains_key(name))
             {
-                own.insert(name.to_string(), value.to_string());
+                own.insert(name.clone(), value.clone());
             }
         }
         if own.is_empty() {
@@ -294,7 +294,6 @@ impl Style {
             overflow_hidden: false,
             color: Color::BLACK,
             background: Color::TRANSPARENT,
-            background_image: None,
             font_size: 16.0 * zoom,
             bold: false,
             italic: false,
@@ -565,7 +564,7 @@ fn compute_element(
             .iter()
             .map(|e| e.4)
             .filter(|d| d.name.starts_with("--"))
-            .map(|d| (d.name.as_str(), d.value.as_str())),
+            .map(|d| (&d.name, &d.value)),
     );
 
     let mut specified: HashMap<String, String> = HashMap::new();
@@ -726,7 +725,6 @@ fn apply(style: &mut Style, name: &str, value: &str, r: &Resolver) {
                 style.background = c;
             }
         }
-        "background-image" => style.background_image = css::parse_url(v),
         "font-size" => {
             let parent = r.parent.font_size;
             let zoom = r.ctx.zoom;
@@ -1241,26 +1239,17 @@ fn expand_shorthand(name: &str, value: &str) -> Vec<(String, String)> {
         }
         "background" => {
             let mut color = "transparent".to_string();
-            let mut image = "none".to_string();
-            // Only the last layer carries a color.
+            // Only the last layer carries a color. Background images are not
+            // drawn, so they are not kept.
             let layers = css::split_top_level(value, ',');
             for t in tokens(layers.last().copied().unwrap_or(value)) {
-                if t.starts_with("url(") {
-                    image = t.to_string();
-                } else if css::parse_color(t).is_some() || t.eq_ignore_ascii_case("currentcolor") {
+                if !t.starts_with("url(")
+                    && (css::parse_color(t).is_some() || t.eq_ignore_ascii_case("currentcolor"))
+                {
                     color = t.to_string();
                 }
             }
-            if let Some(url) = layers
-                .iter()
-                .find_map(|l| tokens(l).into_iter().find(|t| t.starts_with("url(")))
-            {
-                image = url.to_string();
-            }
-            vec![
-                ("background-color".into(), color),
-                ("background-image".into(), image),
-            ]
+            vec![("background-color".into(), color)]
         }
         "font" => expand_font(value),
         "list-style" => tokens(value)
@@ -1368,8 +1357,8 @@ fn presentational_hints(doc: &Document, node: NodeId, el: &Element) -> Vec<Decla
     let mut out = Vec::new();
     let mut add = |name: &str, value: String| {
         out.push(Declaration {
-            name: name.to_string(),
-            value,
+            name: name.into(),
+            value: value.into(),
             important: false,
         });
     };
@@ -1700,10 +1689,10 @@ mod tests {
         let cascade = index.cascade(&doc, doc.find_tag("p").unwrap());
         assert_eq!(cascade.len(), MAX_CASCADE_DECLARATIONS);
         assert_eq!(
-            cascade.iter().filter(|e| e.4.name == "width").count(),
+            cascade.iter().filter(|e| &*e.4.name == "width").count(),
             40_000
         );
-        assert!(cascade.iter().filter(|e| e.4.name == "height").count() < 40_000);
+        assert!(cascade.iter().filter(|e| &*e.4.name == "height").count() < 40_000);
     }
 
     #[test]
@@ -1778,11 +1767,29 @@ mod tests {
         assert_eq!(s.border_width, [2.0; 4]);
         assert_eq!(s.border_color[0], Some(Color::rgb(255, 0, 0)));
         assert_eq!(s.background, Color::rgb(0xee, 0xee, 0xee));
-        assert_eq!(s.background_image.as_deref(), Some("x.png"));
         assert!(s.bold);
         assert_eq!(s.font_size, 12.0);
         assert_eq!(s.line_height, LineHeight::Factor(1.5));
         assert_eq!(s.family, Family::Mono);
+    }
+
+    #[test]
+    fn custom_property_values_are_shared() {
+        // A long value used by many elements is stored once (audit B-05).
+        let doc = html::parse(&"<p></p>".repeat(50));
+        let sheets = vec![css::parse_stylesheet(&format!("p{{--x:{}}}", "x".repeat(100_000)))];
+        let ctx = StyleContext {
+            zoom: 1.0,
+            viewport_width: 1000.0,
+            viewport_height: 800.0,
+        };
+        let styles = compute_styles(&doc, &sheets, &ctx);
+        let declared = &sheets[0].rules[0].declarations[0].value;
+        let ps: Vec<NodeId> = (0..doc.nodes.len()).filter(|&n| doc.tag(n) == "p").collect();
+        assert_eq!(ps.len(), 50);
+        for p in ps {
+            assert!(Arc::ptr_eq(&styles[p].vars.own["--x"], declared));
+        }
     }
 
     #[test]
