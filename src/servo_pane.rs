@@ -357,7 +357,12 @@ mod imp {
             // For evaluating the slice: keep the newest frame as a PNG, so
             // pages can be checked without looking at the screen.
             if let Some(path) = std::env::var_os("BROWSECRAFT_SERVO_FRAME") {
-                let _ = rgba.save(path);
+                // Written aside and renamed, so a reader never sees half a file.
+                let path = std::path::PathBuf::from(path);
+                let partial = path.with_extension("partial.png");
+                if rgba.save(&partial).is_ok() {
+                    let _ = std::fs::rename(&partial, &path);
+                }
             }
             let pixels = rgba
                 .pixels()
