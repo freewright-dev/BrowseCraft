@@ -27,6 +27,8 @@ A domain needs a dot and a top-level part of at least two letters. So `hello` an
 
 The address bar supports selection with the mouse or `Shift` + arrows, `Ctrl` + arrows to move by word, and `Ctrl+A`, `Ctrl+C`, `Ctrl+X` and `Ctrl+V`. Press `Esc` while editing to put back the current address.
 
+The lock at the start of the address bar means the page shown arrived over HTTPS with a valid certificate. It follows the page actually loaded, not what you type, and it is not shown on BrowseCraft's own notice and error pages, or for a site whose certificate warning you clicked through.
+
 ## Where pages render
 
 On Windows, web pages (`http:`, `https:`, `file:` and `data:` addresses) are shown in an embedded WebView2 pane (WKWebView on macOS). BrowseCraft's own engine renders the built-in pages (`about:`, `browsecraft://` and `view-source:`), the result of a POST form submitted from an engine page, and every page when WebView2 is unavailable or on other platforms.
@@ -117,7 +119,7 @@ blocked pop-up shows a short notice under the page.
 | `F5` / `Ctrl+R`                       | Reload                    |
 | `Esc` (page focused, while loading)   | Stop loading              |
 | `Alt+Left` / `Alt+Right`, mouse back/forward buttons | Back / forward |
-| `Ctrl+Left` / `Ctrl+Right`            | Back / forward (when not typing in a field) |
+| `Ctrl+Left` / `Ctrl+Right`            | Back / forward on engine pages, when not typing in a field (in web pages they move by a word) |
 | `Backspace` / `Shift+Backspace` (page focused) | Back / forward   |
 | `Alt+Home`                            | Home (Startpage)          |
 | `Ctrl+Plus` / `Ctrl+Minus` / `Ctrl+0`, `Ctrl`+wheel | Zoom in / out / reset |

@@ -78,6 +78,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web pages can no longer hand URLs to other apps: main-frame navigations are limited to http(s), `file:`, `data:`, `blob:` and `about:blank`, external-scheme launches from any frame are cancelled, and a notice names the blocked scheme.
 - `window.close()` no longer leaves every web tab blank: the web view starts on `about:blank`, so a page is never the single history entry Chromium lets a script close, and if the web view is closed anyway the browser builds a new one.
 - Pop-up and fullscreen events from a page that is no longer shown (after a tab switch or a new navigation) are ignored instead of acting on the current tab.
+- `Ctrl+Left` and `Ctrl+Right` in a web page move by a word in its text fields instead of going Back or Forward and losing what was typed; `Alt+Left` and `Alt+Right` still navigate.
+- The address bar's lock follows the page actually loaded: not typed text, not the engine's notice and error pages, and not a site whose WebView2 certificate warning was clicked through.
 - Windows screenshot capture rejects overflowing or excessive dimensions before allocation, validates bitmap selection/restoration, and releases native resources on error paths.
 - Ad blocking now checks every engine HTTP redirect destination and uses native WebView2 interception for parser-initiated resources and redirects. JavaScript fallback fetch hooks handle URL and Request objects with one native conversion.
 - Cancelled engine loads stop scheduling document/stylesheet/import/image work and publishing stale events. Background loads use a bounded two-worker queue and whole-load deadlines.

@@ -161,6 +161,9 @@ impl Request {
 pub struct Page {
     /// What the address bar shows: the URL after redirects.
     pub url: String,
+    /// The page was fetched over HTTPS (rustls verified its certificate).
+    /// False for internal, notice and error pages, whatever their `url`.
+    pub secure: bool,
     pub base: Url,
     pub doc: Document,
     pub sheets: Vec<Stylesheet>,
@@ -445,6 +448,7 @@ fn load_page_checked(request: &Request, control: &Control) -> Page {
         sheets.push(css::parse_stylesheet(&cosmetics));
     }
     Page {
+        secure: resp.url.scheme() == "https",
         url: final_url,
         base,
         doc,
@@ -497,6 +501,7 @@ fn internal_page(url: &str, source: &str) -> Page {
     let sheets = inline_sheets(&doc);
     Page {
         url: url.to_string(),
+        secure: false,
         base,
         doc,
         sheets,
@@ -1175,6 +1180,7 @@ mod tests {
         let base = document_base(&doc, &url);
         Page {
             url: url.to_string(),
+            secure: false,
             base,
             doc,
             sheets: Vec::new(),
