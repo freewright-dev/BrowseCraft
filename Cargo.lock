@@ -311,6 +311,7 @@ dependencies = [
  "windows 0.61.3",
  "winit",
  "wry",
+ "zeroize",
 ]
 
 [[package]]

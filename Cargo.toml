@@ -28,6 +28,7 @@ url = "2"
 keepass = { version = "0.8", default-features = false, features = ["save_kdbx4"] }
 argon2 = { package = "rust-argon2", version = "3" }
 secstr = "0.5"
+zeroize = "1"
 base64 = "0.22"
 winit = "0.30"
 wry = "0.55"

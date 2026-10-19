@@ -20,6 +20,7 @@ use keepass::config::{DatabaseConfig, KdfConfig};
 use keepass::db::{Entry, Group, Value};
 use keepass::{Database, DatabaseKey};
 use secstr::SecStr;
+use zeroize::Zeroizing;
 
 /// A saved login as the UI sees it. The password is not part of it: it is
 /// fetched on demand with [`Vault::password`].
@@ -267,8 +268,9 @@ impl Vault {
             .collect()
     }
 
-    pub fn password(&self, id: &str) -> Option<String> {
-        find(&self.db.root, id).map(|e| entry_text(e, "Password"))
+    /// A copy of a login's password, wiped from memory when dropped.
+    pub fn password(&self, id: &str) -> Option<Zeroizing<String>> {
+        find(&self.db.root, id).map(|e| Zeroizing::new(entry_text(e, "Password")))
     }
 
     /// Adds a login and writes the vault. Returns its id.
@@ -371,14 +373,14 @@ mod tests {
         let path = dir.join("v.kdbx");
         let mut vault = Vault::create(&path, NewProtection::Password("correct horse".into())).unwrap();
         let id = vault.add("Example", "https://www.example.com/login", "alice", "s3cret!").unwrap();
-        assert_eq!(vault.password(&id).as_deref(), Some("s3cret!"));
+        assert_eq!(vault.password(&id).as_deref().map(String::as_str), Some("s3cret!"));
 
         let reopened = Vault::open(&path, &Unlock::Password("correct horse".into())).unwrap();
         let list = reopened.credentials();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "Example");
         assert_eq!(list[0].username, "alice");
-        assert_eq!(reopened.password(&list[0].id).as_deref(), Some("s3cret!"));
+        assert_eq!(reopened.password(&list[0].id).as_deref().map(String::as_str), Some("s3cret!"));
 
         assert_eq!(
             Vault::open(&path, &Unlock::Password("wrong password".into())).err().as_deref(),
@@ -452,7 +454,7 @@ mod tests {
         assert!(vault.delete(&b).is_err());
         let again = Vault::open(&path, &pw).unwrap();
         assert_eq!(again.credentials().len(), 1);
-        assert_eq!(again.password(&a).as_deref(), Some("uno"));
+        assert_eq!(again.password(&a).as_deref().map(String::as_str), Some("uno"));
         assert!(vault.add("C", "https://c.test/", "u", "").is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
