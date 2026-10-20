@@ -44,7 +44,6 @@ let frameReady = window !== parent;
 const dynamic = document.createElement('div');
 dynamic.className = 'smoke-ad';
 dynamic.textContent = 'Dynamic ad: this should be hidden';
-document.body.appendChild(dynamic);
 if (window === parent) {
   const frame = document.createElement('iframe');
   frame.width = '700';
@@ -98,6 +97,9 @@ if (window === parent) {
 }
 setTimeout(() => { timerRan = true; finish(); }, 300);
 setTimeout(() => {
+  // Insert after the user script has installed its stylesheet: hiding only
+  // the elements present at injection time must not pass this check.
+  document.body.appendChild(dynamic);
   const hidden = element => getComputedStyle(element).display === 'none';
   const local = location.hostname === 'localhost';
   if (!hidden(generic) || !hidden(dynamic) || !hidden(document.querySelector('.ad-slot')) ||
