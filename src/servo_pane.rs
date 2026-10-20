@@ -73,6 +73,9 @@ mod stub {
         pub fn set_visible(&self, _visible: bool) {
             match *self {}
         }
+        pub fn set_focused(&self, _focused: bool) {
+            match *self {}
+        }
         pub fn set_dark(&self, _dark: bool) {
             match *self {}
         }
@@ -350,6 +353,7 @@ mod imp {
                 .delegate(delegate.clone())
                 .build();
             view.hide();
+            view.set_focused(false);
             Some(ServoPane { servo, context, view, delegate })
         }
 
@@ -402,6 +406,12 @@ mod imp {
             } else {
                 self.view.hide();
             }
+        }
+
+        /// The page owns focus only while its host window and page area do.
+        /// This is independent of the incomplete DOM visibility lifecycle.
+        pub fn set_focused(&self, focused: bool) {
+            self.view.set_focused(focused);
         }
 
         pub fn set_dark(&self, _dark: bool) {
