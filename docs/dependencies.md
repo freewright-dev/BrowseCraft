@@ -53,7 +53,7 @@ The WebCrypto security restriction below is unchanged.
 The optional `servo` dependency (issue #65) is resolved into `Cargo.lock` for
 every build, but compiled only on Linux with `--features servo`. Resolving it
 moved the shared ICU crates (`icu_*`) from 2.3 to 2.1 and `idna_adapter` from
-1.2.2 to 1.2.1, which Servo 0.6 pins. `cargo deny check` (default features)
+1.2.2 to 1.2.1, which Servo pins. `cargo deny check` (default features)
 is checked with all features (the CI action's default), so Servo's graph is
 covered. It contains six unmaintained crates: `bincode` (RUSTSEC-2025-0141),
 `unic-char-property` (RUSTSEC-2025-0081), `unic-char-range`
@@ -71,7 +71,7 @@ RSA decryption has an unfixed timing side channel (RUSTSEC-2023-0071, the
 BrowseCraft turns off (`dom_crypto_subtle_enabled = false` in
 `servo_pane.rs`), so `deny.toml` ignores this advisory by ID with that reason.
 Re-check it whenever `crypto.subtle` is enabled or the `rsa` crate is updated.
-Servo 0.6 also needs the release candidate `pkcs1 0.8.0-rc.4` (the version in
+Servo also needs the release candidate `pkcs1 0.8.0-rc.4` (the version in
 its own lockfile); the newer `0.8.0-rc.5` does not compile with the `rsa`
 release candidate it uses.
 

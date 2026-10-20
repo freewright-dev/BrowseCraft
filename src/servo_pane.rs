@@ -109,6 +109,7 @@ mod imp {
     use std::rc::Rc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     use servo::{
         Code, ConsoleLogLevel, CreateNewWebViewRequest, Preferences, DeviceIntRect, DeviceIntSize, DevicePoint, EventLoopWaker,
@@ -127,6 +128,9 @@ mod imp {
     use super::{Image, PaneInput};
     use crate::adblock;
     use crate::browser::{UserMessage, WebNavigation, web_navigation};
+
+    /// How long a navigation waits for Servo's initial blank page.
+    const STARTUP_GRACE: Duration = Duration::from_secs(5);
 
     /// A Servo instance with one web view, shared by every tab (as the
     /// WebView2 pane is).
@@ -164,6 +168,9 @@ mod imp {
         /// Servo creates its initial about:blank browsing context asynchronously.
         ready: Cell<bool>,
         pending_load: RefCell<Option<Url>>,
+        /// When the pending navigation was requested, so a startup that never
+        /// reports its blank page cannot hold it back forever.
+        pending_since: Cell<Option<Instant>>,
     }
 
     impl Delegate {
@@ -196,6 +203,7 @@ mod imp {
             if !self.ready.get() {
                 if status == LoadStatus::Complete {
                     self.ready.set(true);
+                    self.pending_since.set(None);
                     if let Some(url) = self.pending_load.borrow_mut().take() {
                         webview.load(url);
                     }
@@ -348,6 +356,7 @@ mod imp {
                 frame_ready: Cell::new(false),
                 ready: Cell::new(false),
                 pending_load: RefCell::new(None),
+                pending_since: Cell::new(None),
             });
             // Servo runs user scripts for each document, including subframes.
             // Keep network filtering in load_web_resource; only inject CSS.
@@ -373,6 +382,15 @@ mod imp {
                 return;
             }
             self.servo.spin_event_loop();
+            // Give up waiting for the initial blank page and navigate anyway.
+            if !self.delegate.ready.get()
+                && self.delegate.pending_since.get().is_some_and(|t| t.elapsed() > STARTUP_GRACE)
+                && let Some(url) = self.delegate.pending_load.borrow_mut().take()
+            {
+                self.delegate.pending_since.set(None);
+                self.delegate.ready.set(true);
+                self.view.load(url);
+            }
         }
 
         pub fn load(&self, url: &str) -> Result<(), String> {
@@ -383,6 +401,7 @@ mod imp {
                 // Before the browsing context exists, Servo can drop load().
                 // Keep only the latest navigation while startup is pending.
                 self.delegate.pending_load.replace(Some(url));
+                self.delegate.pending_since.set(Some(Instant::now()));
             }
             Ok(())
         }
