@@ -1,15 +1,21 @@
-# Servo compatibility run
+# Servo compatibility runs
 
-First compatibility run of the experimental Servo web view
+Compatibility runs of the experimental Servo web view
 ([issue #65](https://github.com/freewright-dev/BrowseCraft/issues/65)): 50
 websites opened in BrowseCraft with Servo, looking at what the first screen
-shows. It measures where the slice stands; it is not a pass/fail gate by
-itself.
+shows. They measure where the slice stands; they are not a pass/fail gate by
+themselves.
+
+- **Run 1** (2026-10-19) used Servo's default build features and preferences.
+- **Run 2** (2026-10-20) added the fixes found by analysing run 1:
+  - Servo's `webcrypto` cargo feature, for `crypto.getRandomValues()`;
+  - the experimental preferences for `IntersectionObserver`,
+    `document.adoptedStyleSheets` and `Element.animate()`;
+  - `crypto.subtle` kept off (see [dependencies.md](dependencies.md)).
 
 ## Method
 
-- **Build:** BrowseCraft debug build with `--features servo` (Servo 0.6.0 LTS),
-  2026-10-19.
+- **Build:** BrowseCraft debug build with `--features servo` (Servo 0.6.0 LTS).
 - **Machine:** WSL2 Ubuntu 24.04 (WSLg display, Mesa software rendering),
   16 cores, 24 GB of memory.
 - **Window:** 1060×722 page area, dark theme.
@@ -24,123 +30,138 @@ itself.
     built without GStreamer, so video can't play.
   - Logged-in pages.
   - Release-build timing.
+- **Sites change from day to day.** A difference between runs can come from
+  the site rather than the browser (see "Changes between runs" below).
 - **Missing glyphs:** WSL has no fonts for some scripts (CJK, Devanagari), so
   a few lines show boxes. That is the test machine, not Servo.
 
 Rerun with [tools/servo-compat/run.sh](../tools/servo-compat/run.sh); the site
 list is [tools/servo-compat/sites.txt](../tools/servo-compat/sites.txt).
+`RUST_LOG=error` adds Servo's own errors, including uncaught page exceptions,
+to each site's log.
 
 ## Summary
 
-| | Sites |
-|---|---|
-| Works | 33 |
-| Partial | 6 |
-| Broken | 11 |
-| Crashed or hung the browser | 0 |
-| Reached "load complete" within 30 s | 47 (median 1.5 s, 90 % within 10 s, slowest 20.9 s) |
+| | Run 1 | Run 2 |
+|---|---|---|
+| Works | 33 | 38 |
+| Partial | 6 | 7 |
+| Broken | 11 | 5 |
+| Crashed or hung the browser | 0 | 0 |
+| Reached "load complete" within 30 s | 47 | 44 |
+| Median load time | 1.5 s | 1.3 s |
+| 90 % loaded within | 10 s | 4.8 s |
+| Slowest | 20.9 s | 11.5 s |
+
+Load time is when Servo reported the page complete, counted from Servo's
+start (debug build).
 
 Patterns:
 
-- **Cookie banners and consent dialogs work.** Those from Google, YouTube,
-  BBC, Guardian, Reuters, CNN, Instagram, X and Dropbox all render.
+- **Cookie banners and consent dialogs work** on almost every site that shows
+  one.
 - **Icons often show as solid squares.** This affects small icons on
   Wikipedia, SRF, MDN and crates.io, which suggests icons drawn with CSS
   masks or SVG are not supported yet.
-- **Most failures are large script-heavy apps.** GitHub repository pages,
-  BBC, Figma, Netflix, Spotify and Amazon report a client-side error or stay
-  blank.
-- **Bot checks block some sites.** Stack Overflow stays stuck at a Cloudflare
-  check. eBay may be refusing Servo's user agent rather than a missing
-  feature.
+- **Most of what still fails** is a site turning Servo away (eBay), a Servo
+  bug (PayPal), or a page that comes out blank without any script error
+  (Startpage, Reddit, Microsoft).
 
-## Why sites fail
+## Why sites failed in run 1
 
 The broken and partial sites were opened again with
 `BROWSECRAFT_SERVO_TRACE=1 RUST_LOG=error`. That logs page console errors,
 uncaught exceptions and Servo's own errors. The pages themselves download and
-parse within 0.4–3 s, so networking and HTML parsing are not the problem. What
-fails is the page's JavaScript, mostly on a web feature that is missing in
-this build.
+parse within 0.4–3 s, so networking and HTML parsing were not the problem.
+What failed was the page's JavaScript, mostly on a web feature that was
+missing in that build.
 
-| Cause | Sites | Error seen | Fix |
+| Cause | Sites | Error seen | Status in run 2 |
 |---|---|---|---|
-| `crypto.getRandomValues()` missing | BBC, Amazon, Booking, Spotify, IMDb, Figma, Microsoft | `crypto.getRandomValues() not supported` / `crypto is not defined` | Ours: Servo has Web Crypto behind its `webcrypto` cargo feature, which is not among its defaults and is not enabled here |
-| `IntersectionObserver` missing | Netflix, GitHub repository page | `IntersectionObserver is not defined` | Ours: Servo has it behind the experimental preference `dom_intersection_observer_enabled` (off by default) |
-| `document.adoptedStyleSheets` missing | archive.org, GitHub repository page | `e.adoptedStyleSheets is undefined` | Ours: preference `dom_adoptedstylesheet_enabled` (off by default) |
-| `Element.animate()` missing | YouTube | `v.hostElement.animate is not a function` | Ours: preference `dom_web_animations_enabled` (off by default) |
-| JavaScript error during start-up | GitHub repository page | `can't access lexical declaration 'p' before initialization` | Unclear; recheck once the features above are on, otherwise report upstream |
-| Servo panics | PayPal | `internal error: entered unreachable code: Removed @font-face that was not previously present` (`servo-script-0.6.0/dom/css/fontfaceset.rs:184`) | Upstream bug. The browser keeps running, but the page never finishes and `notify_crashed` is not called |
-| The site turns away unfamiliar browsers | Stack Overflow (Cloudflare bot check), old.reddit (redirect to `/login/?reason=lor2`), eBay (error page) | none | Not a rendering problem; possibly helped by a different user-agent string |
-| Layout or drawing differences, no script error | rust-lang.org, nodejs.org | none | Upstream rendering gaps |
+| `crypto.getRandomValues()` missing | BBC, Amazon, Booking, Spotify, IMDb, Figma, Microsoft | `crypto.getRandomValues() not supported` / `crypto is not defined` | Fixed by Servo's `webcrypto` feature. BBC, Amazon, Booking and IMDb work; Spotify and Figma are partial. IMDb still logs `Q.subtle is undefined`, because `crypto.subtle` stays off |
+| `IntersectionObserver` missing | Netflix, GitHub repository page | `IntersectionObserver is not defined` | Fixed by `dom_intersection_observer_enabled`; both work |
+| `document.adoptedStyleSheets` missing | archive.org, GitHub repository page | `e.adoptedStyleSheets is undefined` | Fixed by `dom_adoptedstylesheet_enabled`; archive.org works |
+| `Element.animate()` missing | YouTube | `v.hostElement.animate is not a function` | Error gone with `dom_web_animations_enabled`; YouTube still shows only its consent page |
+| JavaScript error during start-up | GitHub repository page | `can't access lexical declaration 'p' before initialization` | Gone; the page works |
+| Servo panics | PayPal | `internal error: entered unreachable code: Removed @font-face that was not previously present` (`servo-script-0.6.0/dom/css/fontfaceset.rs:184`) | Still broken; an upstream bug. The browser keeps running, but the page never finishes and `notify_crashed` is not called |
+| The site turns away unfamiliar browsers | Stack Overflow (Cloudflare bot check), old.reddit (redirect to `/login/?reason=lor2`), eBay (error page) | none | Stack Overflow passes the check in run 2 and works; old.reddit and eBay are unchanged |
+| Layout or drawing differences, no script error | rust-lang.org, nodejs.org | none | Unchanged; upstream rendering gaps |
 
-Next step: build with Servo's `webcrypto` feature and enable the three
-preferences above (Servo's own browser, servoshell, turns these on with its
-experimental-features switch), then repeat the run for the sites listed here.
-Experimental features are less tested; they would only apply to this opt-in
-Linux build.
+## Changes between runs
+
+Four sites did worse in run 2: Startpage and Reddit (blank, dark), Notion
+(partial) and Microsoft (blank). None of them logged a script error.
+
+For Startpage and Reddit, each new setting was turned off on its own and
+tested again, and the site still came out blank every time:
+
+- Web Animations;
+- `IntersectionObserver`;
+- `adoptedStyleSheets`;
+- `crypto.subtle`, tried switched on.
+
+The build from before any of these changes (commit `2b6cdb6`) now shows them
+blank too, so the change comes from the sites between the two runs, not from
+the new settings. Notion and Microsoft have not been isolated yet.
 
 ## Results
 
-Load time is when Servo reported the page complete, counted from Servo's
-start (debug build). "–" means not within 30 s.
-
-| # | Site | Result | Load (s) | Notes |
-|---|---|---|---|---|
-| 1 | example.com | Works | 0.66 | |
-| 2 | www.wikipedia.org | Works | 0.91 | |
-| 3 | en.wikipedia.org/wiki/Rust_(programming_language) | Works | 4.99 | Small icons render as squares |
-| 4 | github.com | Works | – | Logo and hero artwork missing; never reported complete |
-| 5 | github.com/servo/servo | Broken | 2.25 | "Unable to load page" |
-| 6 | servo.org | Works | 0.75 | |
-| 7 | duckduckgo.com | Works | 0.90 | |
-| 8 | www.startpage.com | Works | 2.63 | |
-| 9 | www.google.com | Works | 1.19 | Consent page |
-| 10 | www.bing.com | Works | 1.93 | |
-| 11 | news.ycombinator.com | Works | 1.28 | |
-| 12 | www.reddit.com | Works | 1.94 | |
-| 13 | old.reddit.com | Partial | 0.80 | Header only, body blank |
-| 14 | www.youtube.com | Partial | 9.98 | Consent dialog and page frame; no video grid |
-| 15 | www.bbc.com/news | Broken | 1.50 | Consent dialog over "Application error: a client-side exception" |
-| 16 | www.nytimes.com | Works | 10.92 | Empty ad slot at the top |
-| 17 | www.theguardian.com/international | Works | 5.89 | Consent dialog |
-| 18 | www.cnn.com | Works | 3.75 | Consent dialog |
-| 19 | www.reuters.com | Works | 3.00 | Consent dialog |
-| 20 | www.srf.ch | Works | 2.28 | Small icons render as squares |
-| 21 | www.admin.ch | Works | 3.43 | |
-| 22 | www.amazon.com | Broken | 0.43 | Blank page |
-| 23 | www.ebay.com | Broken | 0.78 | eBay error page |
-| 24 | www.booking.com | Broken | 20.89 | Blank page |
-| 25 | stackoverflow.com/questions | Broken | 11.20 | Stuck at Cloudflare's bot check |
-| 26 | developer.mozilla.org/en-US/ | Works | 0.75 | Small icons render as squares |
-| 27 | docs.rs | Works | 0.94 | |
-| 28 | crates.io | Works | 0.79 | Small icons render as squares |
-| 29 | www.rust-lang.org | Partial | 0.80 | Hero text barely visible |
-| 30 | doc.rust-lang.org/book/ | Works | 0.76 | |
-| 31 | www.python.org | Works | 0.54 | |
-| 32 | nodejs.org | Partial | 1.00 | Heading drawn on a white box |
-| 33 | www.w3.org | Works | 0.44 | |
-| 34 | www.mozilla.org | Works | 1.36 | Logo artwork glitch |
-| 35 | www.apple.com | Works | 1.11 | |
-| 36 | www.microsoft.com | Partial | 14.66 | Header and chat widget only, body blank |
-| 37 | www.cloudflare.com | Works | 4.20 | |
-| 38 | x.com | Works | 1.04 | Login page and consent banner |
-| 39 | www.instagram.com | Works | 6.11 | Consent dialog |
-| 40 | www.linkedin.com | Works | 1.95 | |
-| 41 | www.twitch.tv | Works | 11.57 | Player area black (no media support in this build) |
-| 42 | www.netflix.com | Broken | 2.96 | Netflix error page (NSES-UHX) |
-| 43 | open.spotify.com | Broken | 1.47 | "Something went wrong" |
-| 44 | www.openstreetmap.org | Works | 0.87 | Map tiles load |
-| 45 | archive.org | Partial | 3.54 | Donation banner and header, body blank |
-| 46 | www.imdb.com | Broken | 0.61 | Blank page |
-| 47 | www.paypal.com | Broken | – | Blank page; never reported complete |
-| 48 | www.dropbox.com | Works | 3.49 | Consent banner |
-| 49 | www.notion.so | Works | – | Some placeholders; never reported complete |
-| 50 | www.figma.com | Broken | 1.60 | "Application error: a client-side exception" |
+| # | Site | Run 1 | Run 2 | Load (s), run 2 | Notes (run 2) |
+|---|---|---|---|---|---|
+| 1 | example.com | Works | Works | 0.58 | |
+| 2 | www.wikipedia.org | Works | Works | 0.88 | |
+| 3 | en.wikipedia.org/wiki/Rust_(programming_language) | Works | Works | 4.64 | Small icons render as squares |
+| 4 | github.com | Works | Works | – | Never reported complete |
+| 5 | github.com/servo/servo | Broken | **Works** | 2.41 | |
+| 6 | servo.org | Works | Works | 0.81 | |
+| 7 | duckduckgo.com | Works | Works | 0.77 | |
+| 8 | www.startpage.com | Works | **Broken** | – | Blank; also blank with the run 1 build (site change) |
+| 9 | www.google.com | Works | Works | 1.30 | Consent page |
+| 10 | www.bing.com | Works | Works | 1.86 | |
+| 11 | news.ycombinator.com | Works | Works | 1.29 | |
+| 12 | www.reddit.com | Works | **Broken** | 0.30 | Blank; also blank with the run 1 build (site change) |
+| 13 | old.reddit.com | Partial | Partial | 0.98 | Redirected to a login page |
+| 14 | www.youtube.com | Partial | Partial | 5.86 | Consent dialog and page frame only |
+| 15 | www.bbc.com/news | Broken | **Works** | 1.49 | Some image slots still empty |
+| 16 | www.nytimes.com | Works | Works | 9.48 | Empty ad slot at the top |
+| 17 | www.theguardian.com/international | Works | Works | – | Never reported complete |
+| 18 | www.cnn.com | Works | Works | 4.45 | Consent dialog |
+| 19 | www.reuters.com | Works | Works | 2.41 | Consent dialog |
+| 20 | www.srf.ch | Works | Works | 3.76 | Small icons render as squares |
+| 21 | www.admin.ch | Works | Works | 4.65 | |
+| 22 | www.amazon.com | Broken | **Works** | 2.73 | |
+| 23 | www.ebay.com | Broken | Broken | 0.50 | eBay error page |
+| 24 | www.booking.com | Broken | **Works** | 3.63 | Sign-in prompt over the page |
+| 25 | stackoverflow.com/questions | Broken | **Works** | 4.90 | Passes the Cloudflare check |
+| 26 | developer.mozilla.org/en-US/ | Works | Works | 0.71 | Small icons render as squares |
+| 27 | docs.rs | Works | Works | 0.75 | |
+| 28 | crates.io | Works | Works | 1.11 | Small icons render as squares |
+| 29 | www.rust-lang.org | Partial | Partial | 0.73 | Hero text barely visible |
+| 30 | doc.rust-lang.org/book/ | Works | Works | 0.43 | |
+| 31 | www.python.org | Works | Works | 0.49 | |
+| 32 | nodejs.org | Partial | Partial | 0.94 | Heading drawn on a white box |
+| 33 | www.w3.org | Works | Works | 0.36 | |
+| 34 | www.mozilla.org | Works | Works | 1.38 | Logo artwork glitch |
+| 35 | www.apple.com | Works | Works | 0.84 | |
+| 36 | www.microsoft.com | Partial | **Broken** | 0.65 | Blank; its consent script returns 403 |
+| 37 | www.cloudflare.com | Works | Works | – | Never reported complete |
+| 38 | x.com | Works | Works | 2.35 | Login page and consent banner |
+| 39 | www.instagram.com | Works | Works | 6.09 | Consent dialog |
+| 40 | www.linkedin.com | Works | Works | 0.95 | |
+| 41 | www.twitch.tv | Works | Works | 11.48 | Player area black (no media support in this build) |
+| 42 | www.netflix.com | Broken | **Works** | 2.48 | Consent banner and sign-up page |
+| 43 | open.spotify.com | Broken | **Partial** | 1.31 | App frame with placeholders |
+| 44 | www.openstreetmap.org | Works | Works | 0.88 | Map tiles load |
+| 45 | archive.org | Partial | **Works** | 1.84 | |
+| 46 | www.imdb.com | Broken | **Works** | 4.83 | |
+| 47 | www.paypal.com | Broken | Broken | – | Blank; Servo panics (upstream bug) |
+| 48 | www.dropbox.com | Works | Works | 3.82 | |
+| 49 | www.notion.so | Works | **Partial** | – | Hero section missing; not yet isolated |
+| 50 | www.figma.com | Broken | **Partial** | 2.19 | Cookie dialog, body blank |
 
 ## Screenshots
 
-The first screen of each site, reduced to half size:
+The first screen of each site in run 2, reduced to half size:
 
 ![Sites 1–6](servo-compat/sites-01-06.jpg)
 ![Sites 7–12](servo-compat/sites-07-12.jpg)
