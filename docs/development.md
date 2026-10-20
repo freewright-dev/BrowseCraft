@@ -33,7 +33,7 @@ build takes a few minutes.
 
 On Linux, BrowseCraft has no system web view, so web pages render in its own
 engine (no JavaScript). The `servo` feature renders them with
-[Servo](https://servo.org) 0.6 LTS instead
+[Servo](https://servo.org) 0.7 instead
 ([issue #65](https://github.com/freewright-dev/BrowseCraft/issues/65)). It is
 off by default and ignored on other platforms.
 
@@ -55,6 +55,9 @@ required check.
 
 For evaluation, `BROWSECRAFT_SERVO_TRACE=1` prints load progress, titles and
 crashes, and `BROWSECRAFT_SERVO_FRAME=<file.png>` keeps Servo's newest frame.
+Saving every frame is expensive in debug builds; leave the frame variable
+unset for interaction testing. `python3 tools/servo-compat/smoke.py` checks
+native observer callbacks and timer progress with a hang watchdog.
 `tools/servo-compat/run.sh` uses both to open every site in
 `tools/servo-compat/sites.txt`; the results so far are in
 [servo-compat.md](servo-compat.md).

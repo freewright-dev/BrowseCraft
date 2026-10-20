@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Experimental Servo web view on Linux (`--features servo`, off by default): web pages render with Servo 0.6 LTS instead of BrowseCraft's own engine, drawn in the page area with mouse, wheel and keyboard input forwarded, the same navigation policy and ad filter as on Windows, and pop-ups refused. A separate, non-required CI workflow builds it.
+- Experimental Servo web view on Linux (`--features servo`, off by default): web pages render with Servo 0.7 instead of BrowseCraft's own engine, drawn in the page area with mouse, wheel and keyboard input forwarded, the same navigation policy and ad filter as on Windows, and pop-ups refused. A separate, non-required CI workflow builds it.
 - Page fullscreen: when a web page (a video, `requestFullscreen()`) goes fullscreen, the whole window goes fullscreen and the chrome is hidden, instead of the page only filling the viewport. Driven by WebView2's `ContainsFullScreenElementChanged`; the window returns to its previous state when the page leaves fullscreen. `F11` toggles window fullscreen.
 - Bookmarks: a star in the address bar, `Ctrl+D`, a bookmarks bar under the address bar (`Ctrl+Shift+B` to show or hide, overflow menu, middle-click and right-click menus), the `browsecraft://bookmarks` page (`Ctrl+Shift+O`), bookmarks as quick links on the new-tab page, and `bookmarks.txt` persistence in the per-user configuration folder.
 - Password manager: a KeePass 4 (`.kdbx`) vault protected by a password or a key file (created by BrowseCraft), a key menu at the top right, login/sign-up/change-password form detection, a "Save this login?" bar (save, update, never for this site), autofill, strong password suggestion, auto-lock after 15 minutes, and the `browsecraft://passwords` page. Its settings (`passwords.cfg`) live in the per-user configuration folder, which is also the suggested vault location.
@@ -50,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Upgraded Servo to 0.7 to fix an `IntersectionObserver` hang on boxless ancestors. Kept experimental Web Animations disabled so sites such as Figma use their animation fallback, and prefer light webpages independently of chrome theme to avoid Servo's default pale-text-on-white bug. Added a real-browser smoke test with an external hang watchdog.
+- Servo page inputs now receive editing shortcuts such as Ctrl+A and Ctrl+Left; only actual browser shortcuts are intercepted.
 - The password key icon was pushed past the right edge of the window: the toolbar reserved room for two right-hand buttons and there are three. The buttons on the right are now laid out from the window's edge and the address bar takes the room left over, so nothing can leave the window at any width (covered by a headless layout test).
 - Clicks and scrolling on engine-rendered pages (the new-tab page and its search box, settings, bookmarks, history, passwords) landed about 34 px off once the bookmarks bar was added: the page area used for layout, painting and hit-testing did not include the bookmarks bar or the "save this login?" bar. It now matches the egui panels exactly.
 - A click on a menu that hangs over the page (the key menu, a bookmark's right-click menu, the `»` overflow menu) was also delivered to the page underneath.

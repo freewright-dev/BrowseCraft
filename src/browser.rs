@@ -280,6 +280,8 @@ pub struct Browser {
     /// The newest frame Servo painted, drawn in the page area (Servo, unlike
     /// WebView2, has no window of its own).
     servo_frame: Option<Image>,
+    /// Page-owned presses still need their release if dragged outside the page.
+    servo_buttons: Vec<MouseButton>,
     web_page: bool,
     web_url: String,
     title: String,
@@ -1272,6 +1274,7 @@ impl Browser {
             start_url,
             webview: None,
             servo_frame: None,
+            servo_buttons: Vec::new(),
             web_page: false,
             web_url: String::new(),
             title: String::new(),
@@ -2771,8 +2774,6 @@ impl Browser {
 
     // ---- keyboard ----
 
-    /// Keys that act as browser shortcuts even while an egui text box has
-    /// the keyboard.
     /// Hands input over the page area to Servo, which (unlike the native
     /// web view) has no window of its own. Returns whether the event was the
     /// page's; pointer moves are still tracked by the browser as well.
@@ -2785,17 +2786,33 @@ impl Browser {
         };
         let r = self.webview_rect();
         let (mx, my) = self.mouse;
-        let inside = r.contains(mx, my) && !consumed;
+        let page_pointer = |x, y| {
+            r.contains(x, y) && self.egui.as_ref().is_none_or(|egui| {
+                let ctx = egui.ctx();
+                let position = egui::pos2(x, y) / ctx.pixels_per_point();
+                !egui_chrome::blocks_page_pointer(ctx, position)
+            })
+        };
+        let inside = page_pointer(mx, my);
         let pressed = match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let (x, y) = (position.x as f32, position.y as f32);
-                if r.contains(x, y) {
+                if page_pointer(x, y) || !self.servo_buttons.is_empty() {
                     pane.mouse_move(x - r.x, y - r.y);
                 }
                 return false;
             }
-            WindowEvent::MouseInput { state, button, .. } if inside => {
+            WindowEvent::MouseInput { state, button, .. }
+                if (inside && *state == ElementState::Pressed) || self.servo_buttons.contains(button) =>
+            {
                 pane.mouse_button(mx - r.x, my - r.y, *button, *state);
+                if *state == ElementState::Pressed {
+                    if !self.servo_buttons.contains(button) {
+                        self.servo_buttons.push(*button);
+                    }
+                } else {
+                    self.servo_buttons.retain(|b| b != button);
+                }
                 *state == ElementState::Pressed
             }
             WindowEvent::MouseWheel { delta, .. } if inside => {
@@ -2803,7 +2820,18 @@ impl Browser {
                 false
             }
             WindowEvent::KeyboardInput { event: key, .. }
-                if self.focus == Focus::Page && !consumed && !self.is_shortcut(key) =>
+                if self.focus == Focus::Page
+                    && !consumed
+                    // As with WebView2, reserve actual browser shortcuts, not
+                    // every Ctrl/Alt chord: selection and word navigation
+                    // belong to the page's focused input.
+                    && shortcut_for(
+                        &key.key_without_modifiers(),
+                        self.modifiers.control_key() || (cfg!(target_os = "macos") && self.modifiers.super_key()),
+                        self.modifiers.shift_key(),
+                        self.modifiers.alt_key(),
+                        true,
+                    ).is_none() =>
             {
                 pane.key(key, self.modifiers);
                 false
@@ -2812,11 +2840,14 @@ impl Browser {
         };
         if pressed {
             // A click in the page takes the keyboard from the address bar.
+            self.surrender_egui_focus();
             self.focus = Focus::Page;
         }
         true
     }
 
+    /// Keys that act as browser shortcuts even while an egui text box has
+    /// the keyboard.
     fn is_shortcut(&self, event: &KeyEvent) -> bool {
         let m = self.modifiers;
         m.control_key()

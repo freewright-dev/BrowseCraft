@@ -102,7 +102,7 @@ mod stub {
 
 #[cfg(all(feature = "servo", target_os = "linux"))]
 mod imp {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
@@ -158,6 +158,9 @@ mod imp {
         epoch: Arc<AtomicU64>,
         /// A frame was painted since the browser last took one.
         frame_ready: Cell<bool>,
+        /// Servo creates its initial about:blank browsing context asynchronously.
+        ready: Cell<bool>,
+        pending_load: RefCell<Option<Url>>,
     }
 
     impl Delegate {
@@ -187,10 +190,25 @@ mod imp {
         fn notify_load_status_changed(&self, webview: WebView, status: LoadStatus) {
             let url = webview.url().map(String::from).unwrap_or_default();
             trace(&format!("load {status:?} {url}"));
+            if !self.ready.get() {
+                if status == LoadStatus::Complete {
+                    self.ready.set(true);
+                    if let Some(url) = self.pending_load.borrow_mut().take() {
+                        webview.load(url);
+                    }
+                }
+                // Initial blank-page events do not belong to the requested page.
+                return;
+            }
             match status {
                 // The new document exists from here on, like WebView2's
                 // ContentLoading, which `WebStart` stands for.
-                LoadStatus::HeadParsed => self.send(UserMessage::WebStart(url)),
+                LoadStatus::HeadParsed => {
+                    self.send(UserMessage::WebStart(url));
+                    // Servo may report the title before HeadParsed; the browser
+                    // correctly ignores titles until the new document commits.
+                    self.send(UserMessage::WebTitle(webview.page_title().unwrap_or_default()));
+                }
                 LoadStatus::Complete => self.send(UserMessage::WebLoad(url)),
                 LoadStatus::Started => {}
             }
@@ -198,7 +216,9 @@ mod imp {
 
         fn notify_page_title_changed(&self, _webview: WebView, title: Option<String>) {
             trace(&format!("title {}", title.as_deref().unwrap_or("")));
-            self.send(UserMessage::WebTitle(title.unwrap_or_default()));
+            if self.ready.get() {
+                self.send(UserMessage::WebTitle(title.unwrap_or_default()));
+            }
         }
 
         fn request_navigation(&self, _webview: WebView, request: NavigationRequest) {
@@ -255,15 +275,17 @@ mod imp {
 
     /// Servo's defaults, plus web features it ships but leaves off as
     /// experimental that common sites need (docs/servo-compat.md):
-    /// `IntersectionObserver`, `document.adoptedStyleSheets` and
-    /// `Element.animate()`. `crypto.subtle` stays off: sites need
+    /// `IntersectionObserver` and `document.adoptedStyleSheets`.
+    /// Web Animations stays off: advertising the incomplete API prevents
+    /// sites such as Figma from using their working animation fallback.
+    /// `crypto.subtle` stays off: sites need
     /// `crypto.getRandomValues()`, and Servo's RSA operations use the `rsa`
     /// crate, which has an unfixed timing side channel (RUSTSEC-2023-0071).
     fn preferences() -> Preferences {
         let mut prefs = Preferences::default();
         prefs.dom_intersection_observer_enabled = true;
         prefs.dom_adoptedstylesheet_enabled = true;
-        prefs.dom_web_animations_enabled = true;
+        prefs.dom_web_animations_enabled = false;
         prefs.dom_crypto_subtle_enabled = false;
         prefs
     }
@@ -317,7 +339,13 @@ mod imp {
             if std::env::var_os("BROWSECRAFT_SERVO_TRACE").is_some() {
                 servo.setup_logging();
             }
-            let delegate = Rc::new(Delegate { proxy, epoch, frame_ready: Cell::new(false) });
+            let delegate = Rc::new(Delegate {
+                proxy,
+                epoch,
+                frame_ready: Cell::new(false),
+                ready: Cell::new(false),
+                pending_load: RefCell::new(None),
+            });
             let view = WebViewBuilder::new(&servo, context.clone())
                 .delegate(delegate.clone())
                 .build();
@@ -327,12 +355,24 @@ mod imp {
 
         /// Lets Servo process what it woke the event loop for.
         pub fn spin(&self) {
+            // Processing compositor updates uses GL too, not only paint().
+            // The host's GPU renderer may have changed the current context.
+            if let Err(error) = self.context.make_current() {
+                eprintln!("browsecraft: Servo could not make its rendering context current ({error:?})");
+                return;
+            }
             self.servo.spin_event_loop();
         }
 
         pub fn load(&self, url: &str) -> Result<(), String> {
             let url = Url::parse(url).map_err(|e| e.to_string())?;
-            self.view.load(url);
+            if self.delegate.ready.get() {
+                self.view.load(url);
+            } else {
+                // Before the browsing context exists, Servo can drop load().
+                // Keep only the latest navigation while startup is pending.
+                self.delegate.pending_load.replace(Some(url));
+            }
             Ok(())
         }
 
@@ -355,18 +395,21 @@ mod imp {
             }
         }
 
-        /// Hidden, a page is throttled (no animation frames, no painting).
+        /// Servo 0.7's show/hide also unthrottles/throttles the page.
         pub fn set_visible(&self, visible: bool) {
             if visible {
                 self.view.show();
             } else {
                 self.view.hide();
             }
-            self.view.set_throttled(!visible);
         }
 
-        pub fn set_dark(&self, dark: bool) {
-            self.view.notify_theme_change(if dark { Theme::Dark } else { Theme::Light });
+        pub fn set_dark(&self, _dark: bool) {
+            // Servo resolves CanvasText to a pale color even on pages that
+            // have not opted into a dark color scheme, leaving white on white
+            // (servo/servo#48630). Prefer light content until that is fixed;
+            // the browser chrome still follows the user's theme setting.
+            self.view.notify_theme_change(Theme::Light);
         }
 
         /// Runs a script in the page (the password manager's fill script).

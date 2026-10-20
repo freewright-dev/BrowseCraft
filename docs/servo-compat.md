@@ -6,6 +6,44 @@ websites opened in BrowseCraft with Servo, looking at what the first screen
 shows. They measure where the slice stands; they are not a pass/fail gate by
 themselves.
 
+## Current integration: Servo 0.7
+
+The historical runs below used Servo 0.6. The current integration uses
+Servo 0.7, which includes the upstream fix for an `IntersectionObserver`
+walk that never advanced past boxless ancestors (`display: contents` and
+shadow slots): [Servo #47693](https://github.com/servo/servo/pull/47693).
+A debugger captured this loop on Notion; a local page reproduces the hang
+without depending on a live site's content.
+
+Two compatibility policies differ from run 2:
+
+- Web Animations remains at Servo's disabled default. Enabling the incomplete
+  API leaves Figma's hero at opacity zero; disabling it lets Figma use its
+  working fallback. CSS animations and `requestAnimationFrame` are separate.
+  Sites requiring `Element.animate()` without a fallback, including parts of
+  YouTube, remain unsupported.
+- Servo webpages prefer light mode, independently of the chrome theme.
+  Servo currently resolves default `CanvasText` to a pale color on pages
+  with white backgrounds even without dark-mode opt-in
+  ([Servo #48630](https://github.com/servo/servo/issues/48630)). This avoids
+  unreadable pages such as Rust's homepage without overriding author CSS.
+  Restore theme propagation when the upstream default-color bug is fixed.
+
+`IntersectionObserver`, adopted stylesheets and `crypto.getRandomValues()`
+remain enabled; `crypto.subtle` remains disabled for the security reason in
+[dependencies.md](dependencies.md). Servo 0.7's `show()`/`hide()` now also
+control throttling. Its DOM Page Visibility implementation is still incomplete:
+documents report visible even when hidden. This is not a lifecycle fix in
+BrowseCraft, and no JavaScript visibility override is injected.
+
+With a display available, run `python3 tools/servo-compat/smoke.py` after
+building with `--features servo`. It checks real observer callbacks through
+boxless ancestors and shadow slots, an offscreen negative control, timer
+progress and readable default text. An external 15-second watchdog catches
+script-thread hangs; the log and raw frame go to `target/servo-smoke`.
+
+## Historical runs
+
 - **Run 1** (2026-10-19) used Servo's default build features and preferences.
 - **Run 2** (2026-10-20) added the fixes found by analysing run 1:
   - Servo's `webcrypto` cargo feature, for `crypto.getRandomValues()`;

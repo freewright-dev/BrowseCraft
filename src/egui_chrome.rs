@@ -115,6 +115,15 @@ impl EguiChrome {
     }
 }
 
+/// The central panel is only a painted page, but egui's `consumed` flag
+/// includes its background. Inside that page, only overlays or a drag that
+/// started on a chrome widget should keep pointer input from the page engine.
+pub fn blocks_page_pointer(ctx: &egui::Context, position: egui::Pos2) -> bool {
+    egui::Popup::is_any_open(ctx)
+        || ctx.egui_is_using_pointer()
+        || ctx.layer_id_at(position) != Some(egui::LayerId::background())
+}
+
 /// Which chrome the flags ask for, given whether the GPU path came up.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Choice {
@@ -762,6 +771,61 @@ pub fn save_login_bar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn painted_page_accepts_pointer_but_chrome_drags_and_popups_do_not() {
+        use egui::{Event, PointerButton, Pos2, Rect, Vec2};
+        let ctx = egui::Context::default();
+        let page_pos = egui::pos2(400.0, 300.0);
+        let mut button = Rect::NOTHING;
+        let mut frame = |events: Vec<Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                egui::Panel::top("toolbar").exact_size(44.0).show(ui, |ui| {
+                    let response = ui.add(egui::Button::new("Menu").sense(egui::Sense::click_and_drag()));
+                    button = response.rect;
+                    egui::Popup::menu(&response).show(|ui| {
+                        ui.label("Menu above the page");
+                    });
+                });
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.painter().rect_filled(ui.max_rect(), 0.0, egui::Color32::WHITE);
+                });
+            });
+            output.textures_delta.clear();
+            button.center()
+        };
+        let button_pos = frame(vec![]);
+        frame(vec![Event::PointerMoved(page_pos)]);
+        // This is why forwarding only !consumed drops legitimate page clicks.
+        assert!(ctx.egui_wants_pointer_input());
+        assert!(!blocks_page_pointer(&ctx, page_pos));
+
+        let press = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![Event::PointerMoved(button_pos)]);
+        frame(vec![press(button_pos, true)]);
+        frame(vec![Event::PointerMoved(page_pos)]);
+        assert!(blocks_page_pointer(&ctx, page_pos), "chrome owns this drag");
+        frame(vec![press(page_pos, false)]);
+        frame(vec![]);
+        assert!(!blocks_page_pointer(&ctx, page_pos));
+
+        frame(vec![Event::PointerMoved(button_pos)]);
+        frame(vec![press(button_pos, true)]);
+        frame(vec![press(button_pos, false)]);
+        frame(vec![Event::PointerMoved(page_pos)]);
+        assert!(egui::Popup::is_any_open(&ctx));
+        assert!(blocks_page_pointer(&ctx, page_pos), "dismissal must not click through");
+    }
 
     /// Builds the toolbar the way `browser.rs` does (buttons on the left,
     /// then the right-hand buttons anchored to the right edge with the

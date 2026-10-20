@@ -45,13 +45,14 @@ retain Rust and egui/winit for the application and reuse Servo's page engine
 rather than build a second general-purpose DOM, layout and JavaScript stack.
 
 **First step, experimental and opt-in:** on Linux, a build with
-`--features servo` renders web pages with Servo 0.6 LTS instead of the custom
+`--features servo` renders web pages with Servo 0.7 instead of the custom
 engine (see [docs/development.md](docs/development.md#servo-on-linux-experimental)).
 It is off by default, not part of release builds, and not yet secure for
 arbitrary browsing: Servo runs in the browser process, and the password
-manager's page script and element hiding are not wired up yet. In the latest
-[compatibility run](docs/servo-compat.md), 38 of 50 popular sites rendered
-properly, 7 partly and 5 not, with no crashes.
+manager's page script and element hiding are not wired up yet. An earlier
+[50-site compatibility run](docs/servo-compat.md) reported 38 rendered
+properly, 7 partly and 5 not; the same document records the current
+compatibility policies and native regression test.
 
 Existing native web views stay in place until the integration passes explicit
 compatibility, packaging and security gates. Windows renderer containment is

@@ -43,6 +43,13 @@ successful `cargo audit` exit as the absence of informational warnings.
 
 ## Servo feature (experimental, Linux)
 
+Servo is now pinned by the lockfile to 0.7.0. This takes the upstream fix for
+the boxless-ancestor `IntersectionObserver` hang without vendoring an engine
+patch. The embedding migration removes `set_throttled`: 0.7's `show`/`hide`
+now handle throttling. Compatibility policies and the native smoke test are
+documented in [servo-compat.md](servo-compat.md#current-integration-servo-07).
+The WebCrypto security restriction below is unchanged.
+
 The optional `servo` dependency (issue #65) is resolved into `Cargo.lock` for
 every build, but compiled only on Linux with `--features servo`. Resolving it
 moved the shared ICU crates (`icu_*`) from 2.3 to 2.1 and `idna_adapter` from
