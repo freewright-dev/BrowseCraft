@@ -39,8 +39,22 @@ BrowseCraft, and no JavaScript visibility override is injected.
 With a display available, run `python3 tools/servo-compat/smoke.py` after
 building with `--features servo`. It checks real observer callbacks through
 boxless ancestors and shadow slots, an offscreen negative control, timer
-progress and readable default text. An external 15-second watchdog catches
+progress and readable default text. It also checks cosmetic filtering of
+static/dynamic elements, host-scoped exceptions, negated hosts, cross-origin
+frames and navigation between hosts with different rules, using temporary
+filter lists and no remote sites. An external 15-second watchdog catches
 script-thread hangs; the log and raw frame go to `target/servo-smoke`.
+
+Cosmetic filtering uses Servo's per-document user scripts, including subframes,
+and the same compiled filters as the other backends. Matching `#@#` exceptions
+are subtracted after matching the document's host. CSS hides later-added
+elements without a mutation observer. Native resource filtering still owns
+network blocking; no fetch/XHR wrappers are installed in Servo. User scripts
+run asynchronously, so an initial flash of unfiltered content is possible.
+Filter lists are loaded once at browser startup: restart after changing them.
+There is no live filter-reload setting. Existing parser limits still apply
+(including no procedural cosmetic rules or scriptlets); this is not full uBO
+rule compatibility, and pages can remove injected styles.
 
 ## Historical runs
 

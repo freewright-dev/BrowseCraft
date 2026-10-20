@@ -49,7 +49,8 @@ rather than build a second general-purpose DOM, layout and JavaScript stack.
 engine (see [docs/development.md](docs/development.md#servo-on-linux-experimental)).
 It is off by default, not part of release builds, and not yet secure for
 arbitrary browsing: Servo runs in the browser process, and the password
-manager's page script and element hiding are not wired up yet. An earlier
+manager's page script is not wired up yet. Network and cosmetic ad filtering
+apply to Servo pages, including subframes. An earlier
 [50-site compatibility run](docs/servo-compat.md) reported 38 rendered
 properly, 7 partly and 5 not; the same document records the current
 compatibility policies and native regression test.
