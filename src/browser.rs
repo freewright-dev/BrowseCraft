@@ -2374,6 +2374,10 @@ impl Browser {
             wv.set_visible(visible);
             self.web_visible = visible;
         }
+        if let WebPane::Servo(pane) = wv {
+            pane.set_focused(visible && self.focus == Focus::Page && !self.egui_address_focused && !self.egui_popup_open
+                && self.gfx.as_ref().is_some_and(|g| g.window.has_focus()));
+        }
     }
 
     /// Pushes the effective theme to the window and the web view.
@@ -4415,6 +4419,12 @@ impl ApplicationHandler<UserMessage> for Browser {
                 self.request_redraw();
             }
             WindowEvent::ScaleFactorChanged { .. } | WindowEvent::ThemeChanged(_) => {
+                self.request_redraw();
+            }
+            WindowEvent::Focused(_) => {
+                // Focus changes must reach Servo even if an unfocused window
+                // is not being repainted by the window manager.
+                self.sync_webview();
                 self.request_redraw();
             }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),

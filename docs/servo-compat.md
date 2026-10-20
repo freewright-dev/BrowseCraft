@@ -36,6 +36,15 @@ control throttling. Its DOM Page Visibility implementation is still incomplete:
 documents report visible even when hidden. This is not a lifecycle fix in
 BrowseCraft, and no JavaScript visibility override is injected.
 
+Focus is synchronized separately through Servo's native `set_focused` API.
+The page loses focus when the host window does, when the address bar or a
+browser popup owns input, or when the page is not shown. This corrects
+`document.hasFocus()`; it does not implement `visibilitychange` (#130).
+On a dedicated X11 display with `xdotool` installed, run
+`python3 tools/servo-compat/focus_smoke.py [binary]` to exercise page/address
+clicks, Ctrl+L, window focus loss/return and popup dismissal. The test drives
+the mouse and keyboard, so do not run it on a desktop in active use.
+
 With a display available, run `python3 tools/servo-compat/smoke.py` after
 building with `--features servo`. It checks real observer callbacks through
 boxless ancestors and shadow slots, an offscreen negative control, timer
