@@ -15,6 +15,7 @@ loader ──► net ──► html ──► dom
 | ---------------- | ----------------------------------------------------------------------- |
 | `main.rs`        | Entry point; window mode or `--screenshot`                              |
 | `browser.rs`     | Window, toolbar, tabs, history, input, forms, WebView2 pane, render loop |
+| `servo_pane.rs`  | Experimental Servo web view for Linux (`servo` feature; empty elsewhere) |
 | `flags.rs`       | User-settable flags persisted to `flags.txt`; the `browsecraft://flags` page  |
 | `storage.rs`     | The per-user config folder and atomic, owner-only file writes           |
 | `egui_chrome.rs` | GPU chrome: egui toolbar/sidebar on wgpu, page raster as a texture      |
@@ -49,6 +50,19 @@ the engine; everything else is loaded into a `wry` WebView2 child window placed
 over the page area. If no web view exists (WebView2 failed to start, or the
 platform is neither Windows nor macOS, where `wry` uses WKWebView), every page
 goes through the engine.
+
+On Linux, a build with the experimental `servo` feature uses Servo as the web
+view instead (`servo_pane.rs`). `browser::WebPane` holds either the wry web
+view or Servo behind the same calls (`load_url`, `zoom`, `reload`, `url`,
+`set_bounds`, …), and Servo's delegate sends the same `UserMessage`s as wry
+(`WebStart`, `WebLoad`, `WebTitle`), so tabs, history and loading state are
+shared. Unlike WebView2, Servo has no window of its own: it renders offscreen
+(`SoftwareRenderingContext`), `UserMessage::ServoFrame` copies each new frame
+into `servo_frame`, `paint_page` draws it in the page area, and
+`Browser::servo_input` forwards mouse, wheel and keyboard input over that
+area. Main-frame navigations go through `browser::web_navigation`, the policy
+the wry handler uses too; subresources the ad filter blocks are cancelled in
+`load_web_resource`, and pop-ups are refused.
 
 The engine handles these internal URLs in `loader::load_page`:
 `about:home`, `about:blank`, `about:blocked:<url>`, `view-source:<url>`,

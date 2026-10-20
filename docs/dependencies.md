@@ -30,8 +30,9 @@ Reviewed 2026-10-18 for [issue #54](https://github.com/freewright-dev/BrowseCraf
   path does not use it. Track the GTK/wry family upgrade to a corrected glib
   rather than applying an incompatible standalone version override.
 
-`deny.toml` ignores exactly the two unmaintained advisories above, by ID and
-with a reason pointing here, so that `cargo deny check` can pass and run in CI
+`deny.toml` ignores exactly the two unmaintained advisories above (and the six
+servo-only ones listed under "Servo feature" below), by ID and with a reason
+pointing here, so that `cargo deny check` can pass and run in CI
 ([issue #76](https://github.com/freewright-dev/BrowseCraft/issues/76)). There
 is no blanket setting: any other advisory, including a new one for these same
 crates, still fails the check. The glib finding is not reported by
@@ -39,6 +40,33 @@ crates, still fails the check. The glib finding is not reported by
 listed here. Review all three again when updating wry, GTK, fontdue or winit,
 and remove an ignore as soon as its crate leaves the graph. Do not treat a
 successful `cargo audit` exit as the absence of informational warnings.
+
+## Servo feature (experimental, Linux)
+
+The optional `servo` dependency (issue #65) is resolved into `Cargo.lock` for
+every build, but compiled only on Linux with `--features servo`. Resolving it
+moved the shared ICU crates (`icu_*`) from 2.3 to 2.1 and `idna_adapter` from
+1.2.2 to 1.2.1, which Servo 0.6 pins. `cargo deny check` (default features)
+is checked with all features (the CI action's default), so Servo's graph is
+covered. It contains six unmaintained crates: `bincode` (RUSTSEC-2025-0141),
+`unic-char-property` (RUSTSEC-2025-0081), `unic-char-range`
+(RUSTSEC-2025-0075), `unic-common` (RUSTSEC-2025-0080), `unic-ucd-ident`
+(RUSTSEC-2025-0100) and `unic-ucd-version` (RUSTSEC-2025-0098). `deny.toml`
+ignores exactly these IDs, each marked as servo-only; they are "unmaintained"
+notices, not vulnerabilities, and stay part of the evaluation of whether to
+adopt Servo. Remove them if the feature is dropped or Servo moves off these
+crates.
+
+The feature also enables Servo's `webcrypto` cargo feature, because many
+sites need `crypto.getRandomValues()`. That brings in the `rsa` crate, whose
+RSA decryption has an unfixed timing side channel (RUSTSEC-2023-0071, the
+"Marvin" attack). Pages could only reach it through `crypto.subtle`, which
+BrowseCraft turns off (`dom_crypto_subtle_enabled = false` in
+`servo_pane.rs`), so `deny.toml` ignores this advisory by ID with that reason.
+Re-check it whenever `crypto.subtle` is enabled or the `rsa` crate is updated.
+Servo 0.6 also needs the release candidate `pkcs1 0.8.0-rc.4` (the version in
+its own lockfile); the newer `0.8.0-rc.5` does not compile with the `rsa`
+release candidate it uses.
 
 ## Policy and checks
 

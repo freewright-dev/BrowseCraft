@@ -43,6 +43,7 @@ use crate::history;
 use crate::icons;
 use crate::internal;
 use crate::layout::{self, FormState, Layout, LayoutInput, Rect};
+use crate::servo_pane::{PaneInput, ServoPane};
 use crate::loader::{self, LoadEvent, Page, Request};
 use crate::paint::{self, Canvas, Image};
 use crate::passwords::{self, FormKind, PageMessage};
@@ -112,6 +113,15 @@ pub enum UserMessage {
     /// WebView2 could not verify the certificate of a request to this URL.
     #[cfg_attr(not(windows), allow(dead_code))]
     WebCertError(String),
+    /// Servo has work to do on the UI thread (`Servo::spin_event_loop`).
+    #[cfg_attr(not(all(feature = "servo", target_os = "linux")), allow(dead_code))]
+    ServoWake,
+    /// Servo painted a new frame of the page.
+    #[cfg_attr(not(all(feature = "servo", target_os = "linux")), allow(dead_code))]
+    ServoFrame,
+    /// A page Servo was showing crashed.
+    #[cfg_attr(not(all(feature = "servo", target_os = "linux")), allow(dead_code))]
+    ServoCrashed(String),
     /// A shortcut pressed inside the WebView2 pane (`AcceleratorKeyPressed`).
     #[cfg_attr(not(windows), allow(dead_code))]
     WebKey(Shortcut),
@@ -266,7 +276,10 @@ pub struct Browser {
     tab: Option<Tab>,
     loading: bool,
     start_url: String,
-    webview: Option<WebView>,
+    webview: Option<WebPane>,
+    /// The newest frame Servo painted, drawn in the page area (Servo, unlike
+    /// WebView2, has no window of its own).
+    servo_frame: Option<Image>,
     web_page: bool,
     web_url: String,
     title: String,
@@ -447,6 +460,132 @@ fn navigation_allowed(url: &str) -> bool {
     is_web_url(&lower)
         || lower == "about:blank"
         || ["file:", "data:", "blob:"].iter().any(|s| lower.starts_with(s))
+}
+
+/// What a web view does with a main-frame navigation a page started.
+pub(crate) enum WebNavigation {
+    Allow,
+    /// Refused silently (the engine's internal pages).
+    Refuse,
+    /// Refused: it would hand the URL to another app. Say so.
+    External(String),
+    /// Refused, and the tab opens this instead (the URL without its
+    /// credentials, or the ad filter's notice page).
+    Open(String),
+}
+
+/// The navigation policy every web view applies, whichever engine it is.
+pub(crate) fn web_navigation(url: &str) -> WebNavigation {
+    // Web content cannot open the engine's internal pages, nor hand a URL
+    // to another app.
+    if !navigation_allowed(url) {
+        return if request_in_webview(url) {
+            WebNavigation::External(url.to_string())
+        } else {
+            WebNavigation::Refuse
+        };
+    }
+    if is_web_url(url) {
+        // A user name and password in the URL are never sent: load the same
+        // address without them.
+        if let Some(clean) = crate::net::without_userinfo(url) {
+            return WebNavigation::Open(clean);
+        }
+        // Main-frame navigations the ad filter blocks become an engine
+        // notice page instead.
+        if adblock::blocked_page(url, "") {
+            return WebNavigation::Open(format!("about:blocked:{url}"));
+        }
+    }
+    WebNavigation::Allow
+}
+
+/// The web view that shows web pages: the system's (WebView2, WKWebView)
+/// through wry, or Servo (Linux, `servo` feature).
+enum WebPane {
+    Wry(WebView),
+    #[cfg_attr(not(all(feature = "servo", target_os = "linux")), allow(dead_code))]
+    Servo(ServoPane),
+}
+
+impl WebPane {
+    fn load_url(&self, url: &str) -> Result<(), String> {
+        match self {
+            WebPane::Wry(wv) => wv.load_url(url).map_err(|e| e.to_string()),
+            WebPane::Servo(pane) => pane.load(url),
+        }
+    }
+
+    fn zoom(&self, zoom: f64) {
+        match self {
+            WebPane::Wry(wv) => {
+                let _ = wv.zoom(zoom);
+            }
+            WebPane::Servo(pane) => pane.set_zoom(zoom as f32),
+        }
+    }
+
+    fn reload(&self) {
+        match self {
+            WebPane::Wry(wv) => {
+                let _ = wv.reload();
+            }
+            WebPane::Servo(pane) => pane.reload(),
+        }
+    }
+
+    fn evaluate_script(&self, script: &str) -> Result<(), String> {
+        match self {
+            WebPane::Wry(wv) => wv.evaluate_script(script).map_err(|e| e.to_string()),
+            WebPane::Servo(pane) => {
+                pane.evaluate_script(script);
+                Ok(())
+            }
+        }
+    }
+
+    fn url(&self) -> Result<String, String> {
+        match self {
+            WebPane::Wry(wv) => wv.url().map_err(|e| e.to_string()),
+            WebPane::Servo(pane) => Ok(pane.url()),
+        }
+    }
+
+    /// Gives keyboard focus back to the browser window.
+    fn focus_parent(&self) {
+        if let WebPane::Wry(wv) = self {
+            let _ = wv.focus_parent();
+        }
+    }
+
+    /// Places the web view over the page area: x, y, width, height in
+    /// physical pixels. Servo, drawn by the browser, only needs the size.
+    fn set_bounds(&self, (x, y, w, h): (i32, i32, u32, u32)) {
+        match self {
+            WebPane::Wry(wv) => {
+                let _ = wv.set_bounds(wry::Rect {
+                    position: WryPosition::Physical(WryPhysicalPosition::new(x, y)),
+                    size: WrySize::Physical(WryPhysicalSize::new(w, h)),
+                });
+            }
+            WebPane::Servo(pane) => pane.resize(w, h),
+        }
+    }
+
+    fn set_visible(&self, visible: bool) {
+        match self {
+            WebPane::Wry(wv) => {
+                let _ = wv.set_visible(visible);
+            }
+            WebPane::Servo(pane) => pane.set_visible(visible),
+        }
+    }
+
+    /// The web view is a native window over the page (wry): menus have to
+    /// hide it, and it takes its own input.
+    fn is_native(&self) -> bool {
+        matches!(self, WebPane::Wry(_))
+    }
 }
 
 /// A notice for a refused link to another app, naming its scheme when it is
@@ -1132,6 +1271,7 @@ impl Browser {
             loading: false,
             start_url,
             webview: None,
+            servo_frame: None,
             web_page: false,
             web_url: String::new(),
             title: String::new(),
@@ -1378,6 +1518,7 @@ impl Browser {
         // Every tab shares the one WebView; a parked web tab reloads its URL
         // when it becomes active again.
         self.unload_webview();
+        self.servo_frame = None;
         self.web_epoch.fetch_add(1, Ordering::SeqCst);
         self.web_leaving = self.web_url.clone();
         self.web_document.clear();
@@ -1427,7 +1568,7 @@ impl Browser {
             self.loading = true;
             if let Some(wv) = &self.webview {
                 let _ = wv.load_url(&url);
-                let _ = wv.zoom(self.user_zoom as f64);
+                wv.zoom(self.user_zoom as f64);
             }
         } else if self.tab.is_none()
             && let Some(entry) = self.history.get(self.index)
@@ -1495,7 +1636,7 @@ impl Browser {
         self.address.select_all();
         self.egui_focus_address = true;
         if let Some(wv) = &self.webview {
-            let _ = wv.focus_parent();
+            wv.focus_parent();
         }
         self.request_redraw();
     }
@@ -1583,7 +1724,7 @@ impl Browser {
             self.address.set(&target);
             if let Some(wv) = &self.webview {
                 let _ = wv.load_url(&target);
-                let _ = wv.zoom(self.user_zoom as f64);
+                wv.zoom(self.user_zoom as f64);
             }
             self.update_window_title();
             self.request_redraw();
@@ -1635,7 +1776,7 @@ impl Browser {
             self.web_committed = false;
             self.loading = true;
             if let Some(wv) = &self.webview {
-                let _ = wv.reload();
+                wv.reload();
             }
             self.request_redraw();
             return;
@@ -1832,7 +1973,7 @@ impl Browser {
             tab.layout = None;
         }
         if let Some(wv) = &self.webview {
-            let _ = wv.zoom(self.user_zoom as f64);
+            wv.zoom(self.user_zoom as f64);
         }
         self.set_notice(format!("Zoom {}%", (self.user_zoom * 100.0).round()));
     }
@@ -2007,7 +2148,7 @@ impl Browser {
             self.loading = true;
             if let Some(wv) = &self.webview {
                 let _ = wv.load_url(&self.web_url);
-                let _ = wv.zoom(self.user_zoom as f64);
+                wv.zoom(self.user_zoom as f64);
             }
         }
         self.set_notice("The page tried to close its tab");
@@ -2064,38 +2205,18 @@ impl Browser {
                     let _ = ipc_proxy.send_event(UserMessage::Page { sender, message });
                 }
             })
-            .with_navigation_handler(move |url| {
-                // Web content cannot open the engine's internal pages, nor
-                // hand a URL to another app.
-                if !navigation_allowed(&url) {
-                    if request_in_webview(&url) {
-                        let _ = nav_proxy.send_event(UserMessage::WebExternal(url));
-                    }
-                    return false;
+            .with_navigation_handler(move |url| match web_navigation(&url) {
+                WebNavigation::Allow => true,
+                WebNavigation::Refuse => false,
+                WebNavigation::External(url) => {
+                    let _ = nav_proxy.send_event(UserMessage::WebExternal(url));
+                    false
                 }
-                // A user name and password in the URL are never sent: load the
-                // same address without them.
-                if is_web_url(&url)
-                    && let Some(clean) = crate::net::without_userinfo(&url)
-                {
-                    let _ = nav_proxy.send_event(UserMessage::WebOpen {
-                        epoch: nav_epoch.load(Ordering::SeqCst),
-                        url: clean,
-                        popup: false,
-                    });
-                    return false;
+                WebNavigation::Open(url) => {
+                    let epoch = nav_epoch.load(Ordering::SeqCst);
+                    let _ = nav_proxy.send_event(UserMessage::WebOpen { epoch, url, popup: false });
+                    false
                 }
-                // Main-frame navigations the ad filter blocks become an engine
-                // notice page instead.
-                if is_web_url(&url) && adblock::blocked_page(&url, "") {
-                    let _ = nav_proxy.send_event(UserMessage::WebOpen {
-                        epoch: nav_epoch.load(Ordering::SeqCst),
-                        url: format!("about:blocked:{url}"),
-                        popup: false,
-                    });
-                    return false;
-                }
-                true
             })
             .with_document_title_changed_handler(move |title| {
                 let _ = title_proxy.send_event(UserMessage::WebTitle(title));
@@ -2144,7 +2265,7 @@ impl Browser {
                 // single entry, and wry then destroys the web view. Starting on
                 // about:blank means a page is never that single entry.
                 let _ = wv.load_url("about:blank");
-                self.webview = Some(wv);
+                self.webview = Some(WebPane::Wry(wv));
             }
             Err(e) => eprintln!("browsecraft: WebView2 is unavailable ({e}); using the engine for every page"),
         }
@@ -2220,7 +2341,10 @@ impl Browser {
             // The fullscreen page is gone (another tab, an engine page).
             self.set_web_fullscreen(false);
         }
-        let menu_over_page = self.egui_popup_open && self.web_page && !self.cheatsheet;
+        // Servo's frames are drawn under egui, so menus can cover them; the
+        // native web view would paint over any menu and is hidden instead.
+        let native = self.webview.as_ref().is_some_and(WebPane::is_native);
+        let menu_over_page = self.egui_popup_open && self.web_page && !self.cheatsheet && native;
         if menu_over_page && self.web_visible && self.popup_snapshot.is_none() {
             // The menu just opened: grab the page while it is still showing.
             self.snapshot_page();
@@ -2228,7 +2352,7 @@ impl Browser {
         if !menu_over_page {
             self.popup_snapshot = None;
         }
-        let visible = self.web_page && !self.cheatsheet && !self.egui_popup_open;
+        let visible = self.web_page && !self.cheatsheet && !(self.egui_popup_open && native);
         let r = self.webview_rect();
         let bounds = (
             r.x.round() as i32,
@@ -2240,14 +2364,11 @@ impl Browser {
             return;
         };
         if visible && self.web_bounds != Some(bounds) {
-            let _ = wv.set_bounds(wry::Rect {
-                position: WryPosition::Physical(WryPhysicalPosition::new(bounds.0, bounds.1)),
-                size: WrySize::Physical(WryPhysicalSize::new(bounds.2, bounds.3)),
-            });
+            wv.set_bounds(bounds);
             self.web_bounds = Some(bounds);
         }
         if visible != self.web_visible {
-            let _ = wv.set_visible(visible);
+            wv.set_visible(visible);
             self.web_visible = visible;
         }
     }
@@ -2270,8 +2391,11 @@ impl Browser {
                 flags::Theme::Dark => Some(Theme::Dark),
             });
         }
+        if let Some(WebPane::Servo(pane)) = &self.webview {
+            pane.set_dark(dark);
+        }
         #[cfg(windows)]
-        if let Some(wv) = &self.webview {
+        if let Some(WebPane::Wry(wv)) = &self.webview {
             use wry::WebViewExtWindows;
             let _ = wv.set_theme(match setting {
                 flags::Theme::Auto => wry::Theme::Auto,
@@ -2649,6 +2773,50 @@ impl Browser {
 
     /// Keys that act as browser shortcuts even while an egui text box has
     /// the keyboard.
+    /// Hands input over the page area to Servo, which (unlike the native
+    /// web view) has no window of its own. Returns whether the event was the
+    /// page's; pointer moves are still tracked by the browser as well.
+    fn servo_input(&mut self, event: &WindowEvent, consumed: bool) -> bool {
+        if !self.web_page || self.cheatsheet {
+            return false;
+        }
+        let Some(WebPane::Servo(pane)) = &self.webview else {
+            return false;
+        };
+        let r = self.webview_rect();
+        let (mx, my) = self.mouse;
+        let inside = r.contains(mx, my) && !consumed;
+        let pressed = match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let (x, y) = (position.x as f32, position.y as f32);
+                if r.contains(x, y) {
+                    pane.mouse_move(x - r.x, y - r.y);
+                }
+                return false;
+            }
+            WindowEvent::MouseInput { state, button, .. } if inside => {
+                pane.mouse_button(mx - r.x, my - r.y, *button, *state);
+                *state == ElementState::Pressed
+            }
+            WindowEvent::MouseWheel { delta, .. } if inside => {
+                pane.wheel(mx - r.x, my - r.y, *delta);
+                false
+            }
+            WindowEvent::KeyboardInput { event: key, .. }
+                if self.focus == Focus::Page && !consumed && !self.is_shortcut(key) =>
+            {
+                pane.key(key, self.modifiers);
+                false
+            }
+            _ => return false,
+        };
+        if pressed {
+            // A click in the page takes the keyboard from the address bar.
+            self.focus = Focus::Page;
+        }
+        true
+    }
+
     fn is_shortcut(&self, event: &KeyEvent) -> bool {
         let m = self.modifiers;
         m.control_key()
@@ -2870,7 +3038,7 @@ impl Browser {
             .find(|&b| self.button_rect(b).contains(x, y))
         {
             if let Some(wv) = &self.webview {
-                let _ = wv.focus_parent();
+                wv.focus_parent();
             }
             match b {
                 Button::Back => self.go(-1),
@@ -3427,6 +3595,12 @@ impl Browser {
             .and_then(|t| t.layout.as_ref())
             .map_or(pal.page_bg, |l| l.background);
         canvas.fill_rect(page, bg);
+        if self.web_page
+            && let Some(frame) = &self.servo_frame
+        {
+            let size = Rect { x: page.x, y: page.y, w: frame.width as f32, h: frame.height as f32 };
+            canvas.draw_image(frame, size);
+        }
         if let Some(tab) = laid_out
             && let Some(layout) = &tab.layout
         {
@@ -4096,6 +4270,24 @@ impl Browser {
             UserMessage::WebOpen { epoch, url, popup } => self.web_open(epoch, url, popup),
             UserMessage::WebExternal(url) => self.set_notice(external_notice(&url)),
             UserMessage::WebClosed => self.web_closed(),
+            UserMessage::ServoWake => {
+                if let Some(WebPane::Servo(pane)) = &self.webview {
+                    pane.spin();
+                }
+                // Nothing to redraw until Servo reports a frame.
+                return;
+            }
+            UserMessage::ServoFrame => {
+                if let Some(WebPane::Servo(pane)) = &self.webview
+                    && let Some(frame) = pane.take_frame()
+                {
+                    self.servo_frame = Some(frame);
+                }
+            }
+            UserMessage::ServoCrashed(reason) => {
+                self.loading = false;
+                self.set_notice(format!("The page crashed ({reason})"));
+            }
             UserMessage::WebCertError(url) => {
                 if let Some(host) = Url::parse(&url).ok().and_then(|u| u.host_str().map(str::to_string)) {
                     self.cert_error_hosts.insert(host);
@@ -4145,6 +4337,12 @@ impl ApplicationHandler<UserMessage> for Browser {
             }
         };
         self.create_webview(&window);
+        if self.webview.is_none() {
+            // No system web view (Linux): Servo, if this build has it.
+            let size = window.inner_size();
+            self.webview = ServoPane::start(self.proxy.clone(), self.web_epoch.clone(), size.width, size.height)
+                .map(WebPane::Servo);
+        }
 
         // Chrome: egui on the GPU when asked for and available, otherwise the
         // engine draws it into a softbuffer frame.
@@ -4189,6 +4387,7 @@ impl ApplicationHandler<UserMessage> for Browser {
                 self.request_redraw();
             }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
+            _ if self.servo_input(&event, consumed) => self.request_redraw(),
             WindowEvent::KeyboardInput { event, .. } => {
                 if !consumed || self.is_shortcut(&event) {
                     self.key(&event);

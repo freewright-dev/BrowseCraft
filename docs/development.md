@@ -29,6 +29,36 @@ The release profile optimises for size (`opt-level = "z"`) with LTO, one
 codegen unit, `panic = "abort"` and stripped symbols, so the first release
 build takes a few minutes.
 
+### Servo on Linux (experimental)
+
+On Linux, BrowseCraft has no system web view, so web pages render in its own
+engine (no JavaScript). The `servo` feature renders them with
+[Servo](https://servo.org) 0.6 LTS instead
+([issue #65](https://github.com/freewright-dev/BrowseCraft/issues/65)). It is
+off by default and ignored on other platforms.
+
+Servo needs clang 19 and its native dependencies. On Ubuntu 24.04:
+
+```sh
+sudo apt install build-essential pkg-config clang-19 libclang-19-dev llvm-19-dev   cmake gperf m4 python3 libssl-dev libdbus-1-dev libudev-dev libunwind-dev liblzma-dev   libegl1-mesa-dev libgles2-mesa-dev libgl1-mesa-dri libvulkan1 libfreetype6-dev   libharfbuzz-dev libglib2.0-dev libx11-dev libxcb-render0-dev libxcb-shape0-dev   libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-0 libxmu-dev xorg-dev   libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
+CC=clang-19 CXX=clang++-19 LIBCLANG_PATH=/usr/lib/llvm-19/lib cargo run --features servo
+```
+
+`src/servo_pane.rs` holds the integration: Servo renders offscreen
+(`SoftwareRenderingContext`), the browser draws each frame into the page area
+and forwards mouse, wheel and keyboard input, and Servo's notifications become
+the same `UserMessage`s the WebView2 pane sends. Navigation policy
+(`browser::web_navigation`) and the ad filter apply as they do on Windows;
+pop-ups are refused. The password manager's page script is not injected yet.
+The `Servo (experimental)` workflow builds this configuration; it is not a
+required check.
+
+For evaluation, `BROWSECRAFT_SERVO_TRACE=1` prints load progress, titles and
+crashes, and `BROWSECRAFT_SERVO_FRAME=<file.png>` keeps Servo's newest frame.
+`tools/servo-compat/run.sh` uses both to open every site in
+`tools/servo-compat/sites.txt`; the results so far are in
+[servo-compat.md](servo-compat.md).
+
 ### build.bat
 
 On Windows, `build.bat` wraps the same steps:

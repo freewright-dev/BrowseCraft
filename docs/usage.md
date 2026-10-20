@@ -31,7 +31,7 @@ The lock at the start of the address bar means the page shown arrived over HTTPS
 
 ## Where pages render
 
-On Windows, web pages (`http:`, `https:`, `file:` and `data:` addresses) are shown in an embedded WebView2 pane (WKWebView on macOS). BrowseCraft's own engine renders the built-in pages (`about:`, `browsecraft://` and `view-source:`), the result of a POST form submitted from an engine page, and every page when WebView2 is unavailable or on other platforms.
+On Windows, web pages (`http:`, `https:`, `file:` and `data:` addresses) are shown in an embedded WebView2 pane (WKWebView on macOS). BrowseCraft's own engine renders the built-in pages (`about:`, `browsecraft://` and `view-source:`), the result of a POST form submitted from an engine page, and every page when WebView2 is unavailable or on other platforms. A Linux build with the experimental `servo` feature shows web pages with Servo instead; there, pop-ups are not opened and the password manager cannot yet detect or fill forms.
 
 This matters for input. BrowseCraft's shortcuts below also work while a WebView2 page has the keyboard (handled on Windows through the WebView2 controller's `AcceleratorKeyPressed` event). Forms, link hover, `Ctrl`+wheel and the scrolling keys described here apply to engine pages; WebView2 pages handle these themselves.
 

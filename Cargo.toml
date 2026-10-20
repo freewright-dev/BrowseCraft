@@ -41,6 +41,19 @@ psl = "2"
 unwrap_used = "deny"
 expect_used = "deny"
 
+[features]
+# Experimental (issue #65): render web pages with Servo on Linux, where there
+# is no system web view. Off by default; other platforms ignore it.
+servo = ["dep:servo", "dep:rustls"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# `webcrypto` provides `crypto.getRandomValues()` and `crypto.subtle`, which
+# many sites need at start-up (see docs/servo-compat.md).
+servo = { version = "0.6", optional = true, features = ["webcrypto"] }
+# Servo's graph enables two rustls crypto providers, so the process has to
+# install one itself.
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std"] }
+
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
 windows = { version = "0.61", features = ["Win32_System_Com", "Win32_Security_Authorization"] }

@@ -22,7 +22,8 @@ BrowseCraft currently uses a **hybrid rendering architecture**, not Servo:
 - **Native web views**, embedded through `wry`, show regular websites using
   WebView2 on Windows and WKWebView on macOS. On Linux, or when the native web
   view cannot be initialized, pages use the custom engine with its limited
-  standards support.
+  standards support, or, in a Linux build with the experimental `servo`
+  feature, Servo (see below).
 
 Windows browsing therefore still depends on Edge's Chromium-based WebView2;
 the current application is not yet independent of native browser engines.
@@ -39,10 +40,18 @@ available, and by the engine otherwise.
 ## Engine direction: Servo
 
 [The architecture decision](https://github.com/freewright-dev/BrowseCraft/issues/65#issuecomment-6251509599)
-selects **Servo** as the future independent website engine. **Servo is not yet
-integrated or available as a selectable backend.** The plan is to retain Rust
-and egui/winit for the application and reuse Servo's page engine rather than
-build a second general-purpose DOM, layout and JavaScript stack.
+selects **Servo** as the future independent website engine. The plan is to
+retain Rust and egui/winit for the application and reuse Servo's page engine
+rather than build a second general-purpose DOM, layout and JavaScript stack.
+
+**First step, experimental and opt-in:** on Linux, a build with
+`--features servo` renders web pages with Servo 0.6 LTS instead of the custom
+engine (see [docs/development.md](docs/development.md#servo-on-linux-experimental)).
+It is off by default, not part of release builds, and not yet secure for
+arbitrary browsing: Servo runs in the browser process, and the password
+manager's page script and element hiding are not wired up yet. In the latest
+[compatibility run](docs/servo-compat.md), 38 of 50 popular sites rendered
+properly, 7 partly and 5 not, with no crashes.
 
 Existing native web views stay in place until the integration passes explicit
 compatibility, packaging and security gates. Windows renderer containment is
