@@ -2778,6 +2778,19 @@ impl Browser {
 
     // ---- keyboard ----
 
+    /// Releases page-owned presses when the window loses focus, since their
+    /// release event may never arrive.
+    fn release_servo_buttons(&mut self) {
+        let Some(WebPane::Servo(pane)) = &self.webview else {
+            return;
+        };
+        let r = self.webview_rect();
+        let (mx, my) = self.mouse;
+        for button in self.servo_buttons.drain(..) {
+            pane.mouse_button(mx - r.x, my - r.y, button, ElementState::Released);
+        }
+    }
+
     /// Hands input over the page area to Servo, which (unlike the native
     /// web view) has no window of its own. Returns whether the event was the
     /// page's; pointer moves are still tracked by the browser as well.
@@ -4421,7 +4434,10 @@ impl ApplicationHandler<UserMessage> for Browser {
             WindowEvent::ScaleFactorChanged { .. } | WindowEvent::ThemeChanged(_) => {
                 self.request_redraw();
             }
-            WindowEvent::Focused(_) => {
+            WindowEvent::Focused(focused) => {
+                if !focused {
+                    self.release_servo_buttons();
+                }
                 // Focus changes must reach Servo even if an unfocused window
                 // is not being repainted by the window manager.
                 self.sync_webview();

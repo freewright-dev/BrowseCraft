@@ -62,7 +62,11 @@ into `servo_frame`, `paint_page` draws it in the page area, and
 `Browser::servo_input` forwards mouse, wheel and keyboard input over that
 area. Main-frame navigations go through `browser::web_navigation`, the policy
 the wry handler uses too; subresources the ad filter blocks are cancelled in
-`load_web_resource`, and pop-ups are refused.
+`load_web_resource`, and pop-ups are refused. Cosmetic filters run as
+per-document user scripts (subframes included), the first navigation waits for
+Servo's initial blank page (5 seconds at most), focus follows the window,
+address bar and popups through `set_focused`, and web content is always asked
+for the light theme until servo/servo#48630 is fixed.
 
 The engine handles these internal URLs in `loader::load_page`:
 `about:home`, `about:blank`, `about:blocked:<url>`, `view-source:<url>`,

@@ -42,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The theme now defaults to dark.
 - The settings page is redesigned with toggle switches and segmented controls; changing a setting no longer adds a Back step each time.
 - Declared GPL-3.0-or-later licensing with the full license text and uBlock Origin attribution; added an explicit dependency license/source policy.
-- CI runs `cargo deny check` (advisories, bans, licenses, sources) on every pull request, on pushes to `main` and weekly. The two tracked unmaintained advisories (`proc-macro-error`, `ttf-parser`) are ignored by ID with a reason; any other advisory fails the check.
+- CI runs `cargo deny check` (advisories, bans, licenses, sources) on every pull request, on pushes to `main` and weekly. Each tracked advisory is ignored by ID with a reason in `deny.toml` (listed in `docs/dependencies.md`); any other advisory fails the check.
 - The internal pages moved from `craft://` to `browsecraft://` (`browsecraft://flags`, `browsecraft://history`), and the repository moved to `freewright-dev/BrowseCraft`.
 - Replaced the original wry/tao-only browser with a hybrid design: BrowseCraft's own engine and winit window draw the chrome and internal pages, while websites render in an embedded WebView2 pane. The HTML toolbar webview is gone; the toolbar is drawn by the engine or by egui.
 - Searches use Startpage instead of DuckDuckGo.
@@ -52,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Upgraded Servo to 0.7 to fix an `IntersectionObserver` hang on boxless ancestors. Kept experimental Web Animations disabled so sites such as Figma use their animation fallback, and prefer light webpages independently of chrome theme to avoid Servo's default pale-text-on-white bug. Added a real-browser smoke test with an external hang watchdog.
 - Servo page inputs now receive editing shortcuts such as Ctrl+A and Ctrl+Left; only actual browser shortcuts are intercepted.
+- Servo pages get cosmetic ad filtering in every document, subframes included, with host-scoped and negated-host rules and `#@#` exceptions resolved against each document's own host. The first navigation waits for Servo's initial blank page (at most 5 seconds) instead of being dropped.
+- Servo page focus follows the browser: the page loses focus when the window, the address bar or a popup has the keyboard, and a mouse button the page holds is released if the window loses focus mid-drag.
+- Servo's rendering context is made current before every event-loop step, so it paints correctly after the GPU chrome has used the graphics context.
 - The password key icon was pushed past the right edge of the window: the toolbar reserved room for two right-hand buttons and there are three. The buttons on the right are now laid out from the window's edge and the address bar takes the room left over, so nothing can leave the window at any width (covered by a headless layout test).
 - Clicks and scrolling on engine-rendered pages (the new-tab page and its search box, settings, bookmarks, history, passwords) landed about 34 px off once the bookmarks bar was added: the page area used for layout, painting and hit-testing did not include the bookmarks bar or the "save this login?" bar. It now matches the egui panels exactly.
 - A click on a menu that hangs over the page (the key menu, a bookmark's right-click menu, the `»` overflow menu) was also delivered to the page underneath.
