@@ -57,6 +57,17 @@ notices, not vulnerabilities, and stay part of the evaluation of whether to
 adopt Servo. Remove them if the feature is dropped or Servo moves off these
 crates.
 
+The feature also enables Servo's `webcrypto` cargo feature, because many
+sites need `crypto.getRandomValues()`. That brings in the `rsa` crate, whose
+RSA decryption has an unfixed timing side channel (RUSTSEC-2023-0071, the
+"Marvin" attack). Pages could only reach it through `crypto.subtle`, which
+BrowseCraft turns off (`dom_crypto_subtle_enabled = false` in
+`servo_pane.rs`), so `deny.toml` ignores this advisory by ID with that reason.
+Re-check it whenever `crypto.subtle` is enabled or the `rsa` crate is updated.
+Servo 0.6 also needs the release candidate `pkcs1 0.8.0-rc.4` (the version in
+its own lockfile); the newer `0.8.0-rc.5` does not compile with the `rsa`
+release candidate it uses.
+
 ## Policy and checks
 
 The project is GPL-3.0-or-later. [Third-party notices](../THIRD_PARTY_NOTICES.md)

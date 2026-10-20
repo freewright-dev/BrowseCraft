@@ -256,12 +256,15 @@ mod imp {
     /// Servo's defaults, plus web features it ships but leaves off as
     /// experimental that common sites need (docs/servo-compat.md):
     /// `IntersectionObserver`, `document.adoptedStyleSheets` and
-    /// `Element.animate()`.
+    /// `Element.animate()`. `crypto.subtle` stays off: sites need
+    /// `crypto.getRandomValues()`, and Servo's RSA operations use the `rsa`
+    /// crate, which has an unfixed timing side channel (RUSTSEC-2023-0071).
     fn preferences() -> Preferences {
         let mut prefs = Preferences::default();
         prefs.dom_intersection_observer_enabled = true;
         prefs.dom_adoptedstylesheet_enabled = true;
         prefs.dom_web_animations_enabled = true;
+        prefs.dom_crypto_subtle_enabled = false;
         prefs
     }
 
