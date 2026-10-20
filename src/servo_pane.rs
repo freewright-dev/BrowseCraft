@@ -108,7 +108,7 @@ mod imp {
     use std::sync::{Arc, Mutex};
 
     use servo::{
-        Code, ConsoleLogLevel, CreateNewWebViewRequest, DeviceIntRect, DeviceIntSize, DevicePoint, EventLoopWaker,
+        Code, ConsoleLogLevel, CreateNewWebViewRequest, Preferences, DeviceIntRect, DeviceIntSize, DevicePoint, EventLoopWaker,
         InputEvent, Key, KeyState, KeyboardEvent, LoadStatus, Location, Modifiers,
         MouseButton as ServoButton, MouseButtonAction, MouseButtonEvent, MouseMoveEvent,
         NamedKey as ServoNamedKey, NavigationRequest, RenderingContext, Servo, ServoBuilder,
@@ -253,6 +253,18 @@ mod imp {
         }
     }
 
+    /// Servo's defaults, plus web features it ships but leaves off as
+    /// experimental that common sites need (docs/servo-compat.md):
+    /// `IntersectionObserver`, `document.adoptedStyleSheets` and
+    /// `Element.animate()`.
+    fn preferences() -> Preferences {
+        let mut prefs = Preferences::default();
+        prefs.dom_intersection_observer_enabled = true;
+        prefs.dom_adoptedstylesheet_enabled = true;
+        prefs.dom_web_animations_enabled = true;
+        prefs
+    }
+
     /// The ad filter's resource type for Servo's request destination, by
     /// name (its type is not re-exported by the `servo` crate).
     fn resource_type(destination: &str) -> u32 {
@@ -294,6 +306,7 @@ mod imp {
             context.make_current().ok()?;
             trace("servo started");
             let servo = ServoBuilder::default()
+                .preferences(preferences())
                 .event_loop_waker(Box::new(Waker(Mutex::new(proxy.clone()))))
                 .build();
             // When tracing, Servo's own log goes to stderr (filtered by
