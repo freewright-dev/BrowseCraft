@@ -265,41 +265,25 @@ impl AdBlocker {
         } else {
             (Vec::new(), Vec::new())
         };
-        let mut generic_css: Vec<String> = Vec::new();
-        for sel in self.cosmetic_selectors("") {
-            generic_css.push(quote(&sel));
-        }
-        // Selectors per host, sorted by host, each selector once.
-        let mut scoped: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        // Keep exceptions until the script knows the document's host. In
+        // particular, a scoped #@# rule can exempt a generic ## selector.
+        let mut cosmetic = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for c in &self.cosmetic {
-            if let (Some(h), false) = (&c.host, c.allow) {
-                let key = if h.neg {
-                    format!("~{}", h.host)
-                } else {
-                    h.host.clone()
-                };
-                if seen.insert((key.clone(), c.selector.clone())) {
-                    scoped.entry(key).or_default().push(c.selector.clone());
-                }
-            }
-        }
-        let mut scoped_js = Vec::new();
-        for (host, sels) in scoped {
-            if !sels.is_empty() {
-                scoped_js.push(format!(
-                    "[{},[{}]]",
-                    quote(&host),
-                    sels.iter().map(|s| quote(s)).collect::<Vec<_>>().join(",")
-                ));
+            let host = c.host.as_ref().map(|h| {
+                if h.neg { format!("~{}", h.host) } else { h.host.clone() }
+            });
+            if seen.insert((host.clone(), &c.selector, c.allow)) {
+                cosmetic.push(format!("[{},{},{}]",
+                    host.as_deref().map(quote).unwrap_or_else(|| "null".into()),
+                    quote(&c.selector), c.allow));
             }
         }
         JS_HOOK
             .replace("__NETWORK_HOOKS__", if network_hooks { "true" } else { "false" })
             .replace("__HOST_RULES__", &format!("{{{}}}", host_map.join("")))
             .replace("__URL_RULES__", &format!("[{}]", url_rules.join(",")))
-            .replace("__GEN_CSS__", &format!("[{}]", generic_css.join(",")))
-            .replace("__SCOPED_CSS__", &format!("[{}]", scoped_js.join(",")))
+            .replace("__COSMETIC_RULES__", &format!("[{}]", cosmetic.join(",")))
     }
 
     /// The network rules as JavaScript: the entries of `__URL_RULES__` and
@@ -964,8 +948,8 @@ fn escape_regex(s: &str) -> String {
 /// beacon/src/iframe/script loads plus element-hiding `<style>` injection.
 /// `__HOST_RULES__` is an object mapping hostname -> `[[regex|null, typeMask,
 /// flags], ...]` (flags: 1 allow, 2 important); `__URL_RULES__` an array of
-/// the same entries for non-host-anchored filters; `__GEN_CSS__`/
-/// `__SCOPED_CSS__` carry the `##` selectors. Type masks match TYPE_*.
+/// the same entries for non-host-anchored filters; `__COSMETIC_RULES__`
+/// carries [host or null, selector, exception] entries. Type masks match TYPE_*.
 const JS_HOOK: &str = r#"(function(){
 const M={sub:2,script:4,image:8,sheet:16,font:32,xhr:64,ws:128,media:256,ping:512,other:1024,popup:2048};
 const H=Object.assign(Object.create(null),__HOST_RULES__);
@@ -1007,20 +991,29 @@ const decide=(u,t)=>{
   if(block && (imp || !allow))return 1;
   return 0;
 };
-{const g=__GEN_CSS__||[],s=__SCOPED_CSS__||[];
- if(g.length||s.length){
+{const rules=__COSMETIC_RULES__;
+ if(rules.length){
    const h=location.hostname.toLowerCase();
-   let css=g.slice();
-   for(const x of s){
-     const host=x[0].startsWith('~')?x[0].slice(1):x[0];
-     const neg=x[0].startsWith('~');
-     const mm=neg?(h!==host&&!h.endsWith('.'+host)):(h===host||h.endsWith('.'+host));
-     if(mm)css=css.concat(x[1]);
+   const hide=new Set(),allow=new Set();
+   for(const [scope,selector,exception] of rules){
+     if(scope!==null){
+       const neg=scope.startsWith('~'),host=neg?scope.slice(1):scope;
+       const matches=h===host||h.endsWith('.'+host);
+       if(neg?matches:!matches)continue;
+     }
+     (exception?allow:hide).add(selector);
    }
+   const css=Array.from(hide).filter(s=>!allow.has(s));
    if(css.length){
-     const st=document.createElement('style');
-     st.textContent=css.map(x=>x+'{display:none !important}').join('');
-     (document.head||document.documentElement).appendChild(st);
+     const install=()=>{
+       const root=document.head||document.documentElement;
+       if(!root)return;
+       let st=document.getElementById('browsecraft-cosmetic-filter');
+       if(!st){st=document.createElement('style');st.id='browsecraft-cosmetic-filter';root.appendChild(st);}
+       st.textContent=css.map(x=>x+'{display:none !important}').join('');
+     };
+     if(document.head||document.documentElement)install();
+     else document.addEventListener('DOMContentLoaded',install,{once:true});
    }
  }}
 if(!__NETWORK_HOOKS__)return;

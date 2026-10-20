@@ -112,7 +112,7 @@ mod imp {
         InputEvent, Key, KeyState, KeyboardEvent, LoadStatus, Location, Modifiers,
         MouseButton as ServoButton, MouseButtonAction, MouseButtonEvent, MouseMoveEvent,
         NamedKey as ServoNamedKey, NavigationRequest, RenderingContext, Servo, ServoBuilder,
-        SoftwareRenderingContext, Theme, WebResourceLoad, WebResourceResponse, WebView,
+        SoftwareRenderingContext, Theme, UserContentManager, UserScript, WebResourceLoad, WebResourceResponse, WebView,
         WebViewBuilder, WebViewDelegate, WheelDelta, WheelEvent, WheelMode,
     };
     use url::Url;
@@ -346,7 +346,14 @@ mod imp {
                 ready: Cell::new(false),
                 pending_load: RefCell::new(None),
             });
+            // Servo runs user scripts for each document, including subframes.
+            // Keep network filtering in load_web_resource; only inject CSS.
+            let content = Rc::new(UserContentManager::new(&servo));
+            content.add_script(Rc::new(UserScript::new(
+                adblock::instance().page_script_with_network(false), None,
+            )));
             let view = WebViewBuilder::new(&servo, context.clone())
+                .user_content_manager(content)
                 .delegate(delegate.clone())
                 .build();
             view.hide();
