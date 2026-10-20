@@ -10,6 +10,8 @@ mod adblock;
 mod address;
 mod bookmarks;
 mod browser;
+#[cfg(test)]
+mod compat;
 mod capture;
 mod css;
 mod dom;

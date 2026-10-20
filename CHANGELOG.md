@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `build.bat`: Windows build script (`release`, `debug`, `test`, `clean`, `run`) that checks for Rust 1.95 or newer, builds, and collects `browsecraft.exe` in `dist\`.
 - Size-optimized release profile (`opt-level = "z"`, LTO, stripped).
 - Unit tests for the HTML, CSS, style, font, network, text-editing, address, browser, history, flags, storage, bookmarks, vault and password-manager modules.
+- Engine compatibility baseline: 25 font-independent layout fixtures in `compat/` (box model, floats, flexbox, tables, selectors, cascade, media queries, custom properties, parser recovery) checked by `cargo test`, with a generated pass / known-fail / unsupported matrix in `docs/compat.md`. A known failure that starts to pass, or an unsupported feature, can never be reported as a pass.
 - Documentation in `docs/`.
 
 ### Changed

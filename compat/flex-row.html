@@ -1,0 +1,9 @@
+<!doctype html>
+<!-- title: Flex items lay out in a row -->
+<!-- spec: CSS Flexbox 1 8 -->
+<!-- status: pass -->
+<!-- expect: #ff0000 0 0 50 50 -->
+<!-- expect: #00ff00 50 0 50 50 -->
+<!-- expect: #0000ff 100 0 50 50 -->
+<style>body{margin:0}#f{display:flex}#f div{width:50px;height:50px}#a{background:#f00}#b{background:#0f0}#c{background:#00f}</style>
+<div id="f"><div id="a"></div><div id="b"></div><div id="c"></div></div>
