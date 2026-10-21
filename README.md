@@ -6,6 +6,8 @@
 
 <p align="center"><a href="https://discord.gg/SAy3t4BvJj"><img src="https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white" alt="Join the Freewright Discord"></a></p>
 
+> **Project status:** BrowseCraft is no longer actively maintained. Issues and pull requests may go unanswered, and no new releases are planned.
+
 An experimental open-source desktop browser written in Rust, with tabs,
 a built-in ad blocker and a custom HTML/CSS renderer.
 
