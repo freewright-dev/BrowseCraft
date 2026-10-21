@@ -1,0 +1,7 @@
+<!doctype html>
+<!-- title: A more specific selector wins over a later, less specific one -->
+<!-- spec: Selectors 3 17; CSS Cascade 3 -->
+<!-- status: pass -->
+<!-- expect: #00ff00 0 0 100 50 -->
+<style>body{margin:0}div{width:100px;height:50px}#x{background:#0f0}.y{background:#f00}</style>
+<div id="x" class="y"></div>

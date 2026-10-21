@@ -1,0 +1,7 @@
+<!doctype html>
+<!-- title: A percentage width resolves against the containing block -->
+<!-- spec: CSS 2.2 10.2 -->
+<!-- status: pass -->
+<!-- expect: #ff0000 0 0 200 50 -->
+<style>body{margin:0}#p{width:400px}#c{width:50%;height:50px;background:#f00}</style>
+<div id="p"><div id="c"></div></div>

@@ -1,0 +1,8 @@
+<!doctype html>
+<!-- title: border-collapse: collapse removes the table's cell spacing (the engine keeps 2px) -->
+<!-- spec: CSS 2.2 17 -->
+<!-- status: known-fail -->
+<!-- expect: #ff0000 0 0 100 50 -->
+<!-- expect: #0000ff 100 0 100 50 -->
+<style>body{margin:0}table{border-collapse:collapse}td{padding:0;width:100px;height:50px}#a{background:#f00}#b{background:#00f}</style>
+<table><tr><td id="a"></td><td id="b"></td></tr></table>

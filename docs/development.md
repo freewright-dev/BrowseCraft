@@ -148,6 +148,16 @@ routing, zoom steps, shortcuts and form submission (`browser.rs`). The
 `flags.rs` and `bookmarks.rs` tests share a global store, so they serialise on
 a mutex.
 
+### Engine compatibility fixtures
+
+`compat/*.html` are small pages that paint fixed-size coloured boxes without
+text; `src/compat.rs` lays each one out at 800x600 and compares the box
+rectangles with the `<!-- expect: #rrggbb x y w h -->` lines, which come from
+the specifications. A fixture is `pass`, `known-fail` (the test fails when it
+starts to match) or `unsupported` (listed, never run). After adding or changing
+a fixture, run `BLESS=1 cargo test compat` to regenerate
+[compat.md](compat.md). The tests skip when the machine has no system fonts.
+
 ### Parser and selector regressions
 
 Run the focused engine suites with:

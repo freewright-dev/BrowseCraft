@@ -1,0 +1,8 @@
+<!doctype html>
+<!-- title: flex-grow shares the free space -->
+<!-- spec: CSS Flexbox 1 9.7 -->
+<!-- status: pass -->
+<!-- expect: #ff0000 0 0 100 50 -->
+<!-- expect: #0000ff 100 0 200 50 -->
+<style>body{margin:0}#f{display:flex;width:300px}#f div{height:50px}#a{flex:1;background:#f00}#b{flex:2;background:#00f}</style>
+<div id="f"><div id="a"></div><div id="b"></div></div>
